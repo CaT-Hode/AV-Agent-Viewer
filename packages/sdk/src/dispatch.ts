@@ -1,0 +1,47 @@
+import { actionsFor, selectionAction } from '../../selection-tools/src/index';
+import type { Actor, EditOperation, ReadingContext, Rect, ViewInfo } from '../../contracts/src/index';
+import { browserRequestSchema, ViewerError } from '../../contracts/src/index';
+import type { ViewerCore } from '../../document-core/src/index';
+
+export async function dispatch(core: ViewerCore, method: string, args: Record<string, unknown>, actor: Actor = 'agent'): Promise<unknown> {
+  const str = (key: string) => { const value = args[key]; if (typeof value !== 'string') throw new ViewerError('INVALID_ARGUMENT', `${key} 必须是字符串。`); return value; };
+  const viewId = typeof args.viewId === 'string' ? args.viewId : undefined;
+  switch (method) {
+    case 'selection-tools': { const snapshot = args.snapshotId ? core.readSnapshot(str('snapshotId')) : await core.snapshot(viewId); return { snapshot, actions: actionsFor(snapshot, !!core.extensions.get('selection-ai')) }; }
+    case 'selection-action': return selectionAction(core, args, actor);
+    case 'annotations-list': return [...core.annotations.values()].filter(note => note.documentId === str('documentId'));
+    case 'annotation-remove': { const id = str('id'), note = core.annotations.get(id); if (!note) throw new ViewerError('TARGET_NOT_FOUND', '批注不存在。'); if (actor === 'agent' && ['paused','stopped'].includes(core.agentControl.get(note.documentId) ?? '')) throw new ViewerError('AGENT_PAUSED', 'Agent 已暂停。'); core.annotations.delete(id); core.event('annotation.removed', { id, actor }); await core.persist(); return {}; }
+    case 'document-open-view': { const id=str('documentId'); const existing=[...core.views.values()].find(v=>v.documentId===id&&v.windowId===String(args.windowId??'main')); const next=existing??core.addView(id,String(args.windowId??'main')); if(actor==='human')core.activate(next.id,actor);return next; }
+    case 'state': return core.state();
+    case 'events': return core.eventLog.filter(event => event.seq > Number(args.after ?? 0)).slice(-100);
+    case 'agent-control': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '仅用户可暂停或停止 Agent。'); if (!['running','paused','stopped'].includes(String(args.status))) throw new ViewerError('INVALID_ARGUMENT', '未知 Agent 状态。'); core.setAgentControl(str('viewId'), args.status as 'running' | 'paused' | 'stopped'); return {};
+    case 'capabilities': return args.documentId ? core.getDocument(str('documentId')).info.capabilities : core.registry.describe();
+    case 'open': { const view = /^https?:/.test(str('uri')) ? await core.openWeb(str('uri'), args.windowId as string | undefined) : await core.openFile(str('uri'), args.windowId as string | undefined); if (actor === 'human') core.activate(view.id, actor); return view; }
+    case 'create-text': { const format = args.format === 'html' ? 'html' : 'markdown'; const view = await core.openBytes(String(args.title ?? (format === 'html' ? '未命名.html' : '未命名.md')), new TextEncoder().encode(String(args.text ?? '')), format, undefined, args.windowId as string | undefined); if (actor === 'human') core.activate(view.id, actor); return view; }
+    case 'activate': { const view = core.getView(str('viewId')), document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(view.id, document.model.url); core.activate(view.id, actor); return {}; }
+    case 'mode': { const mode = str('mode'); if (!['read', 'source', 'split'].includes(mode)) throw new ViewerError('INVALID_ARGUMENT', '未知视图模式。'); core.setMode(str('viewId'), mode as ViewInfo['mode']); return {}; }
+    case 'duplicate-view': { const view = core.getView(str('viewId')), next = core.addView(view.documentId, args.windowId as string | undefined ?? view.windowId), document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(next.id, document.model.url); return next; }
+    case 'close': core.closeView(str('viewId'), !!args.retainRecovery); return {};
+    case 'context': return args.snapshotId ? core.readSnapshot(str('snapshotId')).context : core.context(viewId);
+    case 'selection': return (args.snapshotId ? core.readSnapshot(str('snapshotId')).context : await core.context(viewId)).selection;
+    case 'report-context': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '外部 harness 不能伪造界面上下文。'); core.updateContext(str('viewId'), args.context as Partial<ReadingContext>, actor); return {};
+    case 'snapshot': return core.snapshot(viewId);
+    case 'snapshot-read': return core.readSnapshot(str('snapshotId'));
+    case 'read': { const document = args.snapshotId ? core.readSnapshot(str('snapshotId')).document : core.getDocument(str('documentId')).info; return { ...document.model, revision: document.revision, warnings: document.warnings }; }
+    case 'outline': { const d = core.getDocument(str('documentId')).info; return d.model.slides?.map(s => ({ id: s.id, title: s.blocks[0]?.text })) ?? d.model.sheets?.map(s => ({ id: s.id, title: s.name })) ?? d.model.blocks?.filter(b => b.style?.startsWith('Heading')).map(b => ({ id: b.id, title: b.text })) ?? (d.model.text ?? '').split('\n').filter(t => /^#{1,6} /.test(t)); }
+    case 'search': { const d = core.getDocument(str('documentId')).info; const text = d.model.text ?? d.model.blocks?.map(b => b.text).join('\n') ?? ''; const query = str('query'); if (!query) throw new ViewerError('INVALID_ARGUMENT', '搜索词不能为空。'); const results = []; let offset = 0; while ((offset = text.indexOf(query, offset)) !== -1 && results.length < 200) { results.push({ from: offset, to: offset + query.length, quote: text.slice(Math.max(0, offset - 60), offset + query.length + 60), revision: d.revision }); offset += query.length; } return { results, scope: d.model.text !== undefined || d.model.blocks ? 'text' : 'unsupported', revision: d.revision }; }
+    case 'prepare': return core.prepare(str('documentId'), Number(args.expectedRevision), args.operation as EditOperation);
+    case 'commit': return core.commit(str('patchId'), str('idempotencyKey'), actor);
+    case 'undo': return core.undo(str('transactionId'));
+    case 'save': return core.save(str('documentId'), args.path as string | undefined, actor === 'human' && !!args.allowOverwrite);
+    case 'browser-input': return core.browserInput(browserRequestSchema.parse(args));
+    case 'browser-capture': if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。'); return core.browser.capture(str('viewId'));
+    case 'browser-navigate': if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。'); await core.browser.navigate(str('viewId'), str('action') as 'back' | 'forward' | 'reload' | 'url', args.url as string | undefined); return {};
+    case 'browser-copy': return core.browserCopy(str('viewId'));
+    case 'browser-layout': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '布局由桌面工作台管理。'); core.browser?.layout(String(args.windowId ?? 'main'), args.views as { viewId: string; bounds: Rect }[]); return {};
+    case 'harness-submit': return core.submitTask(str('driverId'), str('prompt'), viewId, typeof args.snapshotId === 'string' ? args.snapshotId : undefined);
+    case 'harness-cancel': core.cancelTask(str('taskId')); return {};
+    case 'harness-list': return [...core.drivers.values()].map(d => ({ id: d.id, capabilities: d.capabilities }));
+    default: throw new ViewerError('METHOD_UNSUPPORTED', `未知方法：${method}`);
+  }
+}

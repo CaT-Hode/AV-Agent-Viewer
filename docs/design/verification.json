@@ -1,0 +1,38 @@
+{
+  "validatedOn": "2026-10-09",
+  "applicationVersion": "0.1.0",
+  "protocolVersion": "1.0",
+  "build": { "passed": true, "includes": ["TypeScript", "Electron and preload", "stdio MCP", "Vite production"], "note": "CodeMirror lazy chunk exceeds 500 KB; capacity benchmark remains pending" },
+  "coreTests": { "passed": 9, "failed": 0, "source": "tests/core.test.ts" },
+  "desktopTests": {
+    "passed": true,
+    "processExitCode": 0,
+    "source": "tests/desktop.e2e.ts",
+    "viewport": { "width": 1586, "height": 992, "deviceScaleFactor": 1.5 },
+    "rendererErrors": [],
+    "evidenceDirectory": "C:/Users/cth/AppData/Local/Temp/agentviewer-e2e-UiVisS/evidence",
+    "checks": [
+      "Markdown selection, source edit, split, disk save",
+      "DOCX/PPTX/XLSX UI edits and saved file reopen",
+      "PDF Chinese overlay, new page and save",
+      "HTML source save, sanitized preview and visible content",
+      "Native browser click, Unicode insertion, End key, drag and wheel",
+      "Input idempotency, stale viewport and stale navigation rejection",
+      "PNG bitmap dimensions match encoded image; CSS viewport remains separate",
+      "MCP discovery launcher, context and image content",
+      "Origin and remote page API isolation",
+      "Known sensitive field filtering and safe reading copy",
+      "Independent native browser views and multiple BrowserWindows",
+      "Graceful application shutdown"
+    ]
+  },
+  "notValidated": [
+    "Complete P0 requirement acceptance",
+    "Full Office engine and legacy format conversion",
+    "PDF forms and native annotations",
+    "Cross-frame browser semantics and complete offline assets",
+    "Real Codex model roundtrip and interaction approvals",
+    "Codex plugin installation and packaging",
+    "Performance P95 and large mixed workload"
+  ]
+}

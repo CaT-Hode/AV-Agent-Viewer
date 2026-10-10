@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 9 274 214" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">AgentViewer</title>
+  <desc id="desc">A folded blue ribbon forms an A and V around a single viewing eye.</desc>
+  <defs>
+    <linearGradient id="lead" x1="22" y1="151" x2="120" y2="20" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173998"/>
+      <stop offset=".46" stop-color="#086BE2"/>
+      <stop offset="1" stop-color="#18B9F1"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="43" y1="144" x2="91" y2="113" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#071C48"/>
+      <stop offset="1" stop-color="#096FC5"/>
+    </linearGradient>
+    <linearGradient id="sweep" x1="111" y1="47" x2="201" y2="157" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#082454"/>
+      <stop offset=".48" stop-color="#087FCB"/>
+      <stop offset="1" stop-color="#12C7DF"/>
+    </linearGradient>
+    <radialGradient id="eye" cx="0" cy="0" r="1" gradientTransform="translate(101 127) rotate(133) scale(30)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#159FE6"/>
+      <stop offset=".56" stop-color="#076CB7"/>
+      <stop offset="1" stop-color="#061B46"/>
+    </radialGradient>
+  </defs>
+  <g transform="translate(0 2) scale(1 1.22)">
+    <path d="M15 140 76 30C87 10 112 10 124 31l17 28c-15-12-34-10-44 7l-40 69c-5 8-13 12-23 12H17q-7 0-2-7Z" fill="url(#lead)"/>
+    <path d="M57 135 72 110 77 116q3 4-1 8l-20 16q-10 6-22 7 14-1 23-12Z" fill="url(#fold)"/>
+    <path d="M97 66c11-18 31-17 42 1l39 65c4 7 11 7 15-1l39-66c9-15 20-21 37-21h11l-67 109c-15 25-49 26-64-1L97 66Z" fill="url(#sweep)"/>
+  </g>
+  <circle cx="94" cy="135" r="17" fill="url(#eye)"/>
+  <circle cx="100" cy="129" r="4.2" fill="#F7FEFF"/>
+</svg>

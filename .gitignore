@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.agentviewer/
+.engines/
+release/
+*.log
+coverage/
+test-results/
+playwright-report/
+artifacts/
+.claude/
+.env
+.env.*
+!.env.example

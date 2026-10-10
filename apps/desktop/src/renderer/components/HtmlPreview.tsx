@@ -1,0 +1,14 @@
+import { useEffect, useMemo, useRef } from 'react';
+import DOMPurify from 'dompurify';
+import { readContextScript } from '../../../../../packages/browser-runtime/src/context-script';
+export function HtmlPreview({ html, onContext, highlights=[] }: { html: string; highlights?: string[]; onContext(text: string, selected: string, scrollTop: number, rect?: {x:number;y:number;width:number;height:number}): void }) {
+  const frame = useRef<HTMLIFrameElement>(null), callback = useRef(onContext); callback.current = onContext;
+  const highlightJson=JSON.stringify(highlights).replace(/</g,'\\u003c');
+  const source = useMemo(() => {
+    const clean = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: true });
+    const script = `<script>(()=>{const send=()=>{const data=${readContextScript};parent.postMessage({type:'agentviewer-html-context',text:data.visibleText,selected:data.selection,scrollTop:data.scrollY,rect:data.selectionRect},'*')};addEventListener('scroll',send,{passive:true,capture:true});addEventListener('mouseup',send);addEventListener('keyup',send);addEventListener('load',send);setTimeout(send,150);setTimeout(()=>{const quotes=${highlightJson},ranges=[];const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),nodes=[];let node,text='';while(node=walker.nextNode()){if(['SCRIPT','STYLE'].includes(node.parentElement?.tagName))continue;nodes.push(node);text+=node.textContent}for(const quote of quotes){const from=text.indexOf(quote);if(!quote||from<0||text.indexOf(quote,from+1)>=0)continue;const r=document.createRange();let offset=0,started=false;for(const n of nodes){const end=offset+n.length;if(!started&&from<end){r.setStart(n,from-offset);started=true}if(started&&from+quote.length<=end){r.setEnd(n,from+quote.length-offset);ranges.push(r);break}offset=end}}CSS.highlights.set('reader-notes',new Highlight(...ranges));const style=document.createElement('style');style.textContent='::highlight(reader-notes){background:#ffd95488;color:inherit}';document.head.append(style)},100)})();<\/script>`;
+    return clean + script;
+  }, [html,highlightJson]);
+  useEffect(() => { const receive = (event: MessageEvent) => { if (event.source === frame.current?.contentWindow && event.data?.type === 'agentviewer-html-context') callback.current(String(event.data.text ?? ''), String(event.data.selected ?? ''), Number(event.data.scrollTop ?? 0), event.data.rect ? { ...event.data.rect, x: Number(event.data.rect.x)+frame.current!.getBoundingClientRect().x, y:Number(event.data.rect.y)+frame.current!.getBoundingClientRect().y } : undefined); }; window.addEventListener('message', receive); return () => window.removeEventListener('message', receive); }, []);
+  return <iframe ref={frame} title="HTML 阅读预览" sandbox="allow-scripts" className="html-preview" srcDoc={source} />;
+}

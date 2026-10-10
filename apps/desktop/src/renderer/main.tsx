@@ -1,0 +1,12 @@
+import { SelectionTools } from './components/SelectionTools';
+import { TooltipHost } from './TooltipHost';
+import { createRoot } from 'react-dom/client';
+import { WebToolbar } from './WebToolbar';
+import { App } from './App';
+import { SettingsApp } from './SettingsApp';
+import './styles.css';
+import './new-ui.css';
+import './dark-theme.css';
+import './motion.css';
+import './liquid-glass.css';
+createRoot(document.getElementById('root')!).render(<>{location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}<TooltipHost /></>);

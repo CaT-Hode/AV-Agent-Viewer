@@ -1,0 +1,130 @@
+/* Dark surfaces, controls and dividers share one palette across all windows.
+   Every value is neutral: no blue cast in any surface, text, divider, accent
+   or selection. Lightness is preserved from the previous blue-tinted ramp, so
+   only hue changed. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #171717;
+  --sidebar: #1d1d1d;
+  --surface: #262626;
+  --surface-hover: #303030;
+  --ink: #e8e8e8;
+  --soft: #a8a8a8;
+  --muted: #8e8e8e;
+  --line: #3b3b3b;
+  --divider: rgb(255 255 255 / 9%);
+  --accent: #c9c9c9;
+  --accent-soft: #333333;
+  --chrome: #1d1d1d;
+  --shadow: 0 16px 44px #00000050;
+  color: var(--ink);
+  background: var(--paper);
+  accent-color: #a3a3a3;
+  scrollbar-color: #4a4a4a transparent;
+}
+:root[data-theme="dark"] * { scrollbar-width: thin; scrollbar-color: #4a4a4a transparent; }
+:root[data-theme="dark"] ::selection { background: #4a4a4a; color: #f5f5f5; }
+:root[data-theme="dark"] input::placeholder,
+:root[data-theme="dark"] textarea::placeholder { color: #8a8a8a; opacity: 1; }
+:root[data-theme="dark"] :is(button,input,select,textarea):focus-visible { outline: 2px solid #c9c9c9; outline-offset: 3px; }
+:root[data-theme="dark"] :is(.app-shell,.settings-shell) { color: var(--ink); background: var(--paper); }
+:root[data-theme="dark"] :is(.tab-strip,.status-bar,.settings-titlebar,.settings-footer) { background: #1b1b1b; color: var(--soft); border-color: var(--divider); }
+:root[data-theme="dark"] :is(.brand-mark,.settings-brand-mark) { background: transparent; padding: 0; }
+:root[data-theme="dark"] .brand-wordmark span:last-child { color: #d4d4d4; }
+:root[data-theme="dark"] :is(.brand:hover,.brand.active,.tab:hover,.icon-button:hover,.window-controls button:hover) { background: #2b2b2b; color: var(--ink); }
+:root[data-theme="dark"] .window-controls button:last-child:hover { background: #ba4856; color: white; }
+:root[data-theme="dark"] .tab { color: #adadad; }
+:root[data-theme="dark"] .tab.active { background: #2e2e2e; color: #f0f0f0; box-shadow: inset 0 1px #ffffff08,0 3px 10px #00000020; }
+:root[data-theme="dark"] :is(.home-sidebar,.settings-nav) { background: var(--sidebar); border-color: var(--divider); }
+:root[data-theme="dark"] :is(.settings-main,.home-main) { background: radial-gradient(ellipse at 90% 0%,#30303030,transparent 55%),var(--paper); }
+
+/* Settings: readable inactive rows, quiet separators and native dark controls. */
+:root[data-theme="dark"] :is(.settings-nav-heading,.settings-top h1,.setting-label,.connection-section h2) { color: var(--ink); }
+:root[data-theme="dark"] .settings-nav section p { color: #8c8c8c; }
+:root[data-theme="dark"] .settings-nav section button { color: #b0b0b0; }
+:root[data-theme="dark"] .settings-nav section button:hover { background: #2b2b2b; color: #f0f0f0; }
+:root[data-theme="dark"] .settings-nav section button.selected { background: var(--accent-soft); color: #e8e8e8; box-shadow: inset 2px 0 #b8b8b8; }
+:root[data-theme="dark"] :is(.settings-top,.setting-row,.home-hero) { border-color: var(--divider); }
+:root[data-theme="dark"] .settings-eyebrow { color: #b4b4b4; letter-spacing: .13em; }
+:root[data-theme="dark"] :is(.settings-top p,.settings-filter,.setting-copy p,.connection-section>p) { color: #a5a5a5; }
+:root[data-theme="dark"] :is(.setting-copy small,.connection-card small) { color: #909090; }
+:root[data-theme="dark"] .setting-row.unavailable { opacity: 1; }
+:root[data-theme="dark"] .setting-row.unavailable .setting-label { color: #a8a8a8; }
+:root[data-theme="dark"] .setting-row.unavailable .setting-control { opacity: .48; }
+:root[data-theme="dark"] .dependency-note { color: #a8a8a8 !important; }
+:root[data-theme="dark"] :is(.settings-search,.search-field) { background: #242424; border-color: #3a3a3a; color: #a8a8a8; box-shadow: inset 0 1px #ffffff03; }
+:root[data-theme="dark"] :is(.settings-search input,.search-field input) { color: var(--ink); }
+:root[data-theme="dark"] :is(.setting-control select,.setting-control input,.connection-form input,.connection-form select,.connection-section .setting-row select,.office-field input,.office-field select,.pdf-side-label input,.modal-input) { color: var(--ink); background: #2a2a2a; border-color: #454545; box-shadow: inset 0 1px #ffffff03; }
+:root[data-theme="dark"] select option { background: #2a2a2a; color: var(--ink); }
+:root[data-theme="dark"] .setting-switch { background: #4d4d4d; box-shadow: inset 0 1px 2px #0003; }
+:root[data-theme="dark"] .setting-switch.on { background: #8f8f8f; }
+:root[data-theme="dark"] .setting-switch span { background: #ebebeb; box-shadow: 0 1px 3px #00000040; }
+:root[data-theme="dark"] .setting-reset { color: #bcbcbc; }
+:root[data-theme="dark"] .modified-dot { background: #c9c9c9; }
+:root[data-theme="dark"] .settings-footer span:first-child,
+:root[data-theme="dark"] .settings-notice { color: #91c3ad; }
+:root[data-theme="dark"] :is(.settings-error,.translation-error,.error-text) { color: #eca4ad; }
+
+/* Reusable surfaces and selected states, including home and AI drawers. */
+:root[data-theme="dark"] :is(.recent-card,.artifact-row,.location-chip,.tool-grid button,.job-card,.connection-card,.modal,.new-format-list button,.office-action,.office-segment,.pdf-side-result) { background: var(--surface); color: var(--ink); border-color: var(--divider); box-shadow: 0 3px 12px #00000014; }
+:root[data-theme="dark"] :is(.button,.slide-nav button,.sheet-tabs button,.pdf-tools button) { background: #2e2e2e; border-color: #454545; color: #e2e2e2; }
+:root[data-theme="dark"] :is(.button:hover,.recent-card:hover,.artifact-row:hover,.tool-grid button:hover,.new-format-list button:hover,.office-action:hover) { background: #343434; border-color: #575757; }
+:root[data-theme="dark"] .button.primary { background: #6e6e6e; border-color: #828282; color: #fff; }
+:root[data-theme="dark"] .button.primary:hover { background: #7d7d7d; }
+:root[data-theme="dark"] :is(.home-tree .file-row:hover,.outline-item:hover,.tool-row:hover,.activity-rail button:hover,.ai-rail button:hover) { background: #313131; color: #e4e4e4; }
+:root[data-theme="dark"] :is(.file-row.selected,.activity-rail button.selected,.ai-rail button.selected,.view-modes button.selected,.pdf-side-tools .tool-row.selected,.office-segment button.selected,.sheet-tabs .selected) { background: var(--accent-soft); color: #e8e8e8; border-color: transparent; }
+:root[data-theme="dark"] .office-segment button:hover { background: #3a3a3a; color: #ececec; }
+:root[data-theme="dark"] :is(.home-hero h1,.home-section-title h2,.drawer-heading h2,.capsule-document-title,.translation-result) { color: var(--ink); }
+:root[data-theme="dark"] :is(.home-hero p,.home-muted,.home-section-title span,.recent-card small,.outline-item,.tool-row,.office-field,.pdf-side-label,.harness-line,.location-chip,.modal p) { color: #b2b2b2; }
+:root[data-theme="dark"] :is(.tree-caption,.side-label,.side-hint,.home-sidebar-head,.format-heading,.job-card>span,.translation-loading,.translation-card details,.settings-empty) { color: #9c9c9c; }
+:root[data-theme="dark"] :is(.home-kicker,.eyebrow,.translation-card-top) { color: #c0c0c0; }
+:root[data-theme="dark"] :is(.connection-card button,.translation-actions button,.popover-expand,.harness-line button,.job-card>button,.tool-grid button svg,.capsule-document-title svg) { color: #cfcfcf; }
+:root[data-theme="dark"] .recent-icon { background: #363636; color: #d6d6d6; }
+:root[data-theme="dark"] :is(.context-summary,.selection-preview) { background: #2c2c2c; color: #c8c8c8; border-color: #5a5a5a; }
+:root[data-theme="dark"] :is(.translation-card details p,.prompt-box textarea) { color: #c4c4c4; }
+:root[data-theme="dark"] :is(.prompt-box,.prompt-box textarea) { background: #202020; border-color: #404040; }
+:root[data-theme="dark"] :is(.translation-card details,.translation-actions,.popover-expand,.drawer-heading,.activity-rail .rail-collapse) { border-color: var(--divider); }
+:root[data-theme="dark"] .translation-card { background: transparent; }
+:root[data-theme="dark"] .rail-dot { background: #c9c9c9; border-color: #2b2b2b; }
+:root[data-theme="dark"] .toast { background: #3a3a3a; color: #ededed; border: 1px solid #585858; box-shadow: var(--shadow); }
+:root[data-theme="dark"] .engine-notice { background: #292a28; color: #c0b8a2; border-color: #b3a67a1a; }
+
+/* Glass reads as a dark floating material, without bright outlines.
+   The material itself — fill, frost, shadow — is owned by
+   liquid-glass.css §2–§5, which derives it from the dark triplets in §1.
+   Only the page's own artwork stays here. */
+:root[data-theme="dark"] .workbench .reader-panel { border-color: #0000001c; box-shadow: 0 12px 32px #00000024; }
+:root[data-theme="dark"] .floating-capsule .address-input { background: #222222; color: var(--ink); border-color: #ffffff26; }
+:root[data-theme="dark"] .capsule-divider { background: #ffffff26; }
+:root[data-theme="dark"] .view-modes button { color: #b2b2b2; }
+:root[data-theme="dark"] .agent-pulse { background: #cfcfcf; box-shadow: 0 0 0 4px #a0a0a024; }
+
+/* Reflowed documents follow the theme; fixed Office/PDF page artwork keeps its own paper. */
+:root[data-theme="dark"] .prose { color: #d8d8d8; }
+:root[data-theme="dark"] .prose :is(h1,h2,h3,h4) { color: #eee; }
+:root[data-theme="dark"] .prose h1+p { color: #b4b4b4; }
+:root[data-theme="dark"] .prose :is(pre,blockquote) { background: #242424; border-color: #6a6a6a; }
+:root[data-theme="dark"] .prose :is(th,td) { border-color: #404040; }
+:root[data-theme="dark"] .prose th { background: #2e2e2e; }
+:root[data-theme="dark"] .prose :is(th,blockquote) { color: #dcdcdc; }
+:root[data-theme="dark"] .prose :is(hr,del) { border-color: #404040; color: #a5a5a5; }
+:root[data-theme="dark"] .prose :not(pre)>code { color: #e0e0e0; background: #ffffff12; border-radius: 4px; padding: .12em .3em; }
+:root[data-theme="dark"] .prose li::marker { color: #b0b0b0; }
+:root[data-theme="dark"] .source-editor .cm-editor { color: #e0e0e0; background: #222; }
+:root[data-theme="dark"] .source-editor .cm-gutters { color: #909090; background: #262626; }
+:root[data-theme="dark"] .source-editor :is(.cm-activeLine,.cm-activeLineGutter) { background: #ffffff15; }
+:root[data-theme="dark"] .source-editor .cm-cursor { border-color: #e0e0e0; }
+:root[data-theme="dark"] .source-editor .cm-selectionBackground { background: #4a4a4a !important; }
+:root[data-theme="dark"] .prose a { color: #cfcfcf; }
+:root[data-theme="dark"] :is(.word-page,.slide-canvas) { color: #273143; border-color: #59616d; }
+:root[data-theme="dark"] :is(.sheets-reader,.sheet-grid input) { background: #232323; color: #d8d8d8; }
+:root[data-theme="dark"] :is(.sheet-tabs,.sheet-grid th) { background: #2c2c2c; color: #b8b8b8; }
+:root[data-theme="dark"] :is(.sheet-grid th,.sheet-grid td) { border-color: #3e3e3e; }
+:root[data-theme="dark"] .sheet-grid input:focus { background: #3a3a3a; outline-color: #c9c9c9; }
+:root[data-theme="dark"][data-document-background="paper"] .reader-panel { background: radial-gradient(ellipse at 84% 10%,#3a363270,transparent 50%),#262626; }
+:root[data-theme="dark"][data-document-background="mist"] .reader-panel { background: radial-gradient(ellipse at 14% 7%,#3a444675,transparent 55%),#242424; }
+:root[data-theme="dark"][data-document-background="aurora"] .reader-panel { background: radial-gradient(ellipse at 15% 8%,#39434770,transparent 52%),radial-gradient(ellipse at 89% 79%,#3d3a3f65,transparent 58%),#262626; }
+:root[data-theme="dark"][data-document-background="dusk"] .reader-panel { background: radial-gradient(ellipse at 15% 15%,#3f3a3b70,transparent 50%),radial-gradient(ellipse at 87% 84%,#3b3b3d60,transparent 55%),#282828; }
+:root[data-theme="dark"][data-document-background="solid"] .reader-panel { background: #262626; }
+:root[data-theme="dark"][data-contrast="high"] { --divider: #6e6e6e; --line: #8a8a8a; --soft: #c8c8c8; }
+:root[data-theme="dark"][data-contrast="high"] :is(.setting-copy small,.side-hint,.setting-row.unavailable .setting-label,.dependency-note) { color: #c0c0c0 !important; }

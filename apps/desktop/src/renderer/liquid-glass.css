@@ -1,0 +1,909 @@
+/* ============================================================================
+   Liquid Glass — material system for AgentViewer
+   Direction: restrained high-craft. One continuous glass material over a living
+   aura field; the reader is a near-opaque sheet resting on top of it.
+
+   Four ingredients, always together (see references/liquid-glass.md):
+     1. heavy blur          2. saturation boost
+     3. specular top lip    4. a colored aura behind it to refract
+
+   Structure:
+     §1 tokens   §2 atmosphere   §3 material mixins   §4 pane surfaces
+     §5 floating surfaces   §6 inset surfaces   §7 native toolbar window
+     §8 overrides (glass off / contrast / reduced transparency)
+     §9 scrollbars
+   ========================================================================== */
+
+/* ── §1 tokens ─────────────────────────────────────────────────────────── */
+:root {
+  /* Brand triplets — the entire palette derives from these. */
+  --glass-primary: 53 127 188;
+  --glass-primary-soft: 135 192 227;
+  --glass-accent: 80 172 166;
+
+  /* Surface colors */
+  --glass-panel: #f5f9fc;
+  --glass-elevated: #ffffff;
+  --glass-canvas: #edf2f5;
+  --glass-ink: #253746;
+
+  /* Translucency ladder — panel → glass → menu (increasing opacity).
+     Panes sit at 58%: opaque enough to hold a 12px label without a scrim,
+     thin enough that the aura and the canvas gradient still move under them. */
+  --glass-fill: color-mix(in srgb, var(--glass-panel) 58%, transparent);
+  --glass-panel-fill: color-mix(in srgb, var(--glass-panel) 58%, transparent);
+  --glass-menu-fill: color-mix(in srgb, var(--glass-panel) 92%, transparent);
+
+  /* No glare. Specular highlights are deliberately absent: no 1px white lip,
+     no diagonal wet-wash, no travelling sheen. Glass here reads from its
+     frost, its frost's shadow, and a hairline border — nothing catches light.
+     Both tokens are kept declared (rather than deleted) because roughly ten
+     surfaces still name them in `box-shadow`; transparent takes those
+     declarations out of the paint without leaving dangling references. */
+  --glass-edge: rgb(255 255 255 / .62);
+  --glass-specular: transparent;
+  --glass-specular-soft: transparent;
+  /* A neutral hairline in place of the old top lip: still defines where the
+     pane ends, but reads as an edge rather than a highlight. */
+  --glass-lip: inset 0 1px rgb(20 40 62 / .05);
+
+  /* Interior surfaces (tiles sitting ON glass — never their own blur).
+     Critically, there is NO bright top lip down here. A lit top edge means
+     "raised and lit from above"; putting one on a tile that already sits on a
+     lit panel gives two inner glows competing on the same axis and the nesting
+     stops reading. Interior surfaces recede instead: a neutral (not white)
+     top hairline, a soft dark top inset, and a cast shadow. */
+  --glass-inset: rgb(var(--glass-primary-soft) / .12);
+  --glass-inset-hairline: rgb(37 55 70 / .07);
+  --glass-inset-shade: inset 0 1px rgb(37 55 70 / .05);
+  --glass-inset-cast: 0 3px 8px -6px rgb(24 50 69 / .3);
+  --glass-hover: rgb(var(--glass-primary-soft) / .23);
+
+  /* Depth: ambient occlusion + contact shadow, the iOS two-part shadow. */
+  --glass-shadow:
+    0 10px 32px -14px rgb(24 50 69 / .26),
+    0 2px 6px rgb(24 50 69 / .04);
+  --glass-shadow-lift:
+    0 22px 52px -20px rgb(24 50 69 / .34),
+    0 4px 12px -4px rgb(24 50 69 / .08);
+
+  /* Frost parameters. `--glass-aura` is the whole ballgame: it is the only
+     colour in the canvas, and the frost has nothing to refract without it.
+     The blur stays deliberately low: a large radius smears the canvas into a
+     flat milk and erases the aura's shape, which is the only thing making the
+     glass read. 22px keeps the blobs legible *through* the frost. */
+  --glass-blur: 22px;
+  --glass-saturation: 1.9;
+  --glass-aura: .34;
+
+  /* The canvas the aura drifts over. Directional light from the top-left over a
+     cool, mid-tone base — a canvas darker than the panes is what lets the glass
+     read as *lifted* rather than as a slightly-off white. */
+  --glass-canvas-fill:
+    radial-gradient(74% 58% at 6% -8%, rgb(255 255 255 / .74), transparent 72%),
+    linear-gradient(145deg, #e4ebf1, #cdd9e5);
+
+  /* The one filter every real glass surface shares. */
+  --glass-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+
+  /* Corner radii — concentric (outer = inner + padding), iOS-style. */
+  --glass-r-pane: 20px;
+  --glass-r-card: 13px;
+  --glass-r-tile: 9px;
+  --glass-r-menu: 20px;
+  --glass-r-pill: 999px;
+
+  /* Motion — Core Animation's ease-io + a spring-flavoured settle. */
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+  --ease-io: cubic-bezier(.25, 1, .5, 1);
+  --ease-drawer: cubic-bezier(.32, .72, 0, 1);
+  --ease-spring: cubic-bezier(.34, 1.32, .44, 1);
+  --dur-press: 260ms;
+  --dur-surface: 340ms;
+  --dur-sheet: 420ms;
+}
+
+/* Dark theme: strictly neutral. Every value here is a pure grey — no blue
+   cast anywhere. The brand triplets are re-pointed to grey at the top of the
+   block so the ~8 surfaces that tint themselves with `--glass-primary-soft`
+   (pane edges, inset fills, hover, the canvas glow) all go neutral without
+   each needing its own override. This intentionally diverges from the light
+   theme, which keeps the blue brand.
+   Glass in the dark reads as a floating dark material — no bright outlines. */
+:root[data-theme="dark"] {
+  /* Grey stand-ins for the brand triplets. The light theme's soft is
+     `135 192 227` (a pale blue); this is the same *lightness* with the chroma
+     stripped out, so edge/inset/hover opacities keep their designed weight. */
+  --glass-primary: 128 128 128;
+  --glass-primary-soft: 178 178 178;
+
+  --glass-panel: #232323;
+  --glass-elevated: #3a3a3a;
+  --glass-canvas: #171717;
+  --glass-ink: #e6e6e6;
+
+  --glass-fill: color-mix(in srgb, var(--glass-panel) 56%, transparent);
+  --glass-panel-fill: color-mix(in srgb, var(--glass-panel) 56%, transparent);
+  --glass-menu-fill: color-mix(in srgb, var(--glass-panel) 92%, transparent);
+
+  --glass-edge: rgb(var(--glass-primary-soft) / .17);
+  --glass-specular: transparent;
+  --glass-specular-soft: transparent;
+  --glass-lip: inset 0 1px rgb(0 0 0 / .3);
+
+  --glass-inset: rgb(var(--glass-primary-soft) / .065);
+  --glass-inset-hairline: rgb(255 255 255 / .09);
+  --glass-inset-shade: inset 0 1px rgb(0 0 0 / .22);
+  --glass-inset-cast: 0 3px 10px -6px rgb(0 0 0 / .5);
+  --glass-hover: rgb(var(--glass-primary-soft) / .13);
+
+  --glass-shadow:
+    0 12px 36px -16px rgb(0 0 0 / .6),
+    0 2px 6px rgb(0 0 0 / .12);
+  --glass-shadow-lift:
+    0 26px 58px -22px rgb(0 0 0 / .72),
+    0 4px 14px -4px rgb(0 0 0 / .3);
+
+  --glass-blur: 26px;
+  --glass-saturation: 2.05;
+  --glass-aura: .3;
+
+  --glass-canvas-fill:
+    radial-gradient(74% 58% at 6% -8%, rgb(var(--glass-primary-soft) / .14), transparent 72%),
+    linear-gradient(145deg, #191919, #232323);
+}
+
+/* Enhanced tier — the user asked for more frost, so give it real depth.
+   Still below the old 34px baseline at the pane level; the extra reading comes
+   from a thinner fill and more saturation, not from a bigger smear. */
+:root[data-glass="enhanced"] {
+  --glass-blur: 34px;
+  --glass-saturation: 2.25;
+  --glass-fill: color-mix(in srgb, var(--glass-panel) 30%, transparent);
+  --glass-panel-fill: color-mix(in srgb, var(--glass-panel) 32%, transparent);
+  --glass-aura: .24;
+}
+:root[data-theme="dark"][data-glass="enhanced"] {
+  --glass-fill: color-mix(in srgb, var(--glass-panel) 34%, transparent);
+  --glass-panel-fill: color-mix(in srgb, var(--glass-panel) 36%, transparent);
+  --glass-aura: .3;
+}
+
+/* ── §2 atmosphere — the thing the glass refracts ──────────────────────── */
+
+/* The aura field lives on the shell (not the workbench) so it sits *behind*
+   every pane and keeps drifting under them. Two layers:
+     ::before — three soft color wells, drifting and breathing
+     ::after  — a fine grain that kills gradient banding
+   Both are inert: no pointer events, negative z, never above content. */
+/* `position: relative; z-index: 0` opens a stacking context for the aura
+   layers without `isolation`, which would become the containing block for the
+   app's position:fixed surfaces (toast, selection bubble, tooltip host). */
+.app-shell,
+.settings-shell {
+  position: relative;
+  z-index: 0;
+  background: var(--glass-canvas-fill);
+}
+
+.app-shell::before,
+.settings-shell::before {
+  content: "";
+  position: absolute;
+  inset: -18%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 44% at 14% 16%, rgb(var(--glass-primary-soft) / var(--glass-aura)), transparent 62%),
+    radial-gradient(40% 46% at 88% 26%, rgb(var(--glass-accent) / var(--glass-aura)), transparent 64%),
+    radial-gradient(46% 52% at 62% 92%, rgb(var(--glass-primary) / calc(var(--glass-aura) * .78)), transparent 66%);
+  animation: aura-drift 46s var(--ease-io) infinite;
+  will-change: transform;
+}
+
+/* Grain. Two offsets of the same noise read as film grain rather than tiling. */
+.app-shell::after,
+.settings-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: .032;
+  background-image:
+    repeating-conic-gradient(#000 0% 25%, transparent 0% 50%),
+    repeating-conic-gradient(#000 0% 25%, transparent 0% 50%);
+  background-size: 3px 3px, 5px 5px;
+  background-position: 0 0, 1.5px 1.5px;
+}
+:root[data-theme="dark"] .app-shell::after,
+:root[data-theme="dark"] .settings-shell::after { opacity: .05; }
+
+@keyframes aura-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33%      { transform: translate3d(-2.6%, 2.2%, 0) scale(1.06); }
+  66%      { transform: translate3d(2.2%, -1.8%, 0) scale(.96); }
+}
+
+/* Every canvas between the panes is transparent — the shell aura is the
+   backdrop, and it shows through the gutters so the glass has something to
+   refract. Each of these out-specifies the opaque theme backgrounds in
+   new-ui.css (`.workbench`, the dark `.workbench` gradient) and
+   dark-theme.css (`.settings-main`/`.home-main`). */
+:root[data-theme] .workbench:not(.native-toolbar),
+:root[data-theme] .home-layout,
+:root[data-theme] .home-main,
+:root[data-theme] .settings-main {
+  background: transparent;
+}
+
+/* The reading sheet is the one surface that does NOT go transparent. Its fill
+   comes from the document-background preference (paper / mist / aurora / dusk /
+   solid), and every one of those ends in an opaque base colour — so body text
+   never sits on the aura. The glass reads as the chrome floating around the
+   sheet, which is exactly the "reader: near-opaque" call. */
+
+/* ── §3 material mixins ────────────────────────────────────────────────── */
+
+/* PANE — large structural panels: rail, sidebar, drawer, settings nav.
+   `background-clip: padding-box` + a transparent border keeps the frost from
+   bleeding under the stroke, and the two insets give the iOS glass lip:
+   a bright 1px top edge and a faint 1px bottom edge. */
+:root[data-theme] :is(
+  .workbench .activity-rail,
+  .workbench .format-sidebar,
+  .workbench .ai-drawer,
+  .workbench .ai-rail,
+  .home-sidebar,
+  .settings-nav
+) {
+  position: relative;
+  background: var(--glass-panel-fill);
+  background-clip: padding-box;
+  color: var(--glass-ink);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--glass-r-pane);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow:
+    var(--glass-shadow),
+    inset 0 1px var(--glass-specular),
+    inset 1px 0 rgb(255 255 255 / .18),
+    inset 0 -1px rgb(var(--glass-primary) / .06);
+  transition:
+    box-shadow var(--dur-surface) var(--ease-io),
+    border-color var(--dur-surface) var(--ease-io),
+    background-color var(--dur-surface) var(--ease-io);
+}
+
+/* The travelling sheen sweep is gone — it was the most literal glare in the
+   material and it read as a light source that the frosted pane does not have.
+   The pseudo-element is removed rather than merely hidden so nothing animates
+   in the background. The `--sheen-index` declarations further down are now
+   inert; they are left in place only as a record of the old stagger. */
+
+@keyframes sheen-sweep {
+  0%   { background-position: 165% 0; opacity: 0; }
+  12%  { opacity: 1; }
+  38%  { background-position: -60% 0; opacity: 0; }
+  100% { background-position: -60% 0; opacity: 0; }
+}
+
+/* Stagger the sweep so the panes never glint in unison. */
+.workbench .activity-rail              { --sheen-index: 0; }
+.workbench .format-sidebar             { --sheen-index: 1; }
+.workbench .ai-drawer                  { --sheen-index: 2; }
+.workbench .ai-rail                    { --sheen-index: 3; }
+.home-sidebar                          { --sheen-index: 0; }
+
+/* PANE (inset variant) — the settings nav is flush against the window edge,
+   so it has no left border or left corners. */
+:root[data-theme] .settings-nav {
+  border-radius: 0;
+  border-width: 0 1px 0 0;
+  box-shadow: inset 0 1px var(--glass-specular), inset -1px 0 rgb(var(--glass-primary) / .06);
+}
+:root[data-theme] .home-sidebar { border-radius: 0 var(--glass-r-pane) var(--glass-r-pane) 0; }
+
+/* FLOAT — surfaces that sit *above* the page: capsule, popovers, modal, toast.
+   Same frost, deeper shadow so they lift off the sheet. */
+:root[data-theme] :is(
+  .workbench .reader-toolbar .floating-capsule,
+  .selection-tool-icons,
+  .agent-capsule
+) {
+  position: relative;
+  background: var(--glass-fill);
+  background-clip: padding-box;
+  color: var(--glass-ink);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--glass-r-pill);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow:
+    var(--glass-shadow),
+    inset 0 1px var(--glass-specular),
+    inset 0 -1px rgb(var(--glass-primary) / .08);
+  transition:
+    box-shadow var(--dur-surface) var(--ease-io),
+    transform var(--dur-press) var(--ease-spring),
+    background-color var(--dur-surface) var(--ease-io);
+}
+:root[data-theme] .agent-capsule { position: absolute; }
+
+/* The diagonal "wet" wash on the floating surfaces is gone too — it was a
+   second, off-axis highlight and it read as glare rather than as glass.
+   Floating surfaces now separate purely by their cast shadow. */
+
+/* MENU — popovers and modals over live content. ~92% opaque so small text
+   stays readable; the frost is a hint, not a window. */
+:root[data-theme] :is(
+  .translation-popover,
+  .modal,
+  .selection-input,
+  .selection-error,
+  .confirm-dialog
+) {
+  background: var(--glass-menu-fill);
+  background-clip: padding-box;
+  color: var(--glass-ink);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--glass-r-menu);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow:
+    var(--glass-shadow-lift),
+    inset 0 1px var(--glass-specular);
+}
+:root[data-theme] .modal { border-radius: 20px; }
+:root[data-theme] .confirm-dialog { border-radius: 20px; }
+
+/* The modal scrim carries its own light frost — never a second blur on top of
+   the modal's blur, but enough to push the page back. */
+:root[data-theme] .modal-backdrop {
+  background: rgb(8 18 28 / .3);
+  -webkit-backdrop-filter: blur(6px) saturate(1.2);
+  backdrop-filter: blur(6px) saturate(1.2);
+}
+:root[data-theme="dark"] .modal-backdrop { background: rgb(0 0 0 / .52); }
+
+/* Modal keeps its own entrance; the scrim fades with it. */
+:root[data-theme] .modal-backdrop { animation: scrim-in 320ms var(--ease-io) both; }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Toast — a glass pill that drops in from below like an iOS notification. */
+:root[data-theme] .toast {
+  background: var(--glass-menu-fill);
+  color: var(--glass-ink);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--glass-r-pill);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-shadow-lift), inset 0 1px var(--glass-specular);
+}
+
+/* Tooltip — ink, not glass; it must read instantly over anything. */
+:root[data-theme] .app-tooltip {
+  background: rgb(27 33 39 / .94);
+  color: #f5f7fa;
+  border: 1px solid rgb(255 255 255 / .13);
+  box-shadow: 0 6px 20px #0003, inset 0 1px #ffffff0c;
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  backdrop-filter: blur(24px) saturate(1.8);
+}
+
+/* ── §4 pane surfaces — nav, rails, header chrome ──────────────────────── */
+
+/* Header / status chrome floats as a full-width glass band. */
+:root[data-theme] .tab-strip {
+  background: color-mix(in srgb, var(--glass-panel) 52%, transparent);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  border-bottom: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px var(--glass-specular-soft);
+  position: relative;
+  z-index: 4;
+}
+:root[data-theme] .status-bar {
+  background: color-mix(in srgb, var(--glass-panel) 46%, transparent);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  border-top: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px var(--glass-specular-soft);
+  position: relative;
+  z-index: 4;
+}
+
+/* Tabs become glass pills riding the band. The active one is a raised tile. */
+:root[data-theme] .tab {
+  border-radius: var(--glass-r-tile);
+  transition:
+    background-color 220ms var(--ease-io),
+    box-shadow 220ms var(--ease-io),
+    color 220ms var(--ease-io),
+    transform var(--dur-press) var(--ease-spring);
+}
+:root[data-theme] .tab.active {
+  background: color-mix(in srgb, var(--glass-elevated) 76%, transparent);
+  box-shadow:
+    0 2px 8px rgb(36 49 84 / .07),
+    inset 0 1px var(--glass-specular);
+}
+:root[data-theme="dark"] .tab.active {
+  background: color-mix(in srgb, var(--glass-elevated) 62%, transparent);
+  box-shadow:
+    0 3px 10px rgb(0 0 0 / .24),
+    inset 0 1px var(--glass-specular-soft);
+}
+:root[data-theme] .tab:not(.active):hover {
+  background: rgb(var(--glass-primary-soft) / .16);
+}
+
+/* Settings titlebar / footer share the band treatment. */
+:root[data-theme] .settings-titlebar {
+  background: color-mix(in srgb, var(--glass-panel) 52%, transparent);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  border-bottom: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px var(--glass-specular-soft);
+}
+:root[data-theme] .settings-footer {
+  background: color-mix(in srgb, var(--glass-panel) 46%, transparent);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  border-top: 1px solid var(--glass-edge);
+}
+:root[data-theme] .settings-main {
+  background: transparent;
+}
+:root[data-theme] .home-main {
+  background: transparent;
+}
+
+/* The reader toolbar shell must stay click-through: only the capsule is a
+   surface. (Guard against the theme CSS re-painting it.) */
+:root[data-theme] .workbench .reader-toolbar {
+  background: transparent;
+  border: 0;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* Local prose clears the capsule. Native webpages occupy the whole reader. */
+:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .document-content {
+  padding-top: 84px;
+}
+:root[data-theme] .workbench .reader-format-web > .reader-toolbar { display: none; }
+:root[data-theme] .workbench .reader-format-web > .document-content { padding: 0; }
+:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .reader-toolbar {
+  transition: opacity 160ms var(--ease-out), transform 200ms var(--ease-out);
+}
+:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .reader-toolbar.is-hidden {
+  opacity: 0;
+  transform: translate(-50%, -65px);
+}
+:root[data-theme] .workbench .reader-toolbar.is-hidden .floating-capsule { pointer-events: none; }
+:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .reader-toolbar:focus-within {
+  opacity: 1;
+  transform: translateX(-50%);
+}
+:root[data-theme] .workbench .reader-toolbar:focus-within .floating-capsule { pointer-events: auto; }
+
+/* ── §5 inset surfaces — tiles ON glass (never their own blur) ─────────── */
+
+/* This is the #1 rule of the material: you cannot nest backdrop-filter inside
+   backdrop-filter. Anything inside a pane is a translucent tint + top sheen. */
+:root[data-theme] :is(
+  .format-sidebar,
+  .ai-drawer,
+  .home-sidebar,
+  .settings-nav,
+  .modal,
+  .translation-popover
+) :is(
+  .location-chip,
+  .context-summary,
+  .job-card,
+  .tool-grid button,
+  .translation-card,
+  .new-format-list button,
+  .connection-card,
+  .artifact-row,
+  .recent-card,
+  .pdf-side-result,
+  .pdf-ocr-result,
+  .office-segment,
+  .word-page
+),
+:root[data-theme] .floating-capsule .address-input {
+  background: var(--glass-inset);
+  color: var(--glass-ink);
+  border-color: var(--glass-inset-hairline);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: var(--glass-inset-shade);
+  transition:
+    background-color 200ms var(--ease-io),
+    border-color 200ms var(--ease-io),
+    box-shadow 200ms var(--ease-io);
+}
+/* One step deeper than a flat tile: a card that groups tiles inside a pane
+   separates from the panel by *casting*, not by lighting up. This is the
+   "add shadow" half of the hierarchy fix — the shadow is what says the card
+   is a sheet floating over the panel, and it does that without a second
+   highlight competing with the pane's top lip.
+   The ancestor chain is spelled out rather than folded into one :is() so this
+   out-ranks the generic tile rule above instead of tying with it (a tie would
+   let the tile's single inset shadow win and silently drop the cast). */
+:root[data-theme] .workbench .ai-drawer :is(.job-card, .context-summary),
+:root[data-theme] .workbench .format-sidebar :is(.pdf-side-result, .pdf-ocr-result),
+:root[data-theme] .workbench .home-sidebar :is(.recent-card, .artifact-row),
+:root[data-theme] :is(.settings-nav, .modal) :is(.connection-card) {
+  box-shadow: var(--glass-inset-shade), var(--glass-inset-cast);
+}
+:root[data-theme] .translation-popover .translation-card {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Buttons inside glass panes never blur either — they get a sheen lift. */
+:root[data-theme] :is(
+  .floating-capsule,
+  .selection-tool-icons,
+  .activity-rail,
+  .ai-rail,
+  .format-sidebar,
+  .ai-drawer,
+  .modal,
+  .settings-nav
+) button {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition:
+    background-color 200ms var(--ease-io),
+    box-shadow 200ms var(--ease-io),
+    color 200ms var(--ease-io),
+    transform var(--dur-press) var(--ease-spring);
+}
+
+/* Hover = the tile tints in. The states below read as *fills*, not as lifted
+   surfaces — a bright lip here would put a second light source inside the
+   panel and fight the pane's own top edge. */
+:root[data-theme] :is(
+  .floating-capsule,
+  .selection-tool-icons,
+  .activity-rail,
+  .ai-rail,
+  .format-sidebar,
+  .ai-drawer,
+  .settings-nav
+) button:hover:not(:disabled) {
+  background: var(--glass-hover);
+  box-shadow: var(--glass-inset-shade);
+}
+:root[data-theme] :is(.floating-capsule, .selection-tool-icons) button.selected {
+  background: var(--glass-hover);
+  color: var(--glass-ink);
+  box-shadow: var(--glass-inset-shade);
+}
+:root[data-theme] :is(
+  .file-row.selected,
+  .outline-item.selected,
+  .tool-row.selected,
+  .activity-rail button.selected,
+  .ai-rail button.selected,
+  .settings-nav section button.selected
+) {
+  background: var(--glass-hover);
+  box-shadow: var(--glass-inset-shade);
+}
+
+:root[data-theme] :is(.floating-capsule, .selection-tool-icons) :is(
+  .icon-button,
+  .view-modes button,
+  .capsule-text
+) { color: var(--glass-ink); }
+:root[data-theme] .floating-capsule .capsule-document-title { color: var(--glass-ink); }
+:root[data-theme] .floating-capsule .capsule-divider {
+  background: currentColor;
+  opacity: .13;
+}
+:root[data-theme] .floating-capsule .address-input { color: var(--glass-ink); }
+
+:root[data-theme] :is(.modal, .selection-input) .button.primary {
+  background: rgb(var(--glass-primary));
+  color: white;
+  border-color: transparent;
+  box-shadow: inset 0 1px #ffffff33, 0 6px 18px -8px rgb(var(--glass-primary) / .7);
+}
+
+/* Selection bubble is a single capsule; its editors float separately below. */
+:root[data-theme] .selection-tools {
+  background: transparent;
+  border: 0;
+  border-radius: var(--glass-r-pill);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+:root[data-theme] .selection-tool-icons { flex-wrap: nowrap; }
+:root[data-theme] .selection-input textarea {
+  background: rgb(255 255 255 / .55);
+  border-color: rgb(var(--glass-primary-soft) / .3);
+}
+:root[data-theme="dark"] .selection-input textarea {
+  background: rgb(9 16 26 / .5);
+}
+
+/* ── §6 paper-aware selection (fixed white pages in a dark shell) ──────── */
+:root[data-theme] .selection-tools[data-paper="true"] {
+  --glass-panel: #f5f9fc;
+  --glass-ink: #253746;
+  --glass-fill: rgb(245 250 253 / .38);
+  --glass-menu-fill: rgb(245 250 253 / .94);
+  --glass-edge: rgb(111 142 167 / .24);
+  --glass-specular: #ffffffcc;
+  --glass-hover: rgb(var(--glass-primary) / .13);
+}
+:root[data-theme] .selection-tools[data-paper="true"] .selection-input textarea {
+  background: #ffffffaa;
+  color: var(--glass-ink);
+}
+
+/* ── §7 native toolbar window (transparent, always-on-top) ────────────── */
+/* Chromium cannot sample across native windows, so this surface frosts a
+   pre-captured screenshot instead. The clip-path rounds the whole window;
+   the backdrop element carries the real blur. */
+html.native-toolbar-root,
+html.native-toolbar-root body,
+html.native-toolbar-root #root {
+  background: transparent !important;
+  overflow: hidden;
+  color-scheme: normal;
+}
+html.native-toolbar-root .native-toolbar {
+  display: block;
+  background: transparent !important;
+  padding: 8px;
+  gap: 0;
+  height: 100vh;
+  clip-path: inset(8px 8px calc(100% - 54px) 8px round 24px);
+}
+html.native-toolbar-root .native-toolbar .reader-toolbar {
+  position: static;
+  width: 100%;
+  height: 46px;
+  min-height: 46px;
+  padding: 0;
+  opacity: 1;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+html.native-toolbar-root .native-toolbar .floating-capsule {
+  width: 100%;
+  max-width: none;
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow:
+    inset 0 1px var(--glass-specular),
+    inset 1px 0 rgb(255 255 255 / .16),
+    inset 0 -1px rgb(var(--glass-primary) / .08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html.native-toolbar-root .native-glass-backdrop {
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background-size: 100% 100%;
+  filter: blur(24px) saturate(var(--glass-saturation));
+  transform: scale(1.12);
+  opacity: .85;
+  transition: filter 320ms var(--ease-io), opacity 320ms var(--ease-io);
+}
+html.native-toolbar-root .native-toolbar .floating-capsule::before {
+  z-index: -1;
+  background: var(--glass-fill);
+}
+html.native-toolbar-root .address { flex: 1; min-width: 80px; }
+html.native-toolbar-root .address-input { width: 100%; }
+html.native-toolbar-root .capsule-text { white-space: nowrap; }
+html.native-toolbar-root .app-tooltip {
+  font-size: 11px;
+  padding: 5px 9px;
+  max-width: 250px;
+}
+html.native-toolbar-root .selection-tool-icons { background: var(--glass-menu-fill); }
+
+/* The window can sit over a dark or a light page; swap the triplet to match. */
+html.native-toolbar-root[data-backdrop="light"] {
+  --glass-panel: #f5f9fc;
+  --glass-ink: #253746;
+  --glass-edge: rgb(98 130 156 / .24);
+  --glass-specular: #ffffffbb;
+  --glass-fill: rgb(246 250 253 / .26);
+}
+html.native-toolbar-root[data-backdrop="dark"] {
+  --glass-panel: #1e2934;
+  --glass-ink: #e2ebf3;
+  --glass-fill: rgb(24 34 44 / .32);
+}
+
+/* ── §8 overrides — user preference + OS accessibility beat the material ─ */
+
+/* Glass off / high contrast: collapse every tier to flat panels, kill aura. */
+:root[data-glass="off"],
+:root[data-contrast="high"] {
+  --glass-fill: var(--glass-panel);
+  --glass-panel-fill: var(--glass-panel);
+  --glass-menu-fill: var(--glass-panel);
+  --glass-filter: none;
+  --glass-aura: 0;
+  --glass-specular: transparent;
+  --glass-specular-soft: transparent;
+  --glass-inset-shade: none;
+  --glass-inset-cast: none;
+  --glass-inset-hairline: rgb(120 140 160 / .22);
+}
+:root[data-contrast="high"] {
+  --glass-edge: var(--glass-ink);
+}
+:root[data-glass="off"] .app-shell::after,
+:root[data-glass="off"] .settings-shell::after,
+:root[data-contrast="high"] .app-shell::after,
+:root[data-contrast="high"] .settings-shell::after { display: none; }
+:root[data-glass="off"] :is(.app-shell, .settings-shell)::before,
+:root[data-contrast="high"] :is(.app-shell, .settings-shell)::before { display: none; }
+:root[data-glass="off"] .workbench :is(.activity-rail, .format-sidebar, .ai-drawer, .ai-rail)::after,
+:root[data-contrast="high"] .workbench :is(.activity-rail, .format-sidebar, .ai-drawer, .ai-rail)::after { display: none; }
+:root[data-glass="off"] .settings-shell,
+:root[data-contrast="high"] .settings-shell { background: var(--glass-canvas); }
+:root[data-glass="off"] .workbench,
+:root[data-contrast="high"] .workbench { background: var(--glass-canvas); }
+
+/* The reader's legibility veil also collapses to flat opaque panels. */
+:root[data-glass="off"] .reader-panel,
+:root[data-contrast="high"] .reader-panel,
+:root[data-glass="off"] .tab-strip,
+:root[data-glass="off"] .status-bar,
+:root[data-glass="off"] .settings-titlebar,
+:root[data-glass="off"] .settings-footer,
+:root[data-contrast="high"] .tab-strip,
+:root[data-contrast="high"] .status-bar,
+:root[data-contrast="high"] .settings-titlebar,
+:root[data-contrast="high"] .settings-footer {
+  background: var(--glass-panel);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-glass="off"] .workbench .reader-toolbar .floating-capsule,
+:root[data-glass="off"] .selection-tool-icons,
+:root[data-glass="off"] .agent-capsule,
+:root[data-glass="off"] .translation-popover,
+:root[data-glass="off"] .modal,
+:root[data-glass="off"] .toast {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) .native-glass-backdrop { display: none; }
+html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glass-fill: var(--glass-panel); }
+
+/* Set to look like the real thing rather than a semi-transparent box. */
+:root[data-glass="off"] :is(.floating-capsule, .translation-popover, .agent-capsule, .toast) {
+  background: var(--glass-panel);
+}
+:root[data-theme="dark"][data-glass="off"] :is(.floating-capsule, .translation-popover, .agent-capsule) {
+  background: var(--glass-panel);
+}
+
+/* OS-level preferences. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root {
+    --glass-fill: var(--glass-panel);
+    --glass-panel-fill: var(--glass-panel);
+    --glass-menu-fill: var(--glass-panel);
+    --glass-filter: none;
+    --glass-aura: 0;
+    --glass-specular: transparent;
+    --glass-specular-soft: transparent;
+  }
+  .app-shell::before, .app-shell::after,
+  .settings-shell::before, .settings-shell::after { display: none; }
+  :root .workbench :is(.activity-rail, .format-sidebar, .ai-drawer, .ai-rail)::after { display: none; }
+  html.native-toolbar-root .native-glass-backdrop { display: none; }
+  html.native-toolbar-root[data-backdrop] { --glass-fill: var(--glass-panel); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell::before,
+  .settings-shell::before,
+  :root :is(.activity-rail, .format-sidebar, .ai-drawer, .ai-rail, .home-sidebar)::after {
+    animation: none;
+  }
+  :root :is(.activity-rail, .format-sidebar, .ai-drawer, .ai-rail, .home-sidebar)::after { opacity: 0; }
+}
+
+/* ── §9 scrollbars — the same material, one dimension down ─────────────── */
+
+/* An overlay-style scrollbar: no track, a rounded inset thumb that rests at low
+   opacity and *frosts in* on hover exactly like the tiles do. The 3px
+   transparent border + `background-clip: padding-box` is what insets the thumb
+   from the gutter instead of letting it hug the edge. */
+:root {
+  --glass-scroll-track: transparent;
+  --glass-scroll-thumb: rgb(var(--glass-primary) / .3);
+  --glass-scroll-thumb-hover: rgb(var(--glass-primary) / .55);
+}
+:root[data-theme="dark"] {
+  --glass-scroll-thumb: rgb(var(--glass-primary-soft) / .26);
+  --glass-scroll-thumb-hover: rgb(var(--glass-primary-soft) / .46);
+}
+
+/* Standards path — set to `auto` deliberately, NOT to the brand colour.
+   In Chromium, any non-`auto` value of `scrollbar-color`/`scrollbar-width`
+   switches the scrollbar to the OS-standard rendering and *disables every
+   ::-webkit-scrollbar rule below it*. dark-theme.css sets both globally, so
+   without this reset the WebKit block is dead code and all the craft in it —
+   the 12px gutter, the 3px transparent border that insets the thumb, the
+   hover/active states, the per-pane boost — silently never paints.
+   This app only ever ships in Electron, so there is no Firefox to style;
+   `auto` here means "let the ::-webkit-scrollbar rules do the work". */
+:root,
+:root[data-theme="dark"],
+:root[data-theme="dark"] * {
+  scrollbar-color: auto;
+  scrollbar-width: auto;
+}
+:root[data-theme] * { scrollbar-width: auto; }
+/* The tab strip and the selection capsule must keep their scrollbarless
+   horizontal overflow. styles.css declares `scrollbar-width: none` on both at
+   (0,1,0), which the `*` reset above out-ranks at (0,2,0) — so restate them
+   here rather than relying on them still winning. */
+:root[data-theme] :is(.tabs, .selection-tool-icons, .tab-strip) { scrollbar-width: none; }
+
+/* WebKit / Blink path — Electron renders these, so this is the one that shows. */
+:root[data-theme] ::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+:root[data-theme] ::-webkit-scrollbar-track,
+:root[data-theme] ::-webkit-scrollbar-corner {
+  background: var(--glass-scroll-track);
+}
+:root[data-theme] ::-webkit-scrollbar-thumb {
+  background: var(--glass-scroll-thumb);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: var(--glass-r-pill);
+  transition: background-color 200ms var(--ease-io);
+}
+:root[data-theme] ::-webkit-scrollbar-thumb:hover {
+  background: var(--glass-scroll-thumb-hover);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+:root[data-theme] ::-webkit-scrollbar-thumb:active {
+  background: rgb(var(--glass-primary));
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+/* The gutter is inert, so clicking it must not scroll-jump to a page. */
+:root[data-theme] ::-webkit-scrollbar-button { display: none; }
+
+/* Panes with their own tinted fill get a slightly stronger thumb so it stays
+   visible where the surface is lighter than the canvas. */
+:root[data-theme] :is(.settings-nav, .home-tree, .format-scroll)::-webkit-scrollbar-thumb {
+  background: rgb(var(--glass-primary) / .38);
+}
+
+/* Under reduced transparency / high contrast the thumb goes fully opaque —
+   a 30% glyph on a flat panel is not an affordance. */
+:root[data-glass="off"],
+:root[data-contrast="high"] {
+  --glass-scroll-thumb: rgb(var(--glass-primary) / .85);
+  --glass-scroll-thumb-hover: rgb(var(--glass-primary));
+}

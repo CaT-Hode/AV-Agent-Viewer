@@ -1,0 +1,429 @@
+/* ============================================================================
+   Motion — the iOS interaction vocabulary for AgentViewer.
+
+   Rules of the house:
+     · One easing family. Every entrance is var(--ease-io) or var(--ease-drawer);
+       every interactive deform is var(--ease-spring).
+     · Entrances animate `translate`, never `transform`, because several
+       surfaces are positioned with `transform: translateX(-50%)` and a
+       keyframe that writes `transform` would wipe the centering.
+     · Content that scrolls or updates at high frequency (reading text, file
+       lists, code) does not animate. Motion is for chrome and entrances only.
+     · Everything here is off under data-motion / prefers-reduced-motion.
+   ========================================================================== */
+
+:root {
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+  --ease-io: cubic-bezier(.25, 1, .5, 1);
+  --ease-drawer: cubic-bezier(.32, .72, 0, 1);
+  --ease-spring: cubic-bezier(.34, 1.32, .44, 1);
+}
+
+/* ── press deformation ─────────────────────────────────────────────────────
+   iOS controls squash toward the finger. Fast in (the press must feel
+   instant), springy out. */
+.icon-button,
+.tool-row,
+.tool-grid button,
+.button,
+.activity-rail button,
+.ai-rail button,
+.settings-nav section button,
+.selection-tool-icons .icon-button,
+.capsule-text,
+.tab,
+.file-row,
+.outline-item,
+.recent-card,
+.artifact-row,
+.setting-reset,
+.popover-expand,
+.translation-actions button {
+  transition:
+    transform var(--dur-press, 260ms) var(--ease-spring),
+    background-color 200ms var(--ease-io),
+    box-shadow 200ms var(--ease-io),
+    color 200ms var(--ease-io),
+    border-color 200ms var(--ease-io);
+}
+
+.icon-button:active:not(:disabled),
+.tool-row:active:not(:disabled),
+.button:active:not(:disabled),
+.tool-grid button:active:not(:disabled),
+.activity-rail button:active,
+.ai-rail button:active,
+.settings-nav section button:active,
+.selection-tool-icons .icon-button:active,
+.recent-card:active,
+.artifact-row:active,
+.file-row:active:not(:disabled) {
+  transform: scale(.94);
+  transition-duration: 90ms;
+  transition-timing-function: var(--ease-out);
+}
+
+/* Pill buttons squash along one axis — a wider, flatter press. */
+.button:active:not(:disabled),
+.capsule-text:active:not(:disabled),
+.translation-actions button:active:not(:disabled) {
+  transform: scale(.96, .92);
+}
+
+/* ── surface entrances ─────────────────────────────────────────────────────
+   `surface-in` was written with `transform`, which clobbers the centering on
+   absolutely-positioned surfaces. Re-stated here with `translate`. */
+@keyframes surface-in {
+  from { opacity: 0; translate: 0 6px; }
+  to   { opacity: 1; translate: none; }
+}
+@keyframes sheet-in {
+  from { opacity: 0; translate: 0 14px; scale: .985; }
+  to   { opacity: 1; translate: none; scale: 1; }
+}
+@keyframes sheet-in-right {
+  from { opacity: 0; translate: 16px 0; scale: .98; }
+  to   { opacity: 1; translate: none; scale: 1; }
+}
+@keyframes modal-in {
+  from { opacity: 0; translate: 0 10px; scale: .97; }
+  to   { opacity: 1; translate: none; scale: 1; }
+}
+
+.modal,
+.translation-popover,
+.toast,
+.ai-drawer,
+.format-sidebar {
+  animation: surface-in var(--dur-surface, 340ms) var(--ease-drawer) both;
+}
+
+.modal {
+  animation: modal-in var(--dur-sheet, 420ms) var(--ease-drawer) both;
+  transform-origin: 50% 45%;
+}
+.translation-popover {
+  animation: sheet-in-right var(--dur-surface, 340ms) var(--ease-drawer) both;
+  transform-origin: 100% 0;
+}
+.ai-drawer,
+.format-sidebar {
+  animation: sheet-in var(--dur-surface, 340ms) var(--ease-drawer) both;
+}
+.toast {
+  animation: toast-in 300ms var(--ease-drawer) both;
+}
+@keyframes toast-in {
+  from { opacity: 0; translate: 0 8px; scale: .96; }
+  to   { opacity: 1; translate: none; scale: 1; }
+}
+
+/* ── page-load orchestration ───────────────────────────────────────────────
+   The highest-impact moment: the shell settles top-down, then the rails
+   cascade, then their icons pop in behind them. 1.5s end to end, one curve. */
+@keyframes chrome-down {
+  from { opacity: 0; translate: 0 -100%; }
+  to   { opacity: 1; translate: none; }
+}
+@keyframes rail-in {
+  from { opacity: 0; translate: 0 22px; scale: .97; }
+  to   { opacity: 1; translate: none; scale: 1; }
+}
+@keyframes icon-pop {
+  from { opacity: 0; scale: .6; }
+  to   { opacity: 1; scale: 1; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.tab-strip {
+  animation: chrome-down 520ms var(--ease-drawer) both;
+}
+.status-bar {
+  animation: fade-in 400ms var(--ease-io) 480ms both;
+}
+.workbench .activity-rail,
+.workbench .ai-rail {
+  animation: rail-in 620ms var(--ease-drawer) 90ms both;
+}
+.workbench .format-sidebar {
+  animation: sheet-in 620ms var(--ease-drawer) 160ms both;
+}
+.workbench .reader-panel {
+  animation: fade-in 520ms var(--ease-io) 200ms both;
+}
+.home-sidebar {
+  animation: rail-in 620ms var(--ease-drawer) 90ms both;
+}
+.home-main {
+  animation: fade-in 560ms var(--ease-io) 180ms both;
+}
+
+/* Icons pop in behind their rail's entrance. */
+.workbench .activity-rail > button,
+.workbench .ai-rail > button {
+  animation: icon-pop 480ms var(--ease-spring) both;
+}
+.workbench .activity-rail > button:nth-child(1) { animation-delay: 340ms; }
+.workbench .activity-rail > button:nth-child(2) { animation-delay: 400ms; }
+.workbench .activity-rail > button:nth-child(3) { animation-delay: 460ms; }
+.workbench .ai-rail > button:nth-child(1) { animation-delay: 340ms; }
+.workbench .ai-rail > button:nth-child(2) { animation-delay: 400ms; }
+.workbench .ai-rail > button:nth-child(3) { animation-delay: 460ms; }
+.workbench .ai-rail > button:nth-child(4) { animation-delay: 520ms; }
+.workbench .ai-rail > button:nth-child(6) { animation-delay: 580ms; }
+
+/* Home content cascades in under the hero. */
+.home-hero { animation: sheet-in 560ms var(--ease-drawer) 220ms both; }
+.home-columns { animation: sheet-in 560ms var(--ease-drawer) 320ms both; }
+.recent-card { animation: sheet-in 460ms var(--ease-drawer) both; }
+.recent-card:nth-child(1) { animation-delay: 360ms; }
+.recent-card:nth-child(2) { animation-delay: 410ms; }
+.recent-card:nth-child(3) { animation-delay: 460ms; }
+.recent-card:nth-child(4) { animation-delay: 510ms; }
+.recent-card:nth-child(5) { animation-delay: 560ms; }
+.recent-card:nth-child(6) { animation-delay: 610ms; }
+
+/* ── chrome micro-interactions ─────────────────────────────────────────── */
+
+/* Tabs lift a hair on hover; the active one is already a raised tile. */
+.tab:hover:not(.active) { transform: translateY(-1px); }
+.tab-close { transition: transform var(--dur-press, 260ms) var(--ease-spring), opacity 200ms var(--ease-io); }
+.tab-close:active { transform: scale(.86); }
+
+/* The agent's activity dot breathes so the eye finds it without a spinner. */
+@keyframes pulse-breathe {
+  0%, 100% { opacity: 1; scale: 1; }
+  50%      { opacity: .72; scale: 1.22; }
+}
+.rail-dot,
+.agent-pulse {
+  animation: pulse-breathe 2.4s var(--ease-io) infinite;
+}
+
+/* The iOS switch — the knob overshoots, the track fades. */
+.setting-switch {
+  transition: background-color 260ms var(--ease-io);
+}
+.setting-switch span {
+  transition: transform 320ms var(--ease-spring);
+}
+
+/* Focus rings fade in rather than snapping. */
+:is(button, input, textarea, select):focus-visible {
+  transition: outline-color 160ms var(--ease-io), outline-offset 160ms var(--ease-io);
+}
+
+/* ── selection bubble & capsules ───────────────────────────────────────── */
+@keyframes pop-spring {
+  from { opacity: 0; scale: .82; }
+  to   { opacity: 1; scale: 1; }
+}
+.selection-tools {
+  animation: pop-spring 300ms var(--ease-spring) both;
+}
+.agent-capsule {
+  animation: sheet-in 360ms var(--ease-drawer) both;
+}
+
+.agent-target-highlight {
+  animation: agent-target-in 320ms var(--ease-spring);
+}
+@keyframes agent-target-in {
+  from { opacity: 0; scale: .95; }
+  to   { opacity: 1; scale: 1; }
+}
+
+/* ── tooltip ───────────────────────────────────────────────────────────── */
+.app-tooltip {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: min(280px, calc(100vw - 20px));
+  padding: 8px 12px;
+  border: 1px solid #ffffff18;
+  border-radius: 12px;
+  background: #222426;
+  color: #f4f5f6;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  box-shadow: 0 5px 18px #0003, 0 1px 3px #0002;
+  transform: translateX(-50%);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  animation: tooltip-in 160ms var(--ease-io);
+}
+.app-tooltip.above { transform: translate(-50%, -100%); }
+@keyframes tooltip-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── settings window ───────────────────────────────────────────────────── */
+.settings-top { position: relative; }
+.settings-top > div:first-child { flex: 1; }
+.settings-undo { flex-shrink: 0; }
+.settings-nav { animation: sheet-in 560ms var(--ease-drawer) 80ms both; }
+.settings-main { animation: fade-in 520ms var(--ease-io) 180ms both; }
+
+/* ── selection tools (shared with the native toolbar window) ───────────── */
+.selection-tools {
+  position: fixed;
+  z-index: 90;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / .4);
+  border-radius: 16px;
+  background: rgb(246 249 253 / 87%);
+  color: #243147;
+  box-shadow: 0 8px 30px #15233b26, inset 0 1px #fff8;
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+}
+.selection-tool-icons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.selection-tool-icons .icon-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  flex-shrink: 0;
+}
+.selection-input {
+  padding: 8px;
+  display: grid;
+  gap: 9px;
+  min-width: 280px;
+}
+.selection-input label { font-size: 12px; }
+.selection-input textarea {
+  display: block;
+  resize: vertical;
+  width: 100%;
+  min-height: 80px;
+  margin-top: 8px;
+  border: 1px solid rgb(170 184 205 / .4);
+  border-radius: 9px;
+  padding: 9px;
+  color: inherit;
+  font: inherit;
+}
+.selection-input .button { justify-self: end; }
+.selection-error {
+  font-size: 12px;
+  margin: 8px;
+  color: #ba425b;
+  max-width: 360px;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 25px; }
+.confirm-dialog { width: min(490px, 90vw); }
+.confirm-dialog p { font-size: 13px; line-height: 1.7; }
+.dialog-hint { color: var(--soft); }
+:root[data-theme="dark"] .selection-tools {
+  background: rgb(32 40 52 / 88%);
+  color: #e3edf9;
+  border-color: rgb(167 194 226 / .18);
+  box-shadow: 0 10px 30px #0004, inset 0 1px #ffffff0d;
+}
+:root[data-theme="dark"] .selection-input textarea {
+  background: rgb(21 29 41 / .6);
+  border-color: rgb(113 132 156 / .33);
+}
+:root[data-theme="dark"] .selection-tools .icon-button { color: #dbe9fd; }
+:root[data-theme="dark"] .selection-error { color: #f3a4b3; }
+:root[data-glass="off"] .selection-tools {
+  background: #f2f5fa;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-theme="dark"][data-glass="off"] .selection-tools { background: #293444; }
+
+::highlight(reader-annotations) { background: #eed45c66; color: inherit; }
+:root[data-theme="dark"] ::highlight(reader-annotations) { background: #c7a43c66; color: #fff1bc; }
+
+/* ── reduced motion — the whole vocabulary stands down ──────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after,
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* ── selection capsule consolidation ─────────────────────────────────────
+   The bubble is always a single pill; the editors float separately below. */
+:root[data-theme] .selection-tools,
+:root[data-glass="off"] .selection-tools,
+:root[data-contrast="high"] .selection-tools {
+  padding: 0;
+  border: 0;
+  border-radius: var(--glass-r-pill, 999px);
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  min-width: 0;
+}
+.selection-tool-icons {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+  padding: 6px;
+  border-radius: var(--glass-r-pill, 999px);
+  border: 1px solid rgb(255 255 255 / .47);
+  background: rgb(245 250 255 / 62%);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: 0 4px 16px #15233b20, inset 0 1px #ffffff88;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.selection-tool-icons .icon-button { flex: 0 0 30px; border-radius: 50%; }
+:root[data-theme="dark"] .selection-tool-icons {
+  background: rgb(32 42 57 / 67%);
+  border-color: rgb(212 229 255 / .19);
+  box-shadow: 0 5px 18px #0003, inset 0 1px #ffffff16;
+}
+:root[data-glass="off"] .selection-tool-icons,
+:root[data-contrast="high"] .selection-tool-icons {
+  background: #f2f5fa;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-theme="dark"][data-glass="off"] .selection-tool-icons { background: #293444; }
+
+/* The editor panels drop below the pill. */
+.selection-input,
+.selection-error {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  padding: 14px;
+  margin: 0;
+  background: rgb(244 247 252 / .95);
+  border: 1px solid rgb(189 204 224 / .27);
+  border-radius: 16px;
+  box-shadow: 0 8px 28px #15233b26;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+:root[data-theme="dark"] :is(.selection-input, .selection-error) {
+  background: rgb(35 45 58 / .95);
+  border-color: rgb(142 171 194 / .2);
+  color: #e3edf9;
+}
