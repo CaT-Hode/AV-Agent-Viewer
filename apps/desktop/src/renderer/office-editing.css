@@ -1,0 +1,106 @@
+.office-document-editor {
+  --office-control-bg: color-mix(in srgb, var(--surface, #fff) 64%, transparent);
+  --office-cell-bg: #fff;
+  --office-grid-line: #dce1e7;
+  min-width: 0;
+  min-height: 100%;
+  color: var(--ink, #303642);
+}
+.office-editing-ribbon { position: relative; z-index: 5; margin: 8px 18px 20px; border: 1px solid color-mix(in srgb, var(--line, #cdd2dd) 52%, transparent); border-radius: 18px; isolation: isolate; box-shadow: 0 4px 16px #24334a08; }
+.office-tools-v2 { font-size: 11px; color: var(--ink, #303642); min-width: 0; }
+.office-ribbon { display: flex; flex-wrap: wrap; align-items: stretch; position: relative; padding: 8px 10px; gap: 4px; }
+.office-tool-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.office-ribbon .office-tool-group { padding: 0 9px; border-right: 1px solid color-mix(in srgb, var(--line, #ccd2dc) 60%, transparent); }
+.office-ribbon .office-tool-group:last-of-type { border-right: 0; }
+.office-group-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.office-group-title { color: var(--muted, #80899a); font-size: 10px; text-align: center; line-height: 1.3; }
+.office-tools-v2 :is(input:not([type=checkbox]),select,textarea) { min-width: 0; height: 29px; border: 1px solid color-mix(in srgb, var(--line, #cbd3de) 75%, transparent); border-radius: 8px; background: var(--office-control-bg, #ffffffa3); color: inherit; padding: 4px 7px; outline-offset: 2px; font-size: 11px; }
+.office-ribbon input:not([type=color]):not([type=number]) { width: 120px; }
+.office-ribbon select { max-width: 116px; }
+.office-tools-v2 .office-font-size { width: 47px; }
+.office-tools-v2 input[type=color] { width: 28px; height: 27px; padding: 3px; cursor: pointer; }
+.office-tools-v2 .office-icon-tool { width: 29px; height: 29px; flex: 0 0 29px; border-radius: 8px; background: transparent; color: inherit; }
+.office-tools-v2 .office-icon-tool:hover { background: color-mix(in srgb, var(--accent, #087bdc) 9%, transparent); }
+.office-tools-v2 .office-icon-tool.selected { background: color-mix(in srgb, var(--accent, #087bdc) 14%, transparent); color: var(--accent, #087bdc); }
+.office-action-tool { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 29px; padding: 5px 9px; border-radius: 8px; background: var(--office-control-bg, #ffffffa3); border: 1px solid color-mix(in srgb, var(--line, #cbd3de) 70%, transparent); line-height: 1.5; }
+.office-action-tool:hover { background: color-mix(in srgb, var(--accent, #087bdc) 8%, var(--surface, #fff)); }
+.office-property-field { display: inline-flex; align-items: center; gap: 5px; color: var(--muted, #717c8d); }
+.office-property-field > input[type=number] { width: 54px; }
+.office-ribbon .office-property-field:has(input[type=color]) > span { display: none; }
+.office-sidebar { padding: 0 3px 20px; --office-control-bg: color-mix(in srgb, var(--surface, #fff) 72%, transparent); }
+.office-sidebar .office-tool-group { margin-bottom: 18px; padding-bottom: 15px; border-bottom: 1px solid color-mix(in srgb, var(--line, #cbd3de) 52%, transparent); }
+.office-sidebar .office-group-title { order: -1; text-align: left; margin-bottom: 3px; color: var(--muted, #768297); font-weight: 600; }
+.office-sidebar .office-group-controls { gap: 7px; }
+.office-sidebar .office-property-field { width: 100%; justify-content: space-between; }
+.office-sidebar .office-property-field > :is(input:not([type=color]):not([type=checkbox]),select) { width: 104px; }
+.office-sidebar .office-group-controls > input:not([type=color]):not(.office-font-size) { flex: 1 1 120px; width: 100%; }
+.office-sidebar textarea { width: 100%; height: auto; min-height: 84px; resize: vertical; }
+.office-target-label { margin: 0 0 14px; font-size: 11px; line-height: 1.6; color: var(--muted, #768297); word-break: break-word; }
+.office-edit-status { display: block; font-size: 10px; color: var(--muted, #768297); align-self: center; padding: 0 8px; }
+.office-edit-error,.office-draft-error { font-size: 11px; line-height: 1.6; color: #bd5960; }
+.office-edit-error { margin: 5px 10px; width: 100%; }
+.office-empty { padding: 50px; color: var(--muted, #768297); text-align: center; }
+.office-word-stage { padding: 0 24px 50px; overflow: visible; }
+.office-word-paper { box-sizing: border-box; background: #fff; color: #252b34; margin: 0 auto; padding: 72px 84px; box-shadow: 0 7px 26px #23304714; font: 16px/1.5 Calibri, 'Microsoft YaHei', sans-serif; }
+.office-block-shell { position: relative; min-width: 0; }
+.office-word-paragraph { min-height: 1.5em; white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
+.office-word-paragraph:focus { box-shadow: -3px 0 color-mix(in srgb, var(--accent, #087bdc) 25%, transparent); }
+.office-word-paragraph[data-style=Heading1] { font-size: 30px; font-weight: 700; }
+.office-word-paragraph[data-style=Heading2] { font-size: 25px; font-weight: 650; }
+.office-word-paragraph[data-style=Heading3] { font-size: 20px; font-weight: 650; }
+.office-word-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 12px 0; }
+.office-word-table td { border: 1px solid #b7c0cc; padding: 8px; vertical-align: top; }
+.office-word-table .office-word-paragraph { margin: 0; }
+.office-draft-error { display: block; padding-top: 3px; }
+.office-presentation-stage { padding: 0 24px 35px; }
+.office-slide-strip { display: flex; gap: 9px; overflow-x: auto; margin-bottom: 20px; padding: 2px 2px 10px; }
+.office-slide-strip > button { min-width: 116px; max-width: 116px; padding: 0; font-size: 10px; color: var(--muted, #768297); }
+.office-slide-thumbnail { display: flex; flex-direction: column; width: 116px; height: 65px; gap: 3px; border: 1px solid #bac4d06e; box-shadow: 0 3px 9px #24344a0c; padding: 10px; margin-bottom: 6px; color: #2d3441; text-align: left; overflow: hidden; }
+.office-slide-thumbnail > span { display: block; font-size: 7px; line-height: 1.4; max-height: 19px; overflow: hidden; }
+.office-slide-strip > button.selected .office-slide-thumbnail { outline: 2px solid var(--accent, #087bdc); outline-offset: 2px; }
+.office-slide-stage { min-width: 0; }
+.office-slide-canvas { width: min(100%, 1100px); position: relative; margin: 0 auto; box-shadow: 0 8px 30px #23304716; color: #252b34; }
+.office-slide-object { position: absolute; font: 28px/1.25 Arial, 'Microsoft YaHei', sans-serif; }
+.office-slide-object > .office-block-shell { width: 100%; height: 100%; }
+.office-slide-text { width: 100%; height: 100%; min-height: 1em; padding: 5px; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+.office-slide-object.selected { outline: 1px solid var(--accent, #087bdc); outline-offset: 2px; }
+.office-object-move,.office-object-resize { position: absolute; display: grid; place-items: center; width: 21px; height: 21px; border: 1px solid color-mix(in srgb, var(--accent, #087bdc) 65%, transparent); border-radius: 5px; background: #fff; color: var(--accent, #087bdc); touch-action: none; }
+.office-object-move { left: -11px; top: -23px; cursor: move; }
+.office-object-resize { bottom: -11px; right: -11px; cursor: nwse-resize; }
+.office-slide-footer { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; font-size: 11px; color: var(--muted, #768297); }
+.office-slide-notes { margin: 20px auto 0; max-width: 1100px; font-size: 12px; }
+.office-slide-notes summary { cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 12px 3px; color: var(--muted, #768297); border-bottom: 1px solid color-mix(in srgb, var(--line, #cbd3de) 50%, transparent); }
+.office-slide-notes textarea { width: 100%; background: var(--surface, #fff); border: 1px solid var(--line, #cbd3de); border-radius: 10px; padding: 10px; margin-top: 10px; resize: vertical; color: var(--ink, #303642); }
+.office-slide-notes > button { border: 1px solid var(--line, #cbd3de); border-radius: 8px; padding: 6px 12px; margin-top: 8px; }
+.office-spreadsheet-stage { padding: 0 18px 18px; }
+.office-formula-bar { display: flex; align-items: center; gap: 8px; min-height: 39px; background: var(--office-cell-bg); border: 1px solid var(--office-grid-line); border-radius: 10px 10px 0 0; padding: 4px 8px; }
+.office-formula-bar input { border: 0; background: transparent; color: inherit; min-width: 0; flex: 1; outline-offset: 1px; font-size: 12px; padding: 4px; height: 28px; }
+.office-formula-bar .office-name-box { width: 105px; flex: 0 0 105px; border-right: 1px solid var(--office-grid-line); border-radius: 0; }
+.office-formula-symbol { font: italic 18px Georgia, serif; color: var(--muted, #768297); padding: 0 4px; }
+.office-grid-scroll { max-height: calc(100vh - 330px); min-height: 240px; overflow: auto; border: 1px solid var(--office-grid-line); border-top: 0; background: var(--office-cell-bg); }
+.office-sheet-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; color: var(--ink, #303642); font: 12px/1.3 Calibri, 'Microsoft YaHei', sans-serif; }
+.office-sheet-table :is(th,td) { padding: 0; min-width: 40px; border-right: 1px solid var(--office-grid-line); border-bottom: 1px solid var(--office-grid-line); }
+.office-sheet-table th { background: color-mix(in srgb, var(--office-cell-bg) 94%, var(--accent, #087bdc)); font-weight: 500; color: var(--muted, #768297); cursor: pointer; height: 29px; text-align: center; }
+.office-sheet-table thead th { position: sticky; top: 0; z-index: 3; }
+.office-sheet-table thead th > button { width: 100%; min-height: 28px; font-size: 11px; }
+.office-sheet-table thead th > select { max-width: 100%; width: 100%; border: 0; background: transparent; color: var(--ink, #303642); font-size: 10px; height: 24px; }
+.office-sheet-table tbody th { position: sticky; left: 0; z-index: 3; width: 42px; }
+.office-sheet-table td { position: relative; background: var(--office-cell-bg); }
+.office-sheet-table td.selected { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #087bdc) 40%, transparent); background-image: linear-gradient(color-mix(in srgb, var(--accent, #087bdc) 7%, transparent), color-mix(in srgb, var(--accent, #087bdc) 7%, transparent)); }
+.office-sheet-table .office-cell-input { width: 100%; height: 100%; min-height: 24px; padding: 3px 7px; border: 0; border-radius: 0; color: inherit; background: transparent; outline-offset: -2px; font-size: inherit; text-overflow: clip; }
+.office-sheet-table .office-cell-input[readonly] { cursor: cell; caret-color: transparent; }
+.office-cell-editor { position: relative; height: 100%; min-height: 24px; }
+.office-cell-editor.wrapped .office-cell-input { position: absolute; inset: 0; }
+.office-cell-display { display: block; min-height: 24px; padding: 3px 7px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
+.office-sheet-table .office-cell-input:not([readonly]) { outline: 2px solid var(--accent, #087bdc); background: var(--office-cell-bg); caret-color: auto; }
+.office-cell-input.has-error { box-shadow: inset 0 -2px #c46166; }
+.office-sheet-footer { display: flex; align-items: center; gap: 12px; min-height: 36px; color: var(--muted, #768297); font-size: 11px; }
+.office-sheet-tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; align-items: center; }
+.office-sheet-tabs > button:not(.icon-button) { white-space: nowrap; min-height: 33px; padding: 6px 12px; border-bottom: 2px solid transparent; border-radius: 0 0 7px 7px; }
+.office-sheet-tabs > button.selected { background: color-mix(in srgb, var(--accent, #087bdc) 8%, transparent); border-color: var(--accent, #087bdc); color: var(--accent, #087bdc); }
+:root[data-theme=dark] .office-document-editor { --office-cell-bg: #262b32; --office-grid-line: #424b58; }
+:root[data-theme=dark] .office-editing-ribbon { border-color: #ffffff16; box-shadow: 0 4px 16px #0002; }
+:root[data-theme=dark] .office-word-paper { box-shadow: 0 8px 30px #0003; }
+.office-tools-v2 :is(button,input,select),.office-slide-strip button,.office-sheet-tabs button { transition: background-color 130ms, border-color 130ms, color 130ms; }
+:root[data-motion=off] .office-tools-v2 :is(button,input,select),:root[data-motion=off] :is(.office-slide-strip,.office-sheet-tabs) button { transition: none; }
+@media (prefers-reduced-motion: reduce) { .office-tools-v2 :is(button,input,select),.office-slide-strip button,.office-sheet-tabs button { transition: none; } }

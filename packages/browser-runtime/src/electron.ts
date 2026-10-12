@@ -4,7 +4,8 @@ import { ViewerError } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 import { randomUUID } from 'node:crypto';
 
-interface BrowserEntry { view: WebContentsView; navigationId: string; layoutRevision: number; owner: BrowserWindow; visible: boolean; injecting: boolean; actor: Actor }
+interface BrowserEntry { view: WebContentsView; navigationId: string; layoutRevision: number; owner: BrowserWindow; visible: boolean; injecting: boolean; actor: Actor; sourceRevision: number; sourceSequence: number; sourceReady?: boolean; sourceClock?: number; deviceScaleFactor?: number; scrollAt: number; scrollX: number; scrollY: number; topHover?: boolean; sourceReading?: boolean; sourcePending?: { reason: string }; layoutBounds?: Rect }
+type BrowserSurfaceOptions = { preload?: string; onSourceChanged?(owner: BrowserWindow, viewId: string): void };
 import { readContextScript } from './context-script';
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -12,7 +13,46 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
   entries = new Map<string, BrowserEntry>();
   private requestedLayouts = new Map<string, { windowId: string; bounds: Rect }>();
   private pointerOverlays = new Map<BrowserWindow, { window: BrowserWindow; ready: Promise<void>; timer?: NodeJS.Timeout }>();
-  constructor(readonly core: ViewerCore, readonly windowFor: (id: string) => BrowserWindow, readonly localOrigins: () => string[] = () => [], readonly pointerEnabled: () => boolean = () => true) {}
+  constructor(readonly core: ViewerCore, readonly windowFor: (id: string) => BrowserWindow, readonly localOrigins: () => string[] = () => [], readonly pointerEnabled: () => boolean = () => true, private readonly surfaceOptions: BrowserSurfaceOptions = {}) {}
+  surface(viewId: string) {
+    const entry = this.entries.get(viewId);
+    if (!entry || !entry.visible || !entry.sourceReady || entry.sourceReading || entry.view.webContents.isDestroyed()) return undefined;
+    return { view: entry.view, navigationId: entry.navigationId, layoutRevision: entry.layoutRevision, revision: entry.sourceRevision, scrollX: entry.scrollX, scrollY: entry.scrollY, deviceScaleFactor: entry.deviceScaleFactor };
+  }
+  /** Accept only the fixed metadata channel from a known page's isolated preload. */
+  sourceChanged(senderId: number, value: Record<string, unknown>) {
+    const pair = [...this.entries].find(([, entry]) => entry.view.webContents.id === senderId);
+    if (!pair) return;
+    const [viewId, entry] = pair;
+    const sequence = Number(value.sequence), sourceTime = Number(value.scrollAt), x = Number(value.scrollX), y = Number(value.scrollY);
+    if (!Number.isSafeInteger(sequence) || sequence <= entry.sourceSequence || ![sourceTime, x, y, Number(value.width), Number(value.height)].every(Number.isFinite) || sourceTime < 0 || Math.abs(x) > 1e8 || Math.abs(y) > 1e8) return;
+    entry.sourceSequence = sequence; entry.sourceRevision++;
+    if (!entry.visible || entry.owner.isDestroyed()) return;
+    // Metadata is a wake-up hint, not the authoritative viewport. Read back
+    // from an isolated world, coalescing any newer signals while one read runs.
+    entry.sourcePending = { reason: String(value.reason ?? '') };
+    if (!entry.sourceReading) void this.readSource(viewId, entry);
+  }
+  private async readSource(viewId: string, entry: BrowserEntry) {
+    const pending = entry.sourcePending;
+    if (!pending || !entry.visible || entry.view.webContents.isDestroyed()) return;
+    entry.sourcePending = undefined; entry.sourceReading = true;
+    const navigationId = entry.navigationId;
+    try {
+      const data = await entry.view.webContents.executeJavaScriptInIsolatedWorld(999, [{ code: '({x:scrollX,y:scrollY,at:performance.now(),width:innerWidth,height:innerHeight,dpr:devicePixelRatio})' }]) as { x: number; y: number; at: number; width: number; height: number; dpr: number };
+      if (entry.navigationId !== navigationId || !entry.visible || entry.owner.isDestroyed() || ![data.x, data.y, data.at, data.width, data.height, data.dpr].every(Number.isFinite) || data.dpr <= 0) return;
+      const now = performance.now();
+      if (entry.sourceClock === undefined) entry.sourceClock = now - data.at;
+      const at = Math.max(entry.scrollAt, Math.min(now, data.at + entry.sourceClock));
+      const moved = entry.scrollX !== data.x || entry.scrollY !== data.y;
+      entry.scrollAt = at; entry.scrollX = data.x; entry.scrollY = data.y;
+      entry.deviceScaleFactor = data.dpr;
+      entry.sourceReading = false; entry.sourceReady = true;
+      if (moved || pending.reason === 'ready') entry.owner.webContents.send('agentviewer:toolbar', { action: 'scroll', viewId, scrollX: data.x, scrollY: data.y, scrollAt: at, navigationId });
+      this.surfaceOptions.onSourceChanged?.(entry.owner, viewId);
+    } catch { /* Navigation may destroy the originating execution context. */ }
+    finally { entry.sourceReading = false; if (entry.sourcePending) void this.readSource(viewId, entry); }
+  }
   private async pointer(entry: BrowserEntry, x: number, y: number, kind: string) {
     if (!this.pointerEnabled()) return;
     let overlay = this.pointerOverlays.get(entry.owner);
@@ -34,12 +74,19 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
   async open(viewId: string, url: string) {
     if (this.entries.has(viewId)) return;
     const metadata = this.core.getView(viewId), owner = this.windowFor(metadata.windowId);
-    const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'persist:agentviewer-web' } });
-    const entry: BrowserEntry = { view, owner, navigationId: randomUUID(), layoutRevision: 0, visible: false, injecting: false, actor: 'human' };
+    const view = new WebContentsView({ webPreferences: { preload: this.surfaceOptions.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'persist:agentviewer-web' } });
+    const entry: BrowserEntry = { view, owner, navigationId: randomUUID(), layoutRevision: 0, visible: false, injecting: false, actor: 'human', sourceRevision: 0, sourceSequence: 0, scrollAt: 0, scrollX: 0, scrollY: 0 };
     this.entries.set(viewId, entry); owner.contentView.addChildView(view); view.setVisible(false);
     const layout = this.requestedLayouts.get(viewId);
     if (layout) this.layout(layout.windowId, [...this.requestedLayouts.entries()].filter(([, value]) => value.windowId === layout.windowId).map(([id, value]) => ({ viewId: id, bounds: value.bounds })));
     const wc = view.webContents;
+    wc.setZoomMode('isolated');
+    wc.setZoomFactor(metadata.zoom ?? 1);
+    wc.on('zoom-changed', (_event, direction) => {
+      const current = this.core.getView(viewId).zoom ?? wc.getZoomFactor();
+      this.core.setViewZoom(viewId, Math.max(.25, Math.min(4, current + (direction === 'in' ? .1 : -.1))), entry.injecting ? 'agent' : 'human');
+      if (!entry.owner.isDestroyed()) entry.owner.webContents.send('agentviewer:toolbar', { action: 'zoom-updated', viewId });
+    });
     const protectedOrigins = new Set(this.localOrigins().flatMap(origin => {
       const parsed = new URL(origin), alias = new URL(origin);
       alias.hostname = parsed.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
@@ -48,23 +95,59 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     wc.session.webRequest.onBeforeRequest({ urls: [...protectedOrigins].flatMap(origin => [origin + '/api/*', origin + '/v1/*']) }, (_details, callback) => callback({ cancel: true }));
     wc.setWindowOpenHandler(({ url: target }) => { if (/^https?:/.test(target)) void this.core.openWeb(target, metadata.windowId).catch(e => this.core.event('browser.error', { viewId, error: String(e) })); return { action: 'deny' }; });
     wc.on('will-navigate', (event, url) => { if (!/^https?:/.test(url)) event.preventDefault(); });
-    wc.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) { entry.navigationId = randomUUID(); entry.layoutRevision = 0; this.core.event('browser.navigation', { viewId, navigationId: entry.navigationId }); } });
+    wc.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => { if (isMainFrame) { entry.navigationId = randomUUID(); entry.layoutRevision = 0; entry.sourceReady = false; entry.sourceRevision++; if (!inPlace) { entry.sourceSequence = 0; entry.sourceClock = undefined; } this.core.event('browser.navigation', { viewId, navigationId: entry.navigationId }); this.surfaceOptions.onSourceChanged?.(entry.owner, viewId); } });
+    const readySource = () => { entry.sourceRevision++; entry.sourcePending = { reason: 'ready' }; if (!entry.sourceReading) void this.readSource(viewId, entry); };
+    wc.on('did-finish-load', readySource);
+    wc.on('did-navigate-in-page', readySource);
     wc.on('page-title-updated', (_e, title) => { const doc = this.core.getDocument(metadata.documentId); doc.info.title = title; this.core.event('browser.title', { viewId }); });
     wc.on('did-navigate', (_e, currentUrl) => { this.core.getDocument(metadata.documentId).info.model.url = currentUrl; });
-    wc.on('before-input-event', () => { if (!entry.injecting) { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
-    wc.on('before-mouse-event', (_event, mouse) => { if (!entry.injecting && mouse.type === 'mouseMove' && mouse.y < 65) entry.owner.webContents.send('agentviewer:toolbar', { action: 'hover', viewId }); if (!entry.injecting && mouse.type === 'mouseDown') { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
-    wc.on('focus', () => { if (!entry.injecting) { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
+    wc.on('before-input-event', () => { if (entry.visible && !entry.injecting) { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
+    wc.on('before-mouse-event', (_event, mouse) => {
+      if (!entry.injecting && mouse.type === 'mouseMove') {
+        const top = mouse.y < 65;
+        if (top && !entry.topHover) entry.owner.webContents.send('agentviewer:toolbar', { action: 'reveal', viewId });
+        if (!top && entry.topHover) entry.owner.webContents.send('agentviewer:toolbar', { action: 'leave', viewId });
+        entry.topHover = top;
+      }
+      if (entry.visible && !entry.injecting && mouse.type === 'mouseDown') { entry.actor = 'human'; this.core.activate(viewId, 'human'); }
+    });
+    // Chromium may focus an autofocus element as a hidden page finishes
+    // loading. That is not a user's change of reading target.
+    wc.on('focus', () => { if (entry.visible && !entry.injecting) { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
     wc.on('did-fail-load', (_e, code, message, _url, main) => { if (main && code !== -3) this.core.event('browser.error', { viewId, error: message }); });
     wc.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     await wc.loadURL(url);
   }
   private entry(viewId: string) { const entry = this.entries.get(viewId); if (!entry || entry.view.webContents.isDestroyed()) throw new ViewerError('TARGET_NOT_FOUND', '网页视图不存在或已关闭。'); return entry; }
+  setZoom(viewId: string, factor: number) {
+    const entry = this.entries.get(viewId); if (!entry || entry.view.webContents.isDestroyed()) return;
+    if (Math.abs(entry.view.webContents.getZoomFactor() - factor) < .001) return;
+    entry.view.webContents.setZoomFactor(factor);
+    entry.layoutRevision++; entry.sourceRevision++; entry.sourcePending = { reason: 'resize' };
+    if (!entry.sourceReading) void this.readSource(viewId, entry);
+    this.surfaceOptions.onSourceChanged?.(entry.owner, viewId);
+  }
   layout(windowId: string, layouts: { viewId: string; bounds: Rect }[]) {
     const ids = new Set(layouts.map(l => l.viewId));
     for (const [id, value] of this.requestedLayouts) if (value.windowId === windowId && !ids.has(id)) this.requestedLayouts.delete(id);
     for (const layout of layouts) this.requestedLayouts.set(layout.viewId, { windowId, bounds: layout.bounds });
     for (const [id, entry] of this.entries) if (this.core.views.get(id)?.windowId === windowId) { entry.visible = ids.has(id); entry.view.setVisible(entry.visible); }
-    for (const layout of layouts) { const entry = this.entries.get(layout.viewId); if (!entry) continue; const owner = this.windowFor(windowId); if (owner !== entry.owner) { entry.owner.contentView.removeChildView(entry.view); owner.contentView.addChildView(entry.view); entry.owner = owner; } entry.view.setBounds({ x: Math.round(layout.bounds.x), y: Math.round(layout.bounds.y), width: Math.max(1, Math.round(layout.bounds.width)), height: Math.max(1, Math.round(layout.bounds.height)) }); }
+    for (const layout of layouts) {
+      const entry = this.entries.get(layout.viewId); if (!entry) continue;
+      const owner = this.windowFor(windowId); if (owner !== entry.owner) { entry.owner.contentView.removeChildView(entry.view); owner.contentView.addChildView(entry.view); entry.owner = owner; }
+      const bounds = { x: Math.round(layout.bounds.x), y: Math.round(layout.bounds.y), width: Math.max(1, Math.round(layout.bounds.width)), height: Math.max(1, Math.round(layout.bounds.height)) }, previous = entry.layoutBounds;
+      const changed = !previous || ['x', 'y', 'width', 'height'].some(key => previous[key as keyof Rect] !== bounds[key as keyof Rect]);
+      if (!changed) continue;
+      entry.view.setBounds(bounds); entry.layoutBounds = bounds;
+      // The first usable layout preserves revision zero for existing clients.
+      // Subsequent real native bounds invalidate both input coordinates and
+      // sampled pixels; identical layout reports do not manufacture epochs.
+      if (previous && previous.width > 0 && previous.height > 0) {
+        entry.layoutRevision++; entry.sourceRevision++; entry.sourcePending = { reason: 'resize' };
+        if (!entry.sourceReading) void this.readSource(layout.viewId, entry);
+        this.surfaceOptions.onSourceChanged?.(entry.owner, layout.viewId);
+      }
+    }
   }
   async context(viewId: string, actor?: Actor): Promise<ReadingContext> {
     const entry = this.entry(viewId), view = this.core.getView(viewId), doc = this.core.getDocument(view.documentId);

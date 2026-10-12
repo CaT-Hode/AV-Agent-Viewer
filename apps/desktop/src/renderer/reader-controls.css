@@ -1,0 +1,12 @@
+:root[data-theme] .workbench .navigation-zoom { gap: 0; }
+:root[data-theme] .workbench .navigation-zoom .icon-button { width: 26px; }
+.navigation-zoom-value { display: flex; align-items: center; font-size: 11px; color: var(--navigation-ink, var(--glass-ink)); }
+.navigation-zoom-value input { width: 40px; padding: 5px 0; text-align: right; color: inherit; background: transparent; border: 0; outline: 0; font: inherit; appearance: textfield; }
+.navigation-zoom-value input::-webkit-inner-spin-button { appearance: none; }
+.navigation-zoom-value input:focus-visible { outline: 2px solid var(--accent); border-radius: 5px; }
+.reading-content-body { min-height: 100%; }
+.format-html .reading-content-body, .format-web .reading-content-body { height: 100%; }
+.format-html .html-preview { min-height: 100%; }
+.reading-content-body:has(.source-editor), .reading-content-body:has(.split-view) { height: 100%; }
+.file-drop-hint { position: fixed; z-index: 45; left: 50%; top: 40%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 16px; border-radius: 32px; padding: 22px 28px; color: var(--glass-ink); box-shadow: 0 16px 60px #14232d24; pointer-events: none; }
+.file-drop-hint small { color: var(--muted); }

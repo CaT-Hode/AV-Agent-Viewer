@@ -1,0 +1,62 @@
+/* Only panes scroll. Prevent directory jumps from moving window chrome. */
+html,body,#root{height:100%;overflow:clip}
+.app-shell,.settings-shell{height:100dvh;min-height:0;overflow:clip}
+.app-shell>.tab-strip{flex:0 0 49px}
+.app-shell>.status-bar{flex:0 0 27px}
+.workbench.motion-layout{gap:0;min-height:0;grid-template-rows:minmax(0,1fr);overflow:clip}
+.motion-layout>.activity-rail{grid-column:1}
+.motion-layout>.format-sidebar{grid-column:3}
+.motion-layout>.reader-panel{grid-column:5}
+.motion-layout>.ai-drawer{grid-column:7}
+.motion-layout>.ai-rail{grid-column:9}
+:root{--motion-travel:7px;--motion-side-travel:12px;--motion-popover-scale:.99;--motion-modal-travel:10px;--motion-modal-scale:.98;--motion-content-duration:180ms;--motion-presence-ease:cubic-bezier(.22,.75,.2,1);--dur-press:300ms}
+:root[data-motion="elegant"]{--motion-travel:12px;--motion-side-travel:16px;--motion-popover-scale:.985;--motion-modal-travel:14px;--motion-modal-scale:.965;--motion-content-duration:440ms;--motion-presence-ease:cubic-bezier(.2,.76,.19,1.025);--dur-press:520ms;--ease-drawer:cubic-bezier(.22,.75,.19,1);--ease-spring:cubic-bezier(.25,1.06,.34,1)}
+/* A single transition handles both entry and exit, and retargets on rapid clicks. */
+:root [data-motion-surface][data-motion-phase]{animation:none!important;transition:opacity var(--motion-duration,180ms) var(--ease-out),translate var(--motion-duration,180ms) var(--motion-presence-ease),scale var(--motion-duration,180ms) var(--motion-presence-ease);opacity:1;translate:none;scale:1}
+:root [data-motion-surface][data-motion-phase="enter"],:root [data-motion-surface][data-motion-phase="exit"]{opacity:0;translate:0 var(--motion-travel)}
+:root [data-motion-surface="left"][data-motion-phase="enter"],:root [data-motion-surface="left"][data-motion-phase="exit"]{translate:calc(-1 * var(--motion-side-travel)) 0}
+:root [data-motion-surface="right"][data-motion-phase="enter"],:root [data-motion-surface="right"][data-motion-phase="exit"]{translate:var(--motion-side-travel) 0}
+:root :is([data-motion-surface="popover"],[data-motion-surface="toast"],[data-motion-surface="selection"]):is([data-motion-phase="enter"],[data-motion-phase="exit"]){scale:var(--motion-popover-scale)}
+:root [data-motion-surface="modal"][data-motion-phase="enter"],:root [data-motion-surface="modal"][data-motion-phase="exit"]{translate:none}
+:root :is([data-motion-surface="native"],[data-motion-surface="tooltip"],[data-motion-surface="agent"])[data-motion-phase]{translate:none;scale:1}
+:root [data-motion-surface="modal"][data-motion-phase]>.modal{animation:none!important;transition:translate var(--motion-duration,200ms) var(--ease-drawer),scale var(--motion-duration,200ms) var(--ease-out);translate:none;scale:1}
+:root [data-motion-surface="modal"][data-motion-phase="enter"]>.modal,:root [data-motion-surface="modal"][data-motion-phase="exit"]>.modal{translate:0 var(--motion-modal-travel);scale:var(--motion-modal-scale)}
+:root [data-motion-phase="exit"]{pointer-events:none}
+.motion-swap{animation:motion-content-in var(--motion-content-duration) var(--motion-presence-ease) both}
+@keyframes motion-content-in{from{translate:0 4px}to{translate:none}}
+.animated-disclosure{border-top:1px solid var(--divider,var(--line));margin-top:10px}
+.disclosure-trigger{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--soft);padding:10px 0;width:100%;text-align:left}
+.disclosure-chevron{font-size:18px;line-height:12px;rotate:0deg;transition:rotate var(--motion-duration,200ms) var(--ease-out)}
+.animated-disclosure[data-open="true"] .disclosure-chevron{rotate:90deg}
+.disclosure-body{overflow:clip;transform-origin:top}
+:root [data-motion-surface="disclosure"]:is([data-motion-phase="enter"],[data-motion-phase="exit"]){translate:0 -5px;scale:1 .985}
+.disclosure-body>div{min-height:0;overflow:hidden}
+.disclosure-body p{font-size:11px;color:var(--soft);white-space:pre-wrap;margin:0 0 12px}
+.selection-inline-error{font-size:11px;line-height:1.5;color:#b84655;margin:0;max-height:50px;overflow:auto}
+:root[data-theme="dark"] .selection-inline-error{color:#ef9da7}
+.setting-switch:not(.glass-switch) span{transition:transform 180ms var(--ease-out)}
+.setting-switch:not(.glass-switch){transition:background-color 150ms var(--ease-out)}
+.icon-button:active:not(:disabled),.tool-row:active:not(:disabled),.activity-rail button:active,.ai-rail button:active{transform:scale(.97);transition-duration:120ms}
+/* A floating tool must not keep an ancestor transform after it settles. */
+.workbench .reader-panel{animation:none}
+:root :is(.home-main,.home-sidebar,.home-hero,.home-columns,.recent-card){animation:none}
+/* The surface's backdrop stays live throughout the entrance. Content and
+   icons may fade separately; a pane containing materials never fades as one. */
+@keyframes material-pane-arrive{from{translate:0 10px;scale:.992}to{translate:none;scale:1}}
+@keyframes settings-content-arrive{from{translate:0 6px}to{translate:none}}
+:root .workbench :is(.activity-rail,.ai-rail){animation:material-pane-arrive 420ms var(--motion-presence-ease) both}
+:root :is(.settings-nav,.settings-main){animation:settings-content-arrive 320ms var(--motion-presence-ease) both}
+:root[data-motion="elegant"] .workbench :is(.activity-rail,.ai-rail){animation-duration:620ms}
+:root[data-motion="elegant"] :is(.settings-nav,.settings-main){animation-duration:520ms}
+:root[data-motion="elegant"] :is(.home-main,.home-sidebar){animation:settings-content-arrive 520ms var(--motion-presence-ease) both}
+:root[data-motion-input="keyboard"] .motion-swap{animation:none}
+:root[data-motion="reduced"] [data-motion-surface][data-motion-phase]{translate:none;scale:1;transition:opacity 80ms ease-out!important}
+:root[data-motion="reduced"] [data-motion-surface="modal"]>.modal{translate:none;scale:1;transition:none}
+:root[data-motion="off"] *,:root[data-motion="off"] *::before,:root[data-motion="off"] *::after{animation:none!important;transition:none!important}
+@media(prefers-reduced-motion:reduce){:root [data-motion-surface][data-motion-phase]{translate:none;scale:1;transition:opacity 80ms ease-out!important}:root [data-motion-surface="modal"][data-motion-phase]>.modal{translate:none;scale:1;transition:none}}
+/* Opacity on a sampling ancestor creates a new Backdrop Root. Keep the same
+   live material during the whole transition and fade optical/foreground leaves
+   separately. This also covers nested selection/modal hosts. */
+:root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]{opacity:1}
+:root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]>.liquid-glass-surface{opacity:1}
+:root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]>.liquid-glass-surface :is(.liquid-glass-center,.liquid-glass-edge,.liquid-glass-highlight,.liquid-glass-tint){transition:opacity var(--motion-duration,180ms) var(--ease-out)}

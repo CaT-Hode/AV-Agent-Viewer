@@ -15,9 +15,9 @@ export function actionsFor(snapshot: ReadingSnapshot, ai: boolean) {
   if(d.format==='pdf') { if(s.pageRects?.length) actions.push('highlight','underline','strike'); }
   else actions.push('highlight');
   if(['markdown','html'].includes(d.format) && s.text) actions.push('bold','italic','strike','code','replace');
-  if(d.format==='docx' && l?.blockId) actions.push('bold','italic','underline','replace','heading','align-left','align-center');
-  if(d.format==='pptx' && l?.shapeId && l.slideId) actions.push('bold','italic','underline','replace','center-object');
-  if(d.format==='xlsx' && l?.cell && l.sheetId) actions.push('bold','italic','align-left','align-center','replace');
+  if(d.format==='docx' && l?.blockId) actions.push('bold','italic','underline','strike','replace','heading','align-left','align-center');
+  if(d.format==='pptx' && l?.shapeId && l.slideId) actions.push('bold','italic','underline','strike','replace','center-object');
+  if(d.format==='xlsx' && l?.cell && l.sheetId) actions.push('bold','italic','underline','strike','align-left','align-center','replace');
   return actions.map(id=>({id,label:labels[id],input:['note','replace','ask'].includes(id)}));
 }
 const queues=new WeakMap<ViewerCore,Promise<unknown>>();
@@ -53,7 +53,7 @@ function operationFor(snapshot:ReadingSnapshot,args:SelectionAction):EditOperati
     if(action==='highlight')return {kind:'sheets.setCellFormat',sheetId:l.sheetId!,address:l.cell!,fill:'FFE48A'};
     const cell=d.model.sheets?.find(s=>s.id===l.sheetId)?.rows.flat().find(c=>c.address===l.cell);
     if(action==='replace')return {kind:'sheets.setCell',sheetId:l.sheetId!,address:l.cell!,value:args.value??''};
-    return {kind:'sheets.setCellFormat',sheetId:l.sheetId!,address:l.cell!,...(action==='bold'?{bold:!cell?.bold}:action==='italic'?{italic:!cell?.italic}:{horizontal:action==='align-left'?'left':'center'})};
+    return {kind:'sheets.setCellFormat',sheetId:l.sheetId!,address:l.cell!,...(action==='bold'?{bold:!cell?.bold}:action==='italic'?{italic:!cell?.italic}:action==='underline'?{underline:!cell?.underline}:action==='strike'?{strike:!cell?.strike}:{horizontal:action==='align-left'?'left':'center'})};
   }
   if(d.format==='docx'||d.format==='pptx'){
     const block=d.format==='docx'?d.model.blocks?.find(b=>b.id===l.blockId):d.model.slides?.find(s=>s.id===l.slideId)?.blocks.find(b=>b.id===l.shapeId);
@@ -64,7 +64,7 @@ function operationFor(snapshot:ReadingSnapshot,args:SelectionAction):EditOperati
     const from=l.from??uniqueOffset(block.text,s.text),to=l.to??from+s.text.length;
     if(block.text.slice(from,to)!==s.text)throw new ViewerError('INVALID_TARGET','选中文字已变化。');
     if(action==='replace'){const text=block.text.slice(0,from)+(args.value??'')+block.text.slice(to);return d.format==='docx'?{kind:'word.setBlock',blockId:block.id,text}:{kind:'slides.setText',slideId:l.slideId!,shapeId:block.id,text};}
-    return {kind:'office.formatText',blockId:block.id,slideId:l.slideId,from,to,expectedText:s.text,style:action as 'bold'|'italic'|'underline',enabled:true};
+    return {kind:'office.formatText',blockId:block.id,slideId:l.slideId,from,to,expectedText:s.text,style:action as 'bold'|'italic'|'underline'|'strike',enabled:true};
   }
   const text=d.model.text??'',from=l?.from??uniqueOffset(text,s.text),to=l?.to??from+s.text.length;
   if(text.slice(from,to)!==s.text)throw new ViewerError('INVALID_TARGET','无法安全匹配选区源码，请在源码模式选择。');

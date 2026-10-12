@@ -30,6 +30,8 @@ npm.cmd start
 
 ## 阅读界面、设置与翻译
 
+新标签页中央提供液态玻璃搜索栏，输入网址或本地文件路径按 Enter 打开，输入文件名即时搜索文档库、示例和生成译文。使用 ↑／↓ 选择结果、Esc 收起、Ctrl+L 聚焦；已有文件复用编辑会话，打开内容直接替换发起请求的新标签页。每个新标签页保留自己的查询；慢速打开期间仍可切换标签，完成结果不会抢走当前阅读目标。搜索栏采用 [kube.io Searchbox](https://kube.io/blog/liquid-glass-css-svg/#searchbox) 的聚焦舒展、按压和材质弹簧，完整折射保持 0px Gaussian 模糊。
+
 左上角只保留静态标识；加号打开主页样式的新标签页，打开文件时直接使用该标签。最近文档、示例和生成的译文集中在主页文档库。阅读页两侧是悬浮圆角工具面板：左侧根据格式显示大纲、查找及可用工具，重复点击当前图标可收起面板；网页不显示左侧工具。右侧 AI 工具栏按需展开。文档顶部只有不占整行的玻璃胶囊，向下滚动自动收起；本地文档仅显示文件名，网页显示地址。各格式提供单行图标选区胶囊，PDF 高亮、下划线和批注可直接从选区操作；旋转、增页和 OCR 留在左侧格式工具。设置中的“文档阅读背景”提供暖纸、晨雾、极光、暮光和纯色，不写入文档。`Ctrl+,` 打开独立、非模态的设置窗口；尚未接入的偏好会显示依赖原因并禁用控件。
 
 文档选中文字后，可在右侧浮窗或抽屉查看译文、复制和固定卡片；这一过程不修改原文文件或撤销栈。全文翻译会冻结发起时的字节并在后台生成新的同格式文件，支持取消后从已完成片段继续。Markdown、HTML、DOCX、PPTX、XLSX 的基础结构译文已接入；Office 复杂样式、PPT 溢出及 Excel 扩展需要人工验收。PDF 全文翻译使用内置 [BabelDOC](https://github.com/funstory-ai/BabelDOC) 0.6.4 适配器与离线版面资源，已通过一页 PDF 的模型桥往返；复杂样本尚未验收。BabelDOC 采用 AGPL-3.0 许可证。
@@ -43,9 +45,9 @@ npm.cmd start
 | 格式 | 已实现 | 限制 |
 | --- | --- | --- |
 | Markdown | CodeMirror 源码、GFM 预览、源码/预览分栏、范围修改与保存 | 数学/图示插件和稳定的源码/渲染映射待补 |
-| DOCX | 段落阅读、文字编辑、标题样式、段落对齐、插入段落、保存 DOCX；可转入内置 LibreOffice 完整编辑 | 工作台内的 OOXML 编辑只覆盖常用段落工具；修改文字块可能合并混合字体样式 |
-| PPTX | 按实际页序读取、文字对象编辑、位置与尺寸调整、保存 PPTX；可转入内置 LibreOffice 完整编辑 | 工作台预览为文字与近似位置；母版、图片、动画等对象在 LibreOffice 中处理 |
-| XLSX | 单元格与公式、显式数字/布尔类型、字体/对齐/数字格式/填充、工作表增改名、保存 XLSX；可转入内置 LibreOffice 完整编辑 | 当前模型最多 1000 行/50 列；无公式计算引擎，复杂内容往返受 ExcelJS 限制 |
+| DOCX | 段落与选区文字编辑、字形/颜色/字号、标题与段落对齐/缩进/间距、增删段落、插入表格、页面参数、保存 DOCX；可转入内置 LibreOffice 完整编辑 | 工作台内为结构化 OOXML 编辑，复杂域、修订和混合排版不等同完整 Word；整段替换可能合并该段的混合字体样式 |
+| PPTX | 实际页序、幻灯片增删/复制/排序、文字与对象属性、位置/尺寸/旋转、背景、备注、保存 PPTX；可转入内置 LibreOffice 完整编辑 | 工作台预览为文字与近似位置；母版、图片、动画等复杂对象仍在 LibreOffice 中处理 |
+| XLSX | 单元格/公式/类型、字体/对齐/数字格式/填充、工作表、行列插入删除/尺寸、合并/拆分、排序、保存 XLSX；可转入内置 LibreOffice 完整编辑 | 当前模型最多 1000 行/50 列；无完整公式计算引擎，复杂内容往返受 ExcelJS 限制 |
 | PDF | 真实画布与文字层、中文文字增补、覆盖式高亮、页面旋转/新增、保存 | 高亮是写入页面的矩形；原生批注、表单、删除/重排未实现。增补坐标限未旋转、CropBox 原点为零的页面 |
 | 网页 | Chromium 浏览、导航、多视图、截图、鼠标/键盘、顶层可见文字与选区 | DOM 元素引用、跨 frame 语义读取、下载管理和多 profile 设置待补 |
 | HTML/网页副本 | 源码、净化预览、位置/选择、保存 HTML；可从真实网页建立副本 | 资源仍使用原链接；无完整离线资产包和结构富文本编辑器 |
@@ -114,15 +116,24 @@ npm.cmd run cli -- context
 ```powershell
 npm.cmd run build
 npm.cmd test
+npm.cmd run test:home-search
 npm.cmd run test:desktop
 npm.cmd run test:ui
 npm.cmd run engines:verify
 npm.cmd run test:engines
 ```
 
-桌面测试启动独立 Electron 实例，在临时样本上操作并生成截图，结果目录由测试输出提供。运行前关闭占用 3210 的 AgentViewer。依赖版本由 `package-lock.json` 固定。
+桌面测试启动独立 Electron 实例，在临时样本上操作并生成截图，结果目录由测试输出提供。使用动态端口的专项测试无需关闭安装版；固定 3210 的旧测试需避免端口冲突。依赖版本由 `package-lock.json` 固定。`native-frame-subscription-probe.e2e.ts` 是底层 API 诊断实验，150% 的未对齐奇数区域故意保留严格失败用于揭示半像素重采样，不是通过型 CI 回归；生产采样的验收使用 `native-frame-sampling.e2e.ts`。
 
 - [接口与扩展](docs/接口与扩展.md)：格式、浏览器、存储和 harness 升级接口。
 - [扩展架构 ADR](docs/adr/0001-扩展架构与首轮引擎.md)：首轮引擎与持久化决策。
 - [实施状态与升级路线](docs/实施状态与升级路线.md)：功能范围、验收证据和下一轮计划。
+- [全面编辑能力规划](docs/design/EDITING_CAPABILITIES_PLAN_2026-10-12.md)：Markdown 对标 Typora、Office 对标 LibreOffice、PDF 完整编辑的功能矩阵、内置引擎、harness 命令与实施门槛。
+- [按格式重构左侧工具箱](docs/design/LEFT_TOOLBOX_REQUIREMENTS_2026-10-12.md)：从编辑任务重新设计 Markdown、Word、PPT、Excel、PDF 与 HTML 的分组、对象属性、真实缩略图、统一命令、MCP 契约和验收；这是需求设计，尚未实施新左栏。
+- [统一导航实现](docs/design/NAVIGATION_SHARED_2026-10-12.md)：共享模块、滚动阈值与无常驻底栏布局；光学参数以之后的 kube.io 研究和最新材质范围为准。
+- [Liquid Glass 光学研究](docs/design/LIQUID_GLASS_OPTICS_RESEARCH_2026-10-12.md)：官方与开源实现比较、凸面折射模型、真实正文采样与动态验证。
+- [Liquid Glass 组件与弹性](docs/design/LIQUID_GLASS_COMPONENTS_2026-10-12.md)：作者示例映射、spring 参数及设置拖动 undo；普通组件采用轻量磨砂，导航、Agent 胶囊和 AI 结果／译文小浮窗使用完整折射。
+- [工具与交互更新](docs/design/UI_POLISH_2026-10-12.md)：Office 默认左侧编辑、11 项 AI 阅读工具、优雅动效、真实界面和安装同步验收。
+- [独立设置窗口改造](docs/design/SETTINGS_REDESIGN_2026-10-12.md)：分组布局、拖动开关/枚举、即时保存与全局撤销、按需材质预览及接口边界。
+- [阅读器渲染性能修复](docs/design/RENDERING_PERFORMANCE_2026-10-12.md)：原生 PNG/图片复用、双预算 LRU、全字段 sharing、Office memo 和真实计数验收。
 - [架构调研与 MCP 设计](docs/AgentViewer-架构调研与MCP设计.md)：选型依据。

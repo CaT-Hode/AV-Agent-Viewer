@@ -1,0 +1,108 @@
+/* Component adaptation of the kube.io optics study. Existing application
+   layout/commands stay intact; surfaces share the same optical implementation. */
+:where(.material-host) { position: relative; isolation: isolate; }
+:where(.material-host) > :where(:not(.liquid-glass-surface)) { position: relative; z-index: 1; }
+.material-host {
+  --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill, .6));
+  --liquid-glass-saturation: 1;
+  --liquid-glass-blur: 1px;
+}
+:root[data-theme="dark"] .material-host { --liquid-glass-tint: rgb(0 0 0 / var(--glass-material-fill, .6)); --liquid-glass-saturation: 1; }
+.material-host:has(> .liquid-glass-surface:is([data-glass-variant="search"],[data-glass-variant="button"],[data-glass-variant="capsule"])) { --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,.05)); }
+:root[data-theme] :is(.activity-rail,.ai-rail,.format-sidebar,.ai-drawer,.home-sidebar,.translation-popover,.recent-card).material-host {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: transparent;
+  box-shadow: 0 10px 28px -17px rgb(20 38 50 / .20), 0 2px 5px rgb(20 38 50 / .035);
+}
+:root[data-theme] :is(.format-sidebar,.ai-drawer,.home-sidebar,.translation-popover).material-host { --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,.6)); }
+:root[data-theme="dark"] :is(.format-sidebar,.ai-drawer,.home-sidebar,.translation-popover).material-host { --liquid-glass-tint: rgb(0 0 0 / var(--glass-material-fill,.6)); }
+:root[data-theme] :is(.settings-search,.search-field).material-host {
+  border-radius: 999px;
+  background: transparent;
+  border-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 3px 12px -6px rgb(20 38 50 / .16);
+  transition: box-shadow 180ms var(--ease-out), translate 180ms var(--ease-out);
+}
+:root[data-theme] :is(.settings-search,.search-field).material-host:focus-within { box-shadow: 0 5px 18px -6px rgb(53 127 188 / .22), 0 0 0 2px rgb(53 127 188 / .14); }
+:root[data-theme] :is(.modal,.selection-input).material-host {
+  background: transparent;
+  border-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  --liquid-glass-tint: rgb(255 255 255 / .6);
+  --liquid-glass-blur: 1px;
+}
+:root[data-theme="dark"] :is(.modal,.selection-input).material-host { --liquid-glass-tint: rgb(0 0 0 / .6); }
+:root[data-theme] :is(.selection-tool-icons,.agent-capsule,.toast,.selection-error).material-host { background: transparent; border-color: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* The same frosted material throughout enter/idle/exit. Native transparent
+   surfaces receive a translucent tint too; no solid-black fallback swap. */
+:root[data-theme] .app-tooltip.material-host { background: transparent; --liquid-glass-tint: rgb(247 250 253 / .76); --liquid-glass-solid: #eef3f7; --liquid-glass-frosted-blur: 12px; --liquid-glass-frosted-saturation: 1.12; color: #273746; border-color: rgb(255 255 255 / .58); }
+:root[data-theme="dark"] .app-tooltip.material-host { --liquid-glass-tint: rgb(35 46 58 / .72); --liquid-glass-solid: #26333f; color: #eef5fb; border-color: rgb(191 218 238 / .17); }
+.material-host:is(button,.recent-card):not(.glass-elastic):active:not(:disabled) { scale: .985; }
+.recent-card.material-host { transition: box-shadow 220ms var(--ease-out); }
+.recent-card.material-host:hover { box-shadow: 0 15px 30px -17px rgb(20 38 50 / .22); }
+/* Animated hosts must not establish an opacity BackdropRoot. The leaves fade,
+   allowing the true backdrop to remain available throughout entry and exit. */
+:root .material-host[data-motion-surface][data-motion-phase] { opacity: 1; }
+.material-host[data-motion-phase="enter"],.material-host[data-motion-phase="exit"] { --liquid-glass-opacity: 0; }
+.material-host[data-motion-phase="open"] { --liquid-glass-opacity: 1; }
+.material-host > :not(.liquid-glass-surface) { opacity: var(--liquid-glass-opacity,1); }
+.material-host[data-motion-phase] > :not(.liquid-glass-surface) { transition: opacity var(--motion-duration,180ms) var(--ease-out); }
+.material-host:is([data-motion-phase="enter"],[data-motion-phase="exit"]) > :not(.liquid-glass-surface) { opacity: 0; }
+:root :is(.modal-backdrop,.selection-tools)[data-motion-phase] { opacity: 1; }
+:is(.modal-backdrop,.selection-tools):is([data-motion-phase="enter"],[data-motion-phase="exit"]) { --liquid-glass-opacity: 0; }
+:is(.modal-backdrop,.selection-tools)[data-motion-phase="open"] { --liquid-glass-opacity: 1; }
+.modal-backdrop { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; transition: background-color var(--motion-duration,200ms) var(--ease-out); }
+.modal-backdrop:is([data-motion-phase="enter"],[data-motion-phase="exit"]) { background: transparent; }
+.motion-swap:has(.liquid-glass-surface) { animation: glass-content-arrive 160ms var(--ease-out); }
+@keyframes glass-content-arrive { from { translate: 0 3px; } to { translate: none; } }
+
+/* Transparent lip lens over an opaque color track: one optical thumb, never
+   independently frosted nested children. Native button semantics are retained. */
+:root[data-theme] .setting-switch.glass-switch { position: relative; width: var(--switch-track-width,68px); min-width: var(--switch-track-width,68px); height: var(--switch-track-height,28.475px); padding: 0; border: 0; border-radius: calc(var(--switch-track-height,28.475px) / 2); background: #94949f77; box-shadow: none; overflow: visible; touch-action: none; transition: background-color 180ms; }
+:root[data-theme] .setting-switch.glass-switch.on { background: #3bbf4eee; }
+:root[data-theme] .glass-switch > .glass-switch-thumb {
+  display: block; position: absolute; left: var(--switch-thumb-left,-9.32875px); top: 50%; width: var(--switch-thumb-width,62.05px); height: var(--switch-thumb-height,39.1px);
+  border-radius: var(--switch-thumb-radius,19.55px); background: transparent; box-shadow: 0 2px 9px rgb(0 0 0 / .12);
+  translate: 0 -50%; transform: none; transition: none;
+  --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,1));
+}
+.glass-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.glass-range-control { display: flex; align-items: center; gap: 12px; width: 414px; }
+.glass-range { flex: 0 0 330px; position: relative; height: 60px; min-width: 330px; }
+.glass-range-track { position: absolute; top: 23px; left: 0; right: 0; height: 14px; border-radius: 7px; background: linear-gradient(to right,#0377f7 calc(var(--range-progress) * 100%),#89898f66 0); }
+.glass-range-thumb { position: absolute; top: 0; left: calc((100% - 54px) * var(--range-progress) - 18px); width: 90px; height: 60px; border-radius: 30px; pointer-events: none; box-shadow: 0 3px 14px rgb(0 0 0 / .1); --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,1)); }
+:root[data-theme] .settings-main .glass-range input[type="range"] { position: absolute; inset: 0; width: 100%; min-width: 0; padding: 0; margin: 0; height: 60px; border: 0; background: transparent; appearance: none; cursor: pointer; z-index: 2; box-shadow: none; }
+.glass-range input::-webkit-slider-thumb { appearance: none; width: 54px; height: 60px; background: transparent; border: 0; }
+.glass-range input::-webkit-slider-runnable-track { background: transparent; border: 0; height: 60px; }
+:root[data-theme] .settings-main .glass-range-control > input[type="number"] { width: 72px; min-width: 72px; font-variant-numeric: tabular-nums; }
+.glass-range:focus-within .glass-range-thumb { outline: 2px solid var(--accent); outline-offset: 3px; }
+.glass-material-preview { margin: 0 0 26px; }
+.glass-preview-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.glass-preview-heading > span { font-size: 13px; font-weight: 600; }
+.glass-preview-heading small { font-size: 11px; color: var(--soft); }
+.glass-preview-scene { position: relative; min-width: 440px; height: 230px; overflow: hidden; border-radius: 18px; background: radial-gradient(ellipse at 85% 0%,#b6e6e4,transparent 65%),radial-gradient(ellipse at 10% 100%,#d5d4f2,transparent 70%),#eaf4fa; color: #294a60; }
+.glass-preview-copy { position: absolute; left: 34px; top: 33px; }
+.glass-preview-copy > span { display: block; font-size: 10px; letter-spacing: .22em; opacity: .6; }
+.glass-preview-copy strong { display: block; margin-top: 12px; font-size: 29px; font-weight: 600; letter-spacing: -.04em; }
+.glass-preview-copy p { font-size: 15px; margin: 14px 0 0; }
+.glass-preview-lines { position: absolute; left: 34px; right: 34px; bottom: 32px; height: 27px; background: repeating-linear-gradient(90deg,rgb(51 108 132 / .34) 0 1px,transparent 1px 12px); }
+.glass-preview-lens { position: absolute; width: 210px; height: 150px; border-radius: 75px; cursor: grab; touch-action: none; --liquid-glass-tint: transparent; box-shadow: 0 4px 9px rgb(0 0 0 / .16),inset 0 2px 24px rgb(0 0 0 / .2),inset 0 -2px 24px rgb(255 255 255 / .2); }
+.glass-preview-lens:active { cursor: grabbing; }
+.glass-preview-lens:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.glass-preview-lens .glass-preview-handle { position: absolute; left: 98px; top: 5px; opacity: .4; }
+:root[data-theme="dark"] .glass-preview-scene { background: radial-gradient(ellipse at 85% 0%,#285359,transparent 65%),radial-gradient(ellipse at 10% 100%,#36334e,transparent 70%),#222f39; color: #d8e9f2; }
+:root[data-theme="dark"] .glass-preview-lines { background: repeating-linear-gradient(90deg,rgb(166 211 227 / .34) 0 1px,transparent 1px 12px); }
+
+:root:is([data-glass="off"],[data-reduce-transparency="true"],[data-contrast="high"]) .material-host { background: var(--glass-panel) !important; }
+:root:is([data-glass="off"],[data-reduce-transparency="true"],[data-contrast="high"]) .glass-switch-thumb { background: var(--glass-elevated) !important; }
+:root:is([data-glass="off"],[data-reduce-transparency="true"],[data-contrast="high"]) .glass-range-thumb { background: var(--glass-elevated); border: 1px solid var(--line); }
+:root[data-motion="reduced"] :is(.glass-switch-thumb,.recent-card.material-host) { transition-duration: 80ms; }
+:root[data-motion="reduced"] .recent-card.material-host:hover { translate: none; }
+@media (prefers-reduced-motion: reduce) { .recent-card.material-host:hover { translate: none; } .glass-switch-thumb { transition-duration: 80ms; } }
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) { .material-host { background: var(--glass-panel) !important; } }

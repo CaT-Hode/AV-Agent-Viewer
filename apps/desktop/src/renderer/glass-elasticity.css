@@ -1,0 +1,22 @@
+/* Individual transform properties compose with existing positioned transforms.
+   JS supplies finite spring samples; these properties are not CSS-transitioned. */
+.glass-elastic {
+  scale: var(--glass-elastic-scale-x, 1) var(--glass-elastic-scale-y, 1);
+  translate: var(--glass-elastic-x, 0px) var(--glass-elastic-y, 0px);
+  transform-origin: center;
+}
+/* Retire only the older button press transforms; thumb/lens positioning keeps
+   its original transform. The individual properties above own deformation. */
+:root :is(button.icon-button, button.button, button.tool-row, .activity-rail button, .ai-rail button, .settings-nav button, .selection-tool-icons button, .translation-actions button, button.tab-close).glass-elastic:active:not(:disabled) { transform: none; }
+/* Source fill is spring-driven independently of scale/refraction. */
+:root[data-theme] :is(.glass-switch-thumb, .glass-range-thumb).glass-elastic { --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,1)); }
+.glass-preview-lens.glass-elastic { --liquid-glass-tint: transparent; }
+.glass-switch-thumb:is([data-glass-elastic-state="press"],[data-glass-elastic-state="drag"]) { box-shadow: 0 4px 22px rgb(0 0 0 / .1),inset 2px 7px 24px rgb(0 0 0 / .09),inset -2px -7px 24px rgb(255 255 255 / .09); }
+/* Feedback begins on pointer-down, before the slower shape spring has moved.
+   Only a paint tint changes here; no geometry, blur or texture is regenerated. */
+.glass-elastic:is([data-glass-elastic-state="press"],[data-glass-elastic-state="drag"]):is(button.icon-button,.activity-rail button,.ai-rail button,.tab-select,.outline-item,.settings-nav button) { background-color: color-mix(in srgb,var(--accent,#367dab) 7%,transparent); }
+:root[data-motion="elegant"] :is(.activity-rail,.ai-rail,.settings-nav,.tab-strip) button:not(.glass-elastic) { transition-duration: 360ms; }
+:root[data-motion="elegant"] .glass-elastic { transition-property: background-color,color,border-color,box-shadow; }
+/* JS is the sole owner of scale/translate/position. Never add a second tween
+   around the spring samples, even in the slower elegant mode. */
+.glass-segmented-thumb { transition:none!important; }

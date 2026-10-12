@@ -19,7 +19,7 @@ export const settingsRegistry: SettingDefinition[] = [
   s('appearance.density','工作方式','外观与布局','界面密度','standard',['compact','standard','comfortable']),
   s('appearance.glass','工作方式','外观与布局','玻璃效果','standard',['standard','enhanced','off']),
   { ...s('appearance.documentBackground','工作方式','外观与布局','文档阅读背景','paper',['paper','mist','aurora','dusk','solid']), description: '只影响阅读画布与页面周围，不修改文档或导出内容。' },
-  s('appearance.motion','工作方式','外观与布局','动效','standard',['standard','reduced','off']),
+  s('appearance.motion','工作方式','外观与布局','动效','standard',['standard','elegant','reduced','off']),
   b('appearance.reduceTransparency','工作方式','外观与布局','减少透明度',false),
   b('appearance.highContrast','工作方式','外观与布局','增强对比度',false),
   b('appearance.autoHideToolbar','工作方式','外观与布局','顶部胶囊自动隐藏',true),

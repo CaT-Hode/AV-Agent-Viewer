@@ -33,7 +33,7 @@ try {
   await page.locator('.view-modes button').nth(2).click(); await page.locator('.split-view .cm-editor').waitFor(); assert.equal(await page.locator('.split-view .cm-editor').count(), 1); assert.match(await page.locator('.split-reading').innerText(), /Verified editing/);
   const formats = createRegistry();
   for (const format of ['docx', 'pptx', 'xlsx'] as const) {
-    await page.locator('.brand').click(); await page.locator('.file-row').filter({ hasText: '示例.' + format }).last().click();
+    await page.getByRole('button', { name: '新建标签页', exact: true }).click(); await page.locator('.file-row').filter({ hasText: '示例.' + format }).last().click();
     if (format === 'docx') { await page.locator('.word-page [data-block-id="paragraph-1"]').fill('桌面 Word 保存验证'); }
     else if (format === 'pptx') { await page.locator('.slide-text').first().fill('桌面幻灯片保存验证'); }
     else { await page.getByRole('textbox', { name: 'C8', exact: true }).fill('=SUM(1,2)'); }
@@ -46,21 +46,23 @@ try {
     else if (format === 'pptx') assert.equal(saved.slides![0].blocks[0].text, '桌面幻灯片保存验证');
     else { assert.equal(saved.sheets![0].rows[7][2].formula, 'SUM(1,2)'); await until(async () => (await invoke<ReadingContext>('context')).visibleText.includes('A1: 格式'), '表格可见单元格内容'); }
   }
-  await page.locator('.brand').click(); await page.locator('.file-row').filter({ hasText: '示例.pdf' }).last().click(); await page.locator('.pdf-page .textLayer span').first().waitFor();
+  await page.getByRole('button', { name: '新建标签页', exact: true }).click(); await page.locator('.file-row').filter({ hasText: '示例.pdf' }).last().click(); await page.locator('.pdf-page .textLayer span').first().waitFor();
   await page.locator('.activity-rail button[aria-label="PDF工具"]').click();
   assert.equal(await page.locator('.pdf-tools').count(), 0);
   await page.getByRole('button', { name: '识别本页' }).click();
   await page.locator('.pdf-side-result').waitFor({ timeout: 30000 });
   assert.match(await page.locator('.pdf-side-result').innerText(), /AgentViewer/);
   await page.screenshot({ path: join(artifacts, 'pdf-tools-left.png'), scale: 'css' });
-  await page.getByRole('textbox', { name: 'PDF 增补文字' }).fill('中文增补保存验证'); await page.locator('.pdf-page').first().click({ position: { x: 100, y: 300 } });
+  const pdfBefore = (await invoke<WorkspaceState>('state')).documents.find(d => d.format === 'pdf')!;
+  const pdfPatch = await invoke<{ id: string }>('prepare', { documentId: pdfBefore.id, expectedRevision: pdfBefore.revision, operation: { kind: 'pdf.addText', pageIndex: 0, text: '中文增补保存验证', x: 0.15, y: 0.35 } });
+  await invoke('commit', { patchId: pdfPatch.id, idempotencyKey: crypto.randomUUID() });
   await until(async () => (await page.locator('.pdf-content').innerText()).includes('中文增补保存验证'), 'PDF 中文文字层');
   await until(async () => (await invoke<ReadingContext>('context')).visibleText.includes('中文增补保存验证'), 'PDF 阅读内容刷新');
   await page.getByRole('button', { name: '增加页面', exact: true }).click();
   await until(async () => (await invoke<WorkspaceState>('state')).documents.find(d => d.format === 'pdf')?.model.pageCount === 4, 'PDF 页面增补');
   const pdfDocument = (await invoke<WorkspaceState>('state')).documents.find(d => d.format === 'pdf')!; await invoke('save', { documentId: pdfDocument.id });
   assert.equal((await formats.resolve('pdf').open(new Uint8Array(await readFile(pdfDocument.path!)), 'pdf')).pageCount, 4);
-  await page.locator('.new-tab').click(); await page.getByRole('button', { name: 'HTML .html', exact: true }).click(); await page.locator('.html-preview').waitFor();
+  await page.getByRole('button', { name: '新建标签页', exact: true }).click(); await page.getByRole('button', { name: '新建文档', exact: true }).click(); await page.getByRole('button', { name: 'HTML .html', exact: true }).click(); await page.locator('.html-preview').waitFor();
   await page.getByRole('button', { name: '源码', exact: true }).click(); await page.locator('.cm-content').click(); await page.keyboard.press('Control+A');
   const html = '<!doctype html><html><body><div>HTML 本地编辑保存验证</div><script>throw new Error("untrusted script executed")</script></body></html>';
   await page.keyboard.insertText(html);
@@ -69,27 +71,32 @@ try {
   await page.getByRole('button', { name: '阅读', exact: true }).click(); await page.frameLocator('.html-preview').getByText('HTML 本地编辑保存验证', { exact: true }).waitFor();
   await until(async () => (await invoke<ReadingContext>('context')).visibleText.includes('HTML 本地编辑保存验证'), 'HTML 可见内容');
   const htmlPath = join(directory, 'html-saved.html'); await invoke('save', { documentId: htmlDocument.id, path: htmlPath }); assert.equal(await readFile(htmlPath, 'utf8'), html);
-  await page.locator('.brand').click(); await page.locator('.file-row').filter({ hasText: '交互测试页' }).last().click();
+  await page.getByRole('button', { name: '新建标签页', exact: true }).click(); await page.locator('.file-row').filter({ hasText: '交互测试页' }).last().click();
   const browserView = (await invoke<WorkspaceState>('state')).views.find(v => (initial.documents.find(d => d.id === v.documentId)?.format ?? '') === 'web')!;
   await until(async () => (await invoke<ReadingContext>('context', { viewId: browserView.id })).quality === 'confirmed', '网页视口');
   let context = await invoke<ReadingContext>('context', { viewId: browserView.id });
   assert.doesNotMatch(context.visibleText, /sample-secret-e2e|hidden-secret-e2e/);
-  const input = async (action: BrowserAction, key = crypto.randomUUID()) => { const { width, height, scrollX, scrollY } = context.viewport!; const value = await invoke<{ context: ReadingContext }>('browser-input', { viewId: browserView.id, expectedNavigationId: context.viewport!.navigationId, expectedViewport: { width, height, scrollX, scrollY }, action, idempotencyKey: key }); context = value.context; return value; };
-  const bounds = await application.evaluate(async ({ webContents }) => {
+  const input = async (action: BrowserAction, key = crypto.randomUUID()) => { context = await invoke<ReadingContext>('context', { viewId: browserView.id }); const { width, height, scrollX, scrollY } = context.viewport!; const value = await invoke<{ context: ReadingContext }>('browser-input', { viewId: browserView.id, expectedNavigationId: context.viewport!.navigationId, expectedViewport: { width, height, scrollX, scrollY }, action, idempotencyKey: key }); context = value.context; return value; };
+  const elementBounds = async () => application.evaluate(async ({ webContents }) => {
     const target = webContents.getAllWebContents().find(wc => wc.getURL().includes('/fixtures/interaction.html'))!;
     return target.executeJavaScript(`(() => { const box=id=>{const r=document.getElementById(id).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}}; return {input:box('name'),button:box('submit'),text:box('selectable')}; })()`);
-  }) as { input: { x: number; y: number }; button: { x: number; y: number }; text: { x: number; y: number; width: number } };
+  }) as Promise<{ input: { x: number; y: number }; button: { x: number; y: number }; text: { x: number; y: number; width: number } }>;
+  let bounds = await elementBounds();
   await input({ kind: 'click', x: bounds.input.x + 20, y: bounds.input.y + 20, button: 'left', clickCount: 1, modifiers: [] });
   await until(async () => await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(win => !!win.getParentWindow() && win.isVisible())), '独立 Agent 指针层');
-  await page.getByTitle('暂停 Agent').click();
+  await until(async () => application.context().pages().some(target => target.url().includes('#/agent-toolbar')), '网页底部可信 Agent 胶囊');
+  const nativeAgent = application.context().pages().find(target => target.url().includes('#/agent-toolbar'))!;
+  await nativeAgent.getByRole('button', { name: '暂停 Agent', exact: true }).click();
   await assert.rejects(invoke('browser-input', { viewId: browserView.id, expectedNavigationId: context.viewport!.navigationId, action: { kind: 'type', text: 'blocked' }, idempotencyKey: crypto.randomUUID() }), /AGENT_PAUSED|暂停或停止/);
-  await page.getByTitle('继续 Agent').click();
+  await nativeAgent.getByRole('button', { name: '继续 Agent', exact: true }).click();
   const insertionKey = crypto.randomUUID(), insertion = await input({ kind: 'type', text: '中文输入验证' }, insertionKey);
   const insertionReplay = await invoke('browser-input', { viewId: browserView.id, expectedNavigationId: insertion.context.viewport!.navigationId, expectedViewport: { width: insertion.context.viewport!.width, height: insertion.context.viewport!.height, scrollX: 0, scrollY: 0 }, action: { kind: 'type', text: '中文输入验证' }, idempotencyKey: insertionKey });
   assert.deepEqual(insertionReplay, insertion);
   await input({ kind: 'press', key: 'End', modifiers: [] });
+  bounds = await elementBounds();
   await input({ kind: 'click', x: bounds.button.x + 30, y: bounds.button.y + 15, button: 'left', clickCount: 1, modifiers: [] });
   assert.match(context.visibleText, /已提交：中文输入验证/);
+  bounds = await elementBounds();
   await input({ kind: 'drag', from: { x: bounds.text.x + 1, y: bounds.text.y + 12 }, to: { x: bounds.text.x + bounds.text.width - 3, y: bounds.text.y + 12 }, steps: 15, modifiers: [] });
   assert.match(context.selection.text, /这段文字/);
   const captured = await invoke<{ data: string; width: number; height: number; viewport: ReadingContext['viewport'] }>('browser-capture', { viewId: browserView.id }), png = Buffer.from(captured.data, 'base64');

@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION, ViewerError, editOperationSchema, browserRequestSchem
 import { AdapterRegistry, createRegistry } from '../../format-adapters/src/index';
 import type { WorkspaceRepository } from '../../persistence/src/index';
 import { convertLegacy } from '../../../apps/office-gateway/src/conversion';
+import { scopedReadingSnapshot } from '../../ai-reading-tools/src/index';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const clone = <T>(value: T): T => structuredClone(value);
@@ -73,27 +74,27 @@ export class ViewerCore extends EventEmitter {
     if (!view) throw new ViewerError('TARGET_NOT_FOUND', '没有有效阅读视图。请打开文档或指定 viewId。');
     return view;
   }
-  async openFile(path: string, windowId = 'main') {
+  async openFile(path: string, windowId = 'main', activate = true) {
     const fullPath = resolve(path);
     const existing = [...this.documents.values()].find(d => d.info.path?.toLowerCase() === fullPath.toLowerCase());
-    if (existing) return this.addView(existing.info.id, windowId);
+    if (existing) return this.addView(existing.info.id, windowId, activate);
     const bytes = new Uint8Array(await readFile(fullPath));
     if (bytes.byteLength > 100 * 1024 * 1024) throw new ViewerError('FILE_TOO_LARGE', '首版单文件上限为 100 MB。');
     const extension = extname(fullPath).slice(1).toLowerCase();
     if (['doc', 'ppt', 'xls'].includes(extension)) {
       const converted = await convertLegacy(fullPath, extension);
-      const view = await this.openBytes(basename(fullPath).replace(/\.[^.]+$/, '.' + converted.format), converted.bytes, converted.format as Format, undefined, windowId);
+      const view = await this.openBytes(basename(fullPath).replace(/\.[^.]+$/, '.' + converted.format), converted.bytes, converted.format as Format, undefined, windowId, activate);
       this.getDocument(view.documentId).info.warnings.push(...converted.warnings, `原件：${fullPath}`);
       return view;
     }
     const format = ({ md: 'markdown', markdown: 'markdown', html: 'html', htm: 'html', docx: 'docx', pptx: 'pptx', xlsx: 'xlsx', pdf: 'pdf' } as Record<string, Format>)[extension];
     if (!format) throw new ViewerError('CAPABILITY_UNSUPPORTED', `暂不支持 .${extension}。`);
-    return this.openBytes(basename(fullPath), bytes, format, fullPath, windowId);
+    return this.openBytes(basename(fullPath), bytes, format, fullPath, windowId, activate);
   }
-  async openBytes(title: string, bytes: Uint8Array, format: Format, path?: string, windowId = 'main') {
+  async openBytes(title: string, bytes: Uint8Array, format: Format, path?: string, windowId = 'main', activate = true) {
     const adapter = this.registry.resolve(format), model = await adapter.open(bytes, format), id = randomUUID();
     this.documents.set(id, { bytes: bytes.slice(), sourceHash: path ? hash(bytes) : undefined, info: { id, title, path, format, revision: 0, diskRevision: path ? 0 : -1, dirty: !path, capabilities: adapter.capabilities(format), model, warnings: [] } });
-    return this.addView(id, windowId);
+    return this.addView(id, windowId, activate);
   }
   async importArtifact(path: string, bytes: Uint8Array, format: Format) {
     const fullPath = resolve(path), adapter = this.registry.resolve(format), id = randomUUID();
@@ -102,20 +103,30 @@ export class ViewerCore extends EventEmitter {
     this.event('document.imported', { documentId: id, path: fullPath });
     await this.persist(); return clone(info);
   }
-  addView(documentId: string, windowId = 'main') {
+  addView(documentId: string, windowId = 'main', activate = true) {
     this.getDocument(documentId);
     const view: ViewInfo = { id: randomUUID(), documentId, windowId, mode: 'read', pinned: false };
-    this.views.set(view.id, view); this.activeViewId = view.id; this.event('view.opened', view); return clone(view);
+    this.views.set(view.id, view); if (activate) this.activeViewId = view.id; this.event('view.opened', view); return clone(view);
   }
-  async openWeb(url: string, windowId = 'main') {
+  async openWeb(url: string, windowId = 'main', activate = true) {
     const parsed = new URL(url); if (!['http:', 'https:'].includes(parsed.protocol)) throw new ViewerError('INVALID_URL', '网页只允许 HTTP(S) 地址。');
     const id = randomUUID();
     this.documents.set(id, { bytes: new Uint8Array(), info: { id, title: parsed.hostname, format: 'web', revision: 0, diskRevision: 0, dirty: false, model: { format: 'web', url }, warnings: [], capabilities: { engine: this.browser ? 'electron-chromium' : 'preview-iframe', protocolVersion: PROTOCOL_VERSION, readText: !!this.browser, readSelection: !!this.browser, readViewport: !!this.browser, editKinds: [], saveFormats: ['html'], browserInput: !!this.browser, limitations: this.browser ? ['实时网页操作影响当前站点；持久编辑请建立阅读副本。', '正文提取当前仅顶层 frame。'] : ['原生网页输入与跨站上下文需在桌面应用使用。'] } } });
-    const view = this.addView(id, windowId); if (this.browser) await this.browser.open(view.id, url); return view;
+    const view = this.addView(id, windowId, activate); if (this.browser) await this.browser.open(view.id, url); return view;
   }
   activate(viewId: string, actor: Actor = 'human') { this.getView(viewId); this.activeViewId = viewId; if (actor === 'human') this.lastHumanViewId = viewId; this.event('view.activated', { viewId, actor }); }
   setAgentControl(viewId: string, status: 'running' | 'paused' | 'stopped') { const view = this.getView(viewId); this.agentControl.set(viewId, status); this.agentControl.set(view.documentId, status); this.event('agent.control', { viewId, status }); }
   setMode(viewId: string, mode: ViewInfo['mode']) { this.getView(viewId).mode = mode; this.event('view.mode', { viewId, mode }); }
+  setViewZoom(viewId: string, factor: number, actor: Actor = 'human') {
+    if (!Number.isFinite(factor) || factor < .25 || factor > 4) throw new ViewerError('INVALID_ARGUMENT', '缩放比例应在 25% 到 400% 之间。');
+    const view = this.getView(viewId), zoom = Math.round(factor * 100) / 100;
+    if (view.zoom === zoom) return clone(view);
+    if (this.getDocument(view.documentId).info.format === 'web') this.browser?.setZoom?.(viewId, zoom);
+    view.zoom = zoom;
+    if (view.context) view.context = { ...view.context, viewRevision: view.context.viewRevision + 1, quality: 'last-confirmed', selection: { ...view.context.selection, rect: undefined, pageRects: undefined } };
+    this.event('view.zoom', { viewId, zoom, actor });
+    return clone(view);
+  }
   closeView(viewId: string, retainRecovery = false) {
     const view = this.getView(viewId), document = this.getDocument(view.documentId);
     if (document.info.dirty && !retainRecovery && [...this.views.values()].filter(v => v.documentId === document.info.id).length === 1) throw new ViewerError('UNSAVED_CHANGES', '文档尚未保存，请先保存或保留恢复点后关闭。');
@@ -158,6 +169,7 @@ export class ViewerCore extends EventEmitter {
     if (actor === 'agent' && this.agentControl.get(patch.documentId) && this.agentControl.get(patch.documentId) !== 'running') throw new ViewerError('AGENT_PAUSED', '此文档的 Agent 操作已暂停或停止。');
     const payload = JSON.stringify(patch), prior = this.receipts.get(idempotencyKey);
     if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '同一幂等键不能提交不同修改。'); return clone(prior.receipt) as Receipt; }
+    if (actor === 'agent') await this.extensions.get('before-agent-edit')?.({ documentId: patch.documentId, operation: clone(patch.operation) }, actor);
     return this.serial(patch.documentId, async () => {
       const existing = this.receipts.get(idempotencyKey); if (existing) { if (existing.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '幂等键内容冲突。'); return clone(existing.receipt) as Receipt; }
       const doc = this.getDocument(patch.documentId); if (doc.info.revision !== patch.expectedRevision) throw new ViewerError('VERSION_CONFLICT', '预览之后内容已改变，请重新准备。');
@@ -231,11 +243,12 @@ export class ViewerCore extends EventEmitter {
     });
   }
   async browserCopy(viewId: string) { if (!this.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请在桌面应用创建网页副本。'); const view = this.getView(viewId); const source = this.getDocument(view.documentId).info; const html = await this.browser.html(viewId); const copy = await this.openBytes(source.title + '.html', new TextEncoder().encode(html), 'html', undefined, view.windowId); this.getDocument(copy.documentId).info.warnings.push('来源：' + source.model.url, '这是本地阅读副本，未修改远程站点。外部资源未归档，相对链接可能失效。', '副本移除脚本、嵌入 frame、事件属性与已知敏感表单值。'); return copy; }
-  async submitTask(driverId: string, prompt: string, viewId?: string, snapshotId?: string) {
+  async submitTask(driverId: string, prompt: string, viewId?: string, snapshotId?: string, sourceScope?: 'selection' | 'visible') {
     const driver = this.drivers.get(driverId); if (!driver) throw new ViewerError('HARNESS_UNAVAILABLE', '尚未配置该 harness 驱动。');
-    const snapshot = snapshotId ? this.readSnapshot(snapshotId) : await this.snapshot(viewId), controller = new AbortController();
+    const original = snapshotId ? this.readSnapshot(snapshotId) : await this.snapshot(viewId), controller = new AbortController();
+    const snapshot = sourceScope ? scopedReadingSnapshot(original, sourceScope) : original;
     if (viewId && snapshot.context.viewId !== viewId) throw new ViewerError('SNAPSHOT_TARGET_MISMATCH', '固定快照属于其他阅读视图。');
-    const task: HarnessTask = { id: randomUUID(), snapshotId: snapshot.id, prompt, text: '', status: 'running' }; this.tasks.set(task.id, task); this.taskControllers.set(task.id, controller); this.event('harness.started', { taskId: task.id });
+    const task: HarnessTask = { id: randomUUID(), snapshotId: snapshot.id, viewId: snapshot.context.viewId, sourceScope, prompt, text: '', status: 'running' }; this.tasks.set(task.id, task); this.taskControllers.set(task.id, controller); this.event('harness.started', { taskId: task.id });
     void driver.submit(prompt, snapshot, delta => { task.text += delta; this.event('harness.delta', { taskId: task.id, text: delta }); }, controller.signal).then(() => { task.status = controller.signal.aborted ? 'cancelled' : 'completed'; }).catch(e => { task.status = controller.signal.aborted ? 'cancelled' : 'failed'; task.error = String(e); }).finally(() => { this.taskControllers.delete(task.id); this.event('harness.completed', { taskId: task.id, status: task.status }); });
     return clone(task);
   }

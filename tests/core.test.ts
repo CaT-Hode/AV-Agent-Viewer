@@ -17,6 +17,64 @@ import { SettingsService } from '../packages/settings/src/index';
 async function setup() { const directory = await mkdtemp(join(tmpdir(), 'agentviewer-test-')); const core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); return { directory, core }; }
 async function modify(core: ViewerCore, id: string, operation: EditOperation, key = crypto.randomUUID()) { const patch = core.prepare(id, core.getDocument(id).info.revision, operation); return { patch, receipt: await core.commit(patch.id, key) }; }
 
+function editGate() {
+  let resolve!: () => void, reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+test('Agent 异步草稿检查拒绝修改时不改变字节、版本、回执或事务', async () => {
+  const { core } = await setup(), view = await core.openBytes('draft.md', new TextEncoder().encode('abc'), 'markdown');
+  const operation: EditOperation = { kind: 'text.replace', from: 1, to: 2, expectedText: 'b', text: 'B' };
+  const patch = core.prepare(view.documentId, 0, operation), gate = editGate(), entered = editGate();
+  const before = core.getDocument(view.documentId).bytes.slice(), eventCount = core.eventLog.length;
+  core.extensions.set('before-agent-edit', async (args, actor) => { assert.equal(actor, 'agent'); assert.equal(args.documentId, view.documentId); assert.deepEqual(args.operation, operation); entered.resolve(); await gate.promise; });
+  const committing = core.commit(patch.id, 'blocked-agent-edit'), rejected = assert.rejects(committing, /reader has a local draft/);
+  await entered.promise;
+  assert.equal(core.getDocument(view.documentId).info.revision, 0);
+  assert.deepEqual(core.getDocument(view.documentId).bytes, before);
+  gate.reject(new Error('reader has a local draft')); await rejected;
+  assert.equal(core.getDocument(view.documentId).info.revision, 0);
+  assert.deepEqual(core.getDocument(view.documentId).bytes, before);
+  assert.equal(core.receipts.size, 0); assert.equal(core.transactions.size, 0); assert.equal(core.eventLog.length, eventCount);
+});
+
+test('用户提交跳过 Agent 草稿检查，已经完成的幂等重试不再检查', async () => {
+  const { core } = await setup(), view = await core.openBytes('draft.md', new TextEncoder().encode('abc'), 'markdown');
+  let checks = 0, rejectCheck = true;
+  core.extensions.set('before-agent-edit', async () => { checks++; if (rejectCheck) throw new Error('draft blocked'); });
+  const human = core.prepare(view.documentId, 0, { kind: 'text.replace', from: 0, to: 1, expectedText: 'a', text: 'A' });
+  await core.commit(human.id, 'human-edit', 'human');
+  assert.equal(checks, 0); assert.equal(core.getDocument(view.documentId).info.model.text, 'Abc');
+  rejectCheck = false;
+  const agent = core.prepare(view.documentId, 1, { kind: 'text.replace', from: 1, to: 2, expectedText: 'b', text: 'B' });
+  const receipt = await core.commit(agent.id, 'agent-edit');
+  assert.equal(checks, 1);
+  rejectCheck = true;
+  assert.deepEqual(await core.commit(agent.id, 'agent-edit'), receipt);
+  assert.equal(checks, 1); assert.equal(core.getDocument(view.documentId).info.revision, 2);
+  const next = core.prepare(view.documentId, 2, { kind: 'text.replace', from: 2, to: 3, expectedText: 'c', text: 'C' });
+  await assert.rejects(core.commit(next.id, 'new-agent-edit'), /draft blocked/);
+  assert.equal(checks, 2); assert.equal(core.receipts.has('new-agent-edit'), false);
+});
+
+test('Agent 草稿检查期间用户可以提交，新版本使等待中的 Agent 计划失效', async () => {
+  const { core } = await setup(), view = await core.openBytes('draft.md', new TextEncoder().encode('abc'), 'markdown');
+  const gate = editGate(), entered = editGate();
+  core.extensions.set('before-agent-edit', async () => { entered.resolve(); await gate.promise; });
+  const agent = core.prepare(view.documentId, 0, { kind: 'text.replace', from: 0, to: 3, expectedText: 'abc', text: 'agent' });
+  const committing = core.commit(agent.id, 'waiting-agent-edit'), rejected = assert.rejects(committing, /内容已改变/);
+  await entered.promise;
+  const human = core.prepare(view.documentId, 0, { kind: 'text.replace', from: 0, to: 3, expectedText: 'abc', text: 'human' });
+  await core.commit(human.id, 'concurrent-human-edit', 'human');
+  const humanBytes = core.getDocument(view.documentId).bytes.slice();
+  gate.resolve(); await rejected;
+  assert.equal(core.getDocument(view.documentId).info.revision, 1);
+  assert.equal(core.getDocument(view.documentId).info.model.text, 'human');
+  assert.deepEqual(core.getDocument(view.documentId).bytes, humanBytes);
+  assert.equal(core.receipts.has('waiting-agent-edit'), false); assert.equal(core.transactions.size, 1);
+});
+
 test('快照固定未保存正文；多个视图有独立选择；版本冲突阻止过期提交', async () => {
   const { core } = await setup(); const first = await core.openBytes('test.md', new TextEncoder().encode('原文片段'), 'markdown'); const second = core.addView(first.documentId);
   core.updateContext(first.id, { selection: { kind: 'text', text: '原文' }, visibleText: '原文片段', locator: { kind: 'source', from: 0, to: 2 } });

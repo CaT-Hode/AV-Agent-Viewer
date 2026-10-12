@@ -1,0 +1,13 @@
+/** Shared renderer/native-host policy; contains no DOM, timers or React. */
+export type MotionMode = 'standard' | 'elegant' | 'reduced' | 'off';
+export function resolveMotionMode(value: string | undefined, prefersReducedMotion = false): MotionMode {
+  if (value === 'off') return 'off';
+  if (prefersReducedMotion || value === 'reduced') return 'reduced';
+  return value === 'elegant' ? 'elegant' : 'standard';
+}
+export function animatedMotion(mode: MotionMode) { return mode === 'standard' || mode === 'elegant'; }
+export function motionDurationForMode(base: number, mode: MotionMode) {
+  if (mode === 'off' || !(base > 0)) return 0;
+  if (mode === 'reduced') return Math.min(80, base);
+  return mode === 'elegant' ? Math.round(Math.max(420, Math.min(650, base * 2.6))) : Math.round(Math.min(650, base * 1.3));
+}

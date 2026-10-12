@@ -71,8 +71,9 @@
      colour in the canvas, and the frost has nothing to refract without it.
      The blur stays deliberately low: a large radius smears the canvas into a
      flat milk and erases the aura's shape, which is the only thing making the
-     glass read. 22px keeps the blobs legible *through* the frost. */
-  --glass-blur: 22px;
+     glass read. 12px keeps the blobs legible *through* the frost. Navigation
+     has its own capped 1px optics in navigation-glass.css. */
+  --glass-blur: 12px;
   --glass-saturation: 1.9;
   --glass-aura: .34;
 
@@ -144,7 +145,7 @@
     0 26px 58px -22px rgb(0 0 0 / .72),
     0 4px 14px -4px rgb(0 0 0 / .3);
 
-  --glass-blur: 26px;
+  --glass-blur: 14px;
   --glass-saturation: 2.05;
   --glass-aura: .3;
 
@@ -230,12 +231,13 @@
    refract. Each of these out-specifies the opaque theme backgrounds in
    new-ui.css (`.workbench`, the dark `.workbench` gradient) and
    dark-theme.css (`.settings-main`/`.home-main`). */
-:root[data-theme] .workbench:not(.native-toolbar),
 :root[data-theme] .home-layout,
 :root[data-theme] .home-main,
 :root[data-theme] .settings-main {
   background: transparent;
 }
+:root[data-theme] .workbench:not(.native-toolbar) { background: var(--reading-canvas, var(--glass-canvas)); }
+:root[data-theme] .workbench .reader-panel { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
 
 /* The reading sheet is the one surface that does NOT go transparent. Its fill
    comes from the document-background preference (paper / mist / aurora / dusk /
@@ -382,15 +384,8 @@
   box-shadow: var(--glass-shadow-lift), inset 0 1px var(--glass-specular);
 }
 
-/* Tooltip — ink, not glass; it must read instantly over anything. */
-:root[data-theme] .app-tooltip {
-  background: rgb(27 33 39 / .94);
-  color: #f5f7fa;
-  border: 1px solid rgb(255 255 255 / .13);
-  box-shadow: 0 6px 20px #0003, inset 0 1px #ffffff0c;
-  -webkit-backdrop-filter: blur(24px) saturate(1.8);
-  backdrop-filter: blur(24px) saturate(1.8);
-}
+/* tooltip.css owns tooltip material and its single leaf opacity curve. A
+   second backdrop filter on the host would outlive the fading text. */
 
 /* ── §4 pane surfaces — nav, rails, header chrome ──────────────────────── */
 
@@ -476,18 +471,10 @@
 }
 :root[data-theme] .workbench .reader-format-web > .reader-toolbar { display: none; }
 :root[data-theme] .workbench .reader-format-web > .document-content { padding: 0; }
-:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .reader-toolbar {
-  transition: opacity 160ms var(--ease-out), transform 200ms var(--ease-out);
-}
-:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .reader-toolbar.is-hidden {
-  opacity: 0;
-  transform: translate(-50%, -65px);
-}
+
+
 :root[data-theme] .workbench .reader-toolbar.is-hidden .floating-capsule { pointer-events: none; }
-:root[data-theme] .workbench .reader-panel:not(.reader-format-web) .reader-toolbar:focus-within {
-  opacity: 1;
-  transform: translateX(-50%);
-}
+
 :root[data-theme] .workbench .reader-toolbar:focus-within .floating-capsule { pointer-events: auto; }
 
 /* ── §5 inset surfaces — tiles ON glass (never their own blur) ─────────── */
@@ -762,12 +749,10 @@ html.native-toolbar-root[data-backdrop="dark"] {
 :root[data-contrast="high"] .workbench :is(.activity-rail, .format-sidebar, .ai-drawer, .ai-rail)::after { display: none; }
 :root[data-glass="off"] .settings-shell,
 :root[data-contrast="high"] .settings-shell { background: var(--glass-canvas); }
-:root[data-glass="off"] .workbench,
-:root[data-contrast="high"] .workbench { background: var(--glass-canvas); }
+:root[data-glass="off"] .workbench:not(.native-toolbar),
+:root[data-contrast="high"] .workbench:not(.native-toolbar) { background: var(--reading-canvas, var(--glass-canvas)); }
 
 /* The reader's legibility veil also collapses to flat opaque panels. */
-:root[data-glass="off"] .reader-panel,
-:root[data-contrast="high"] .reader-panel,
 :root[data-glass="off"] .tab-strip,
 :root[data-glass="off"] .status-bar,
 :root[data-glass="off"] .settings-titlebar,
@@ -835,9 +820,10 @@ html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glas
    from the gutter instead of letting it hug the edge. */
 :root {
   --glass-scroll-track: transparent;
-  --glass-scroll-thumb: rgb(var(--glass-primary) / .3);
-  --glass-scroll-thumb-hover: rgb(var(--glass-primary) / .55);
+  --glass-scroll-thumb: rgb(66 78 92 / .23);
+  --glass-scroll-thumb-hover: rgb(66 78 92 / .43);
 }
+:root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] {
   --glass-scroll-thumb: rgb(var(--glass-primary-soft) / .26);
   --glass-scroll-thumb-hover: rgb(var(--glass-primary-soft) / .46);
@@ -858,7 +844,7 @@ html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glas
   scrollbar-color: auto;
   scrollbar-width: auto;
 }
-:root[data-theme] * { scrollbar-width: auto; }
+:root[data-theme] * { scrollbar-width: auto; scrollbar-color: auto; }
 /* The tab strip and the selection capsule must keep their scrollbarless
    horizontal overflow. styles.css declares `scrollbar-width: none` on both at
    (0,1,0), which the `*` reset above out-ranks at (0,2,0) — so restate them
@@ -867,8 +853,8 @@ html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glas
 
 /* WebKit / Blink path — Electron renders these, so this is the one that shows. */
 :root[data-theme] ::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
 }
 :root[data-theme] ::-webkit-scrollbar-track,
 :root[data-theme] ::-webkit-scrollbar-corner {
@@ -877,22 +863,22 @@ html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glas
 :root[data-theme] ::-webkit-scrollbar-thumb {
   background: var(--glass-scroll-thumb);
   background-clip: padding-box;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   border-radius: var(--glass-r-pill);
   transition: background-color 200ms var(--ease-io);
 }
 :root[data-theme] ::-webkit-scrollbar-thumb:hover {
   background: var(--glass-scroll-thumb-hover);
   background-clip: padding-box;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
 }
 :root[data-theme] ::-webkit-scrollbar-thumb:active {
   background: rgb(var(--glass-primary));
   background-clip: padding-box;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
 }
-/* The gutter is inert, so clicking it must not scroll-jump to a page. */
-:root[data-theme] ::-webkit-scrollbar-button { display: none; }
+/* Remove arrow buttons; dragging and clicking the transparent track still work. */
+:root[data-theme] ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
 /* Panes with their own tinted fill get a slightly stronger thumb so it stays
    visible where the surface is lighter than the canvas. */

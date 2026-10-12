@@ -204,10 +204,10 @@
 }
 
 /* The iOS switch — the knob overshoots, the track fades. */
-.setting-switch {
+.setting-switch:not(.glass-switch) {
   transition: background-color 260ms var(--ease-io);
 }
-.setting-switch span {
+.setting-switch:not(.glass-switch) span {
   transition: transform 320ms var(--ease-spring);
 }
 

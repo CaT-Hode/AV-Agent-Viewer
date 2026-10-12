@@ -4,10 +4,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { call } from '../../../packages/sdk/src/client';
 import { browserRequestSchema, editOperationSchema } from '../../../packages/contracts/src/index';
+import { aiReadingRequestSchema } from '../../../packages/sdk/src/ai-reading';
 
 const server = new McpServer({ name: 'agent-viewer', version: '0.1.0' });
 const text = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data) }] });
 const schemas = {
+  reader_ai_tools: { description: '发现与右侧 AI 工具一致的摘要、解释、术语、证据、大纲、公式、表格与学习工具；返回具体视图的来源可用状态。', method: 'ai-reading-tools', schema: z.object({ viewId: z.string(), snapshotId: z.string().optional() }) },
+  reader_ai_run: { description: '在明确冻结的选区或当前可见范围运行阅读分析，返回任务ID；不读取其他范围或修改原文。同一进程内幂等记录保留期间不重复发起，最多256项且在途不淘汰；重启或记录淘汰后先查询原任务。用 workspace_list 查询结果。', method: 'ai-reading-run', schema: aiReadingRequestSchema },
   reader_selection_tools: { description: '冻结当前选区并发现可执行图标工具，返回 snapshot 与 actions。支持所有文档格式；编辑需使用该快照与幂等键。', method: 'selection-tools', schema: z.object({viewId:z.string(),snapshotId:z.string().optional()}) },
   reader_selection_action: { description: '执行与阅读器选区浮窗相同的工具：复制/引用/摘录/批注/格式/替换/PDF 标记/AI。基于固定快照，版本或网页导航变化会拒绝修改。', method: 'selection-action', schema: selectionActionSchema },
   document_annotations: { description:'列出独立保存的批注及其来源选区和版本。',method:'annotations-list',schema:z.object({documentId:z.string()}) },
@@ -32,4 +35,5 @@ const schemas = {
 for (const [name, tool] of Object.entries(schemas)) server.registerTool(name, { description: tool.description, inputSchema: tool.schema.shape }, async (args: Record<string, unknown>) => { try { return text(await call(tool.method, args)); } catch (e) { return { ...text({ error: String(e) }), isError: true }; } });
 server.registerTool('browser_capture', { description: '截图包含当前导航身份、位图尺寸和 CSS 视口。输入坐标使用 CSS 像素，可用 expectedViewport 防止旧截图误操作。', inputSchema: { viewId: z.string() } }, async args => { try { const data = await call('browser-capture', args) as unknown as { mimeType: string; data: string; width: number; height: number; navigationId: string; viewport?: unknown }; return { content: [{ type: 'image' as const, mimeType: data.mimeType, data: data.data }, { type: 'text' as const, text: JSON.stringify({ width: data.width, height: data.height, navigationId: data.navigationId, viewport: data.viewport }) }] }; } catch (e) { return { ...text({ error: String(e) }), isError: true }; } });
 server.registerTool('reader_manage_views', { description: '显式激活、复制或关闭视图。', inputSchema: { action: z.enum(['activate', 'duplicate-view', 'close']), viewId: z.string() } }, async args => { try { return text(await call(args.action, { viewId: args.viewId })); } catch (e) { return { ...text({ error: String(e) }), isError: true }; } });
+server.registerTool('reader_set_zoom', { description: '按视图设置正文缩放比例。导航及工具栏保持原尺寸；缩放改变网页布局版本，旧坐标需要重新定位。', inputSchema: { viewId: z.string(), factor: z.number().min(.25).max(4) } }, async args => { try { return text(await call('zoom', args)); } catch (error) { return { ...text({ error: String(error) }), isError: true }; } });
 await server.connect(new StdioServerTransport());

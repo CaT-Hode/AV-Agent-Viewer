@@ -1,0 +1,36 @@
+/* Kube Searchbox's 56px convex capsule, .8 -> 1 focus and .99 press are
+   driven by the shared spring coordinator. Geometry stays fixed while it
+   scales, so neither optical maps nor the surrounding layout animate size. */
+.home-search-shell{width:min(100%,600px);position:relative;margin:30px auto 24px;z-index:8;text-align:left}
+.home-search-capsule{height:56px;border-radius:28px;display:flex;align-items:center;gap:13px;padding:0 20px;color:var(--ink);cursor:text;background:transparent;box-shadow:0 4px 16px rgb(0 0 0 / .13),inset 0 0 0 1px rgb(255 255 255 / .32);--liquid-glass-tint:rgb(255 255 255 / var(--glass-material-fill,.05))}
+.home-search-capsule>svg{flex-shrink:0;opacity:.65}
+.home-search-input{width:100%;min-width:0;flex:1;background:transparent;border:0;outline:none;padding:0;color:inherit;font:inherit;font-size:15px;line-height:1.4}
+.home-search-input::placeholder{color:var(--muted,var(--soft));opacity:.8}
+:root[data-theme] .home-search-input:focus-visible{outline:none!important;box-shadow:none}
+.home-search-capsule:has(.home-search-input:focus-visible){outline:1px solid color-mix(in srgb,var(--accent) 35%,transparent);outline-offset:3px}
+.home-search-capsule kbd{font:11px ui-monospace,monospace;color:var(--soft);white-space:nowrap;opacity:.6}
+.home-search-loading{animation:home-search-spin 900ms linear infinite}
+@keyframes home-search-spin{to{rotate:360deg}}
+:root[data-motion="off"] .home-search-loading{animation:none}
+@media(prefers-reduced-motion:reduce){.home-search-loading{animation:none}}
+.home-search-clear{width:28px;height:28px;flex-shrink:0;border-radius:50%;display:grid;place-items:center;color:var(--soft)}
+.home-search-clear:hover{background:color-mix(in srgb,var(--ink) 7%,transparent);color:var(--ink)}
+.home-search-results{position:absolute;top:calc(100% + 12px);inset-inline:0;z-index:10;padding:10px;border:1px solid var(--line);border-radius:22px;background:color-mix(in srgb,var(--paper) 55%,transparent);box-shadow:0 12px 38px rgb(0 0 0 / .12);max-height:min(430px,55vh);overflow:auto}
+.home-search-result-heading{padding:7px 12px 9px;color:var(--soft);font-size:11px;font-weight:600;letter-spacing:.035em}
+.home-search-result{width:100%;display:flex;align-items:center;gap:12px;min-height:56px;padding:9px 12px;border-radius:13px;text-align:left;color:var(--ink);transition:background-color var(--dur-press,180ms),color var(--dur-press,180ms)}
+.home-search-result[aria-selected="true"]{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.home-search-result-icon{width:34px;height:34px;display:grid;place-items:center;flex-shrink:0;border-radius:10px;background:color-mix(in srgb,var(--accent) 8%,transparent);color:var(--accent)}
+.home-search-result-icon.pdf{color:#c55269}.home-search-result-icon.docx{color:#3e7cb4}.home-search-result-icon.pptx{color:#c47945}.home-search-result-icon.xlsx{color:#45896c}
+.home-search-result-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}
+.home-search-result-copy strong{font-size:13px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.home-search-result-copy small{font-size:10px;color:var(--soft)}
+.home-search-result>svg{flex-shrink:0;color:var(--soft);opacity:.6}
+.home-search-message{padding:12px;font-size:12px!important;line-height:1.6!important;margin:0!important;color:var(--soft)!important}
+.home-search-message[role="alert"]{color:#af4753!important}
+.home-search-hint{display:flex;gap:17px;padding:10px 12px 2px;border-top:1px solid var(--divider,var(--line));margin-top:5px;color:var(--soft);font-size:10px}
+:root[data-theme="dark"] .home-search-capsule{box-shadow:0 4px 16px rgb(0 0 0 / .26),inset 0 0 0 1px rgb(255 255 255 / .15);--liquid-glass-tint:rgb(255 255 255 / calc(var(--glass-material-fill,.05) * .45))}
+:root[data-theme] .home-hero{text-align:center;margin-inline:auto;padding-bottom:37px}
+.home-hero .home-actions{justify-content:center}
+:root[data-theme="dark"] .home-search-message[role="alert"]{color:#ee9da5!important}
+:root[data-glass="off"] .home-search-capsule,:root[data-reduce-transparency="true"] .home-search-capsule,:root[data-contrast="high"] .home-search-capsule{background:var(--paper)}
+@media(forced-colors:active){.home-search-capsule,.home-search-results{background:Canvas;border:1px solid CanvasText}.home-search-result[aria-selected="true"]{background:Highlight;color:HighlightText}}

@@ -1,0 +1,147 @@
+/* Kube-derived Searchbox: 60px height, 29px squircle bezel, thickness70, IOR1.5.
+   Actual width is measured; no old 8px band or whole-toolbar backdrop root. */
+:root {
+  --navigation-blur: 1px;
+  --navigation-refraction-width: 29px;
+  --navigation-saturation: 1;
+  --navigation-tint: rgb(255 255 255 / var(--glass-material-fill, .05));
+  --navigation-solid: var(--glass-panel);
+  --navigation-ink: var(--glass-ink);
+  --navigation-edge: var(--glass-edge);
+  --navigation-shadow: var(--glass-shadow);
+}
+:root[data-theme="dark"] {
+  --navigation-saturation: 1;
+  --navigation-ink: color-mix(in srgb, var(--glass-ink) 40%, white);
+}
+.navigation-capsule[data-navigation-surface="light"] {
+  --navigation-ink: #253746;
+}
+.navigation-capsule[data-navigation-surface="dark"] {
+  --navigation-ink: #f4f6f8;
+}
+
+:root[data-theme] .workbench .reader-toolbar .floating-capsule.navigation-capsule {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+  color: var(--navigation-ink);
+  border: 1px solid transparent;
+  box-shadow: 0 4px 16px rgb(0 0 0 / .16);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.floating-capsule.navigation-capsule > :not(.navigation-glass) {
+  position: relative;
+  z-index: 1;
+}
+.floating-capsule.navigation-capsule > .navigation-glass {
+  position: absolute;
+  /* The measured/sample bounds include the capsule's 1px border. Absolute
+     positioning starts at its padding box, so cover that border box exactly. */
+  inset: -1px;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.navigation-glass,
+.navigation-glass * { pointer-events: none; }
+.navigation-glass-definitions { position: absolute; overflow: hidden; }
+
+.floating-capsule.navigation-capsule .navigation-glass :is(.navigation-glass-center, .navigation-glass-edge) {
+  position: absolute;
+  inset: auto;
+  left: calc(-1 * var(--liquid-glass-overscan));
+  top: calc(-1 * var(--liquid-glass-overscan));
+  width: calc(100% + 2 * var(--liquid-glass-overscan));
+  height: calc(100% + 2 * var(--liquid-glass-overscan));
+  z-index: auto;
+  border-radius: 0;
+  background-color: transparent;
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  opacity: calc(1 - var(--navigation-hide-progress));
+  transform: none;
+  transition: opacity var(--navigation-hide-duration) linear;
+}
+.floating-capsule.navigation-capsule .navigation-glass-center {
+  -webkit-backdrop-filter: var(--liquid-glass-center-filter);
+  backdrop-filter: var(--liquid-glass-center-filter);
+  filter: none;
+}
+.floating-capsule.navigation-capsule .navigation-glass-edge {
+  -webkit-backdrop-filter: var(--navigation-refraction-filter);
+  backdrop-filter: var(--navigation-refraction-filter);
+  filter: none;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+.floating-capsule.navigation-capsule .navigation-glass[data-source="sampled"] .navigation-glass-center {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  filter: var(--liquid-glass-center-filter);
+}
+.floating-capsule.navigation-capsule .navigation-glass[data-source="sampled"] .navigation-glass-edge {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  filter: var(--navigation-refraction-filter);
+}
+.floating-capsule.navigation-capsule .navigation-glass-tint {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--navigation-tint);
+  opacity: calc(1 - var(--navigation-hide-progress));
+  transition: opacity var(--navigation-hide-duration) linear;
+}
+.floating-capsule.navigation-capsule .navigation-glass-highlight {
+  position: absolute;
+  inset: auto;
+  left: calc(-1 * var(--liquid-glass-overscan));
+  top: calc(-1 * var(--liquid-glass-overscan));
+  /* Reflection is generated from the same SDF normals as refraction. The
+     upper left lobe is brighter and curves continuously around the end caps. */
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  opacity: calc(1 - var(--navigation-hide-progress));
+  transition: opacity var(--navigation-hide-duration) linear;
+}
+/* An iframe's viewport must extend behind the navigation. Its own content
+   scrolls independently, so outer top padding cannot act as scroll clearance. */
+:root[data-theme] .workbench .reader-format-html .document-content:has(.html-preview) { padding-top: 0; }
+/* A native view cannot frost pixels from its sibling before a sample arrives. */
+html.native-toolbar-root .navigation-glass[data-source="live"] :is(.navigation-glass-center, .navigation-glass-edge) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Remove old native-only sheen/tint layers; both hosts use the same material. */
+:root[data-theme] .workbench .reader-toolbar .floating-capsule.navigation-capsule::before,
+:root[data-theme] .workbench .reader-toolbar .floating-capsule.navigation-capsule::after { display: none; }
+
+:root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .floating-capsule.navigation-capsule > .navigation-glass { display: none; }
+:root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .workbench .reader-toolbar .floating-capsule.navigation-capsule {
+  background: var(--navigation-solid);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-contrast="high"] .workbench .reader-toolbar .floating-capsule.navigation-capsule { border-color: var(--navigation-ink); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root .floating-capsule.navigation-capsule > .navigation-glass { display: none; }
+  :root .workbench .reader-toolbar .floating-capsule.navigation-capsule {
+    background: var(--navigation-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (forced-colors: active) {
+  :root .floating-capsule.navigation-capsule > .navigation-glass { display: none; }
+  :root .workbench .reader-toolbar .floating-capsule.navigation-capsule {
+    background: Canvas;
+    color: CanvasText;
+    border-color: ButtonText;
+    box-shadow: none;
+  }
+}

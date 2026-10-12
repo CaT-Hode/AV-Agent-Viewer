@@ -6,7 +6,7 @@ import { bytes } from '../lib/transport';
 import type { DocumentInfo, EditOperation } from '../../../../../packages/contracts/src/index';
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-export function PdfReader({ document, note, highlight, edit, pageRef, onReady }: { document: DocumentInfo; note: string; highlight: boolean; edit(operation: EditOperation): Promise<void>; pageRef: React.RefObject<number>; onReady(): void }) {
+export function PdfReader({ document, zoom = 1, note, highlight, edit, pageRef, onReady }: { document: DocumentInfo; zoom?: number; note: string; highlight: boolean; edit(operation: EditOperation): Promise<void>; pageRef: React.RefObject<number>; onReady(): void }) {
   const host = useRef<HTMLDivElement>(null), [error, setError] = useState('');
   const callback = useRef({ note, highlight, edit, pageRef, onReady }); callback.current = { note, highlight, edit, pageRef, onReady };
   useEffect(() => {
@@ -16,7 +16,7 @@ export function PdfReader({ document, note, highlight, edit, pageRef, onReady }:
       if (disposed) return; host.current!.replaceChildren();
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i); if (disposed) return;
-        const scale = Math.min(1.1, (host.current!.clientWidth - 60) / page.getViewport({ scale: 1 }).width);
+        const scale = Math.min(1.1, (host.current!.clientWidth - 60) / page.getViewport({ scale: 1 }).width) * zoom;
         const viewport = page.getViewport({ scale }), ratio = window.devicePixelRatio || 1;
         const wrap = window.document.createElement('div'); wrap.className = 'pdf-page'; wrap.dataset.pageIndex = String(i - 1); wrap.style.width = viewport.width + 'px'; wrap.style.height = viewport.height + 'px'; wrap.style.setProperty('--scale-factor', String(scale)); wrap.style.setProperty('--total-scale-factor', String(scale));
         const canvas = window.document.createElement('canvas'); canvas.width = viewport.width * ratio; canvas.height = viewport.height * ratio; canvas.style.width = viewport.width + 'px'; canvas.style.height = viewport.height + 'px'; wrap.appendChild(canvas);
@@ -30,6 +30,6 @@ export function PdfReader({ document, note, highlight, edit, pageRef, onReady }:
     };
     void render().catch(e => { if (!disposed) setError(String(e)); });
     return () => { disposed = true; void task?.destroy(); };
-  }, [document.id, document.revision]);
+  }, [document.id, document.revision, zoom]);
   return <div className="pdf-content" ref={host}>{error && <p className="error-text">{error}</p>}</div>;
 }

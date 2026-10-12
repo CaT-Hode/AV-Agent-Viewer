@@ -1,0 +1,92 @@
+/* Reusable background optics. Import before the navigation-specific sheet. */
+:root {
+  --liquid-glass-bezel-width: 29px;
+  --liquid-glass-blur: 0px;
+  --liquid-glass-strength: 1;
+  --liquid-glass-saturation: 1;
+  --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill, .6));
+  --liquid-glass-solid: var(--glass-panel, #f3f5f7);
+  --liquid-glass-opacity: 1;
+  --liquid-glass-frosted-blur: 10px;
+  --liquid-glass-frosted-saturation: 1.15;
+}
+:root[data-theme="dark"] { --liquid-glass-saturation: 1; }
+:where(.material-host) { position: relative; isolation: isolate; }
+.material-host > .liquid-glass-surface:not(.navigation-glass) {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+.liquid-glass-surface,
+.liquid-glass-surface * { pointer-events: none; }
+.liquid-glass-definitions { position: absolute; overflow: hidden; }
+.liquid-glass-surface:not(.navigation-glass) :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) {
+  position: absolute;
+  left: calc(-1 * var(--liquid-glass-overscan, 0px));
+  top: calc(-1 * var(--liquid-glass-overscan, 0px));
+  width: calc(100% + 2 * var(--liquid-glass-overscan, 0px));
+  height: calc(100% + 2 * var(--liquid-glass-overscan, 0px));
+  border-radius: 0;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  opacity: var(--liquid-glass-opacity);
+  transition: opacity var(--motion-duration, 180ms) linear;
+}
+.liquid-glass-surface:not(.navigation-glass) .liquid-glass-center {
+  -webkit-backdrop-filter: var(--liquid-glass-center-filter);
+  backdrop-filter: var(--liquid-glass-center-filter);
+}
+.liquid-glass-surface:not(.navigation-glass) .liquid-glass-edge {
+  -webkit-backdrop-filter: var(--liquid-glass-refraction-filter);
+  backdrop-filter: var(--liquid-glass-refraction-filter);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+.liquid-glass-surface:not(.navigation-glass)[data-source="sampled"] .liquid-glass-center {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  filter: var(--liquid-glass-center-filter);
+}
+.liquid-glass-surface:not(.navigation-glass)[data-source="sampled"] .liquid-glass-edge {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  filter: var(--liquid-glass-refraction-filter);
+}
+/* Ordinary surfaces use one bounded backdrop pass. No overscan, SVG URL,
+   displacement texture, edge mask or source PNG is used by this branch. */
+.material-host > .liquid-glass-surface:not(.navigation-glass)[data-glass-effect="frosted"] .liquid-glass-center {
+  inset: 0;
+  width: 100%; height: 100%;
+  border-radius: inherit;
+  background: transparent;
+  filter: none;
+  -webkit-backdrop-filter: blur(var(--liquid-glass-frosted-blur)) saturate(var(--liquid-glass-frosted-saturation));
+  backdrop-filter: blur(var(--liquid-glass-frosted-blur)) saturate(var(--liquid-glass-frosted-saturation));
+  clip-path: none;
+}
+.liquid-glass-surface:not(.navigation-glass) .liquid-glass-tint {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--liquid-glass-tint);
+  opacity: var(--liquid-glass-opacity);
+  transition: opacity var(--motion-duration, 180ms) linear;
+}
+.liquid-glass-surface:not(.navigation-glass) .liquid-glass-highlight { background-size: 100% 100%; }
+.liquid-glass-surface:not(.navigation-glass)[data-glass-fallback="true"] :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
+.liquid-glass-surface:not(.navigation-glass)[data-glass-fallback="true"] .liquid-glass-tint { background: var(--liquid-glass-solid); opacity: 1; }
+:root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .material-host > .liquid-glass-surface:not(.navigation-glass) :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
+:root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .material-host > .liquid-glass-surface:not(.navigation-glass) .liquid-glass-tint { background: var(--liquid-glass-solid); opacity: 1; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .material-host > .liquid-glass-surface:not(.navigation-glass) :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
+  .material-host > .liquid-glass-surface:not(.navigation-glass) .liquid-glass-tint { background: var(--liquid-glass-solid); opacity: 1; }
+}
+@media (forced-colors: active) {
+  .material-host > .liquid-glass-surface:not(.navigation-glass) :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
+  .material-host > .liquid-glass-surface:not(.navigation-glass) .liquid-glass-tint { background: Canvas; opacity: 1; }
+}

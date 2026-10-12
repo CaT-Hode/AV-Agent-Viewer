@@ -1,0 +1,92 @@
+.settings-shell { --accent: #087bd8; --text: #263644; --muted: #788895; --line: #22344214; background: #f5f7f9; color: var(--text); font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+.settings-shell::before, .settings-shell::after { display: none; }
+:root[data-theme=dark] .settings-shell { --accent: #6db9fb; --text: #e7edf2; --muted: #93a0ac; --line: #c6d5e610; background: #11171e; }
+:root[data-theme] .settings-shell .settings-titlebar { height: 44px; min-height: 44px; background: transparent; border: 0; box-shadow: none; }
+.settings-shell .settings-body { display: grid; grid-template-columns: 216px minmax(0,1fr); gap: 24px; min-height: 0; flex: 1; padding: 8px 16px 16px; }
+:root[data-theme] .settings-shell .settings-nav { border: 1px solid var(--line); border-radius: 24px; padding: 24px 12px 18px; background: #edf1f680; box-shadow: 0 3px 18px #1d334808; overflow: auto; }
+:root[data-theme=dark] .settings-shell .settings-nav { background: #19212bd0; box-shadow: none; }
+.settings-shell .settings-nav-heading { padding: 0 12px 17px; font-size: 21px; font-weight: 650; letter-spacing: -.6px; }
+.settings-shell .settings-nav section { margin: 0 0 19px; }
+.settings-shell .settings-nav section > p { margin: 0 12px 8px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .07em; }
+:root[data-theme] .settings-shell .settings-nav button { width: 100%; display: flex; align-items: center; gap: 11px; min-height: 39px; padding: 9px 12px; margin: 3px 0; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font-size: 12px; text-align: left; }
+:root[data-theme] .settings-shell .settings-nav button.selected { color: #137ac5; background: #1486df12; box-shadow: none; font-weight: 600; }
+:root[data-theme=dark] .settings-shell .settings-nav button.selected { color: #99cefa; background: #70bafa15; }
+.settings-shell .settings-nav button:hover { background: #899faf0d; color: var(--text); }
+.settings-shell .settings-main { overflow: auto; padding: 20px 28px 40px 0; min-width: 0; }
+:root[data-theme] .settings-shell :is(.settings-nav, .settings-main) { scrollbar-width: thin; scrollbar-color: #8b99a64a transparent; }
+:root[data-theme] .settings-shell :is(.settings-nav, .settings-main)::-webkit-scrollbar-thumb { background: #8b99a64a; border-radius: 8px; }
+.settings-shell .settings-material-preview { margin: 0 0 24px; }
+.settings-shell .settings-material-preview > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 12px; }
+.settings-shell .settings-material-preview[open] > summary { margin-bottom: 12px; }
+.settings-shell .settings-top { display: grid; grid-template-columns: minmax(0,1fr) 36px 230px; gap: 12px; align-items: center; border: 0; padding: 0; margin: 0 0 25px; }
+.settings-shell .settings-eyebrow { font-size: 9px; color: var(--muted); letter-spacing: .14em; margin-bottom: 6px; }
+.settings-shell .settings-top h1 { margin: 0 0 7px; font-size: 30px; font-weight: 680; letter-spacing: -.9px; line-height: 1.2; }
+.settings-shell .settings-top p { max-width: 360px; font-size: 11px; line-height: 1.6; color: var(--muted); margin: 0; }
+:root[data-theme] .settings-shell .settings-search { position: relative; width: 230px; height: 56px; padding: 0 16px; border-radius: 28px; gap: 8px; border: 0; background: transparent; box-shadow: none; }
+.settings-shell .settings-search input { color: var(--text); min-width: 0; padding: 0; font-size: 12px; }
+.settings-shell .settings-search input::placeholder { font-size: 10px; color: var(--muted); }
+.settings-shell .settings-undo { border: 1px solid var(--line); border-radius: 50%; width: 34px; height: 34px; background: #ffffff70; color: var(--text); }
+:root[data-theme=dark] .settings-shell .settings-undo { background: #27344260; }
+.settings-shell .settings-groups { display: flex; flex-direction: column; gap: 25px; }
+.settings-shell .settings-group > h2 { margin: 0 12px 10px; font-size: 12px; font-weight: 620; color: var(--muted); }
+.settings-shell .settings-group-card { border: 1px solid var(--line); border-radius: 22px; background: #ffffffb8; overflow: hidden; box-shadow: 0 4px 20px #18304404; }
+:root[data-theme=dark] .settings-shell .settings-group-card { background: #1b253080; box-shadow: none; }
+.settings-shell .setting-row { display: grid; grid-template-columns: minmax(160px,1fr) minmax(0,auto); gap: 20px; align-items: center; padding: 18px 24px; min-height: 90px; margin: 0; border: 0; border-bottom: 1px solid var(--line); }
+.settings-shell .setting-row:last-child { border-bottom: 0; }
+.settings-shell .setting-row.setting-select { grid-template-columns: minmax(160px,1fr) minmax(0,auto); }
+.settings-shell .setting-copy { min-width: 0; }
+.settings-shell .setting-label { font-size: 13px; color: var(--text); font-weight: 580; display: flex; align-items: center; gap: 7px; }
+.settings-shell .setting-copy > p { font-size: 11px; color: var(--muted); margin: 5px 0 0; line-height: 1.7; max-width: 440px; }
+.settings-shell .setting-metadata { margin-top: 8px; font-size: 10px; color: var(--muted); }
+.settings-shell .setting-metadata summary { cursor: pointer; list-style: none; opacity: .7; }
+.settings-shell .setting-metadata summary:hover { opacity: 1; }
+.settings-shell .setting-metadata small { display: block; margin: 5px 0; font-size: 10px; }
+.settings-shell .setting-control { max-width: min(360px,100%); min-width: 0; justify-self: end; justify-content: flex-end; }
+:root[data-theme] .settings-shell .glass-switch { zoom: 1; }
+.settings-shell .glass-range-control { width: 270px; gap: 12px; }
+.settings-shell .glass-range { flex: 1 1 180px; min-width: 0; height: 40px; }
+.settings-shell .glass-range-track { top: 16px; height: 8px; border-radius: 4px; }
+.settings-shell .glass-range-thumb { width: 54px; height: 36px; top: 2px; left: calc((100% - 32.4px) * var(--range-progress) - 10.8px); border-radius: 18px; }
+:root[data-theme] .settings-shell .glass-range input[type=range] { height: 40px; }
+.settings-shell .glass-range input::-webkit-slider-thumb { width: 32.4px; height: 40px; }
+.settings-shell .setting-control > input { width: 200px; height: 38px; border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; color: var(--text); background: #869bb309; }
+.settings-shell .setting-control > input[type=number] { width: 100px; }
+.settings-shell .setting-row.unavailable { opacity: 1; }
+.settings-shell .setting-row.unavailable .setting-label, .settings-shell .setting-row.unavailable .setting-control { opacity: .5; }
+.settings-shell .dependency-note { color: var(--muted); }
+.settings-shell .settings-unavailable { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 4px; }
+.settings-shell .settings-unavailable > summary { cursor: pointer; font-size: 12px; color: var(--muted); display: flex; gap: 12px; }
+.settings-shell .settings-unavailable > summary span { margin-left: auto; }
+.settings-shell .settings-unavailable > p { font-size: 11px; color: var(--muted); margin: 12px 0; }
+.settings-shell .settings-save-indicator { position: fixed; left: 54px; top: 17px; font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 5px; pointer-events: none; }
+.settings-shell .glass-material-preview { margin-bottom: 28px; }
+.glass-segmented { position: relative; isolation: isolate; height: 36px; min-height: 36px; max-width: 100%; padding: 3px; display: flex; gap: 0; align-items: stretch; background: #849aaf12; border: 1px solid #879eb514; border-radius: 18px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; touch-action: pan-y; user-select: none; }
+.glass-segmented::-webkit-scrollbar { display: none; }
+.glass-segmented-fill,.glass-segmented-thumb { position: absolute; top: 3px; left: 0; height: calc(100% - 6px); border-radius: 999px; pointer-events: none; }
+.glass-segmented-fill { z-index: 0; background: #fff; }
+.glass-segmented-thumb.material-host { z-index: 2; --liquid-glass-tint: rgb(255 255 255 / calc(var(--glass-material-fill,1) * .04)); }
+:root[data-theme=dark] .glass-segmented-fill { background: rgb(30 126 64 / .94); }
+:root[data-theme=dark] .glass-segmented-thumb.material-host { --liquid-glass-tint: rgb(255 255 255 / calc(var(--glass-material-fill,1) * .025)); }
+.glass-segmented > button { flex: 1 0 auto; min-width: 65px; position: relative; z-index: 1; border: 0; border-radius: 14px; background: transparent; padding: 4px 12px; color: var(--muted); font-size: 11px; font-weight: 450; white-space: nowrap; }
+.glass-segmented > button[aria-checked=true] { color: var(--text); font-weight: 650; }
+:root[data-theme=dark] .glass-segmented > button[aria-checked=true] { color: #f8fff9; }
+:root:is([data-glass="off"],[data-reduce-transparency="true"],[data-contrast="high"]) .glass-segmented-thumb { visibility: hidden; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) { .glass-segmented-thumb { visibility: hidden; } }
+@media (forced-colors: active) {
+  :root[data-theme] .glass-segmented-fill { background: Highlight; }
+  :root[data-theme] .glass-segmented > button[aria-checked=true] { color: HighlightText; }
+}
+.glass-segmented > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.settings-shell .connection-section { border: 1px solid var(--line); border-radius: 22px; background: #ffffffb8; padding: 24px; margin-top: 28px; }
+:root[data-theme=dark] .settings-shell .connection-section { background: #1b253080; }
+.settings-shell .connection-section h2 { font-size: 15px; margin: 0 0 14px; font-weight: 620; }
+.settings-shell .connection-section > p { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 10px 0 18px; }
+.settings-shell .connection-card { padding: 16px 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; border-radius: 0; }
+.settings-shell .connection-card strong { font-size: 12px; }
+.settings-shell .connection-card small { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.settings-shell .connection-form { display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; padding: 20px 0 26px; }
+.settings-shell .connection-form input[aria-label="服务地址"] { grid-column: auto; }
+.settings-shell .connection-form input { min-width: 0; height: 40px; border: 1px solid var(--line); border-radius: 12px; background: #849aaf08; padding: 0 12px; color: var(--text); }
+.settings-shell .connection-section .setting-row { display: flex; flex-direction: column; align-items: stretch; padding: 16px 0; }
+.settings-shell .settings-error, .settings-shell .settings-notice { border-radius: 14px; font-size: 12px; padding: 14px 18px; }
+@media (prefers-contrast: more) { .settings-shell .settings-group-card { background: white; border-color: currentColor; } :root[data-theme=dark] .settings-shell .settings-group-card { background: #17212b; } }
