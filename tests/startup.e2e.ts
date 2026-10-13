@@ -132,6 +132,8 @@ try {
   const marker = '# 正常退出恢复验证\n由 startup 回归测试生成。';
   const draft = await invoke<ViewInfo>(main, 'create-text', { title: 'startup-recovery.md', text: marker });
   const officeDraft = await invoke<ViewInfo>(main, 'new-document', { format: 'docx', windowId: 'main' });
+  const emptyOffice = (await invoke<WorkspaceState>(main, 'state')).documents.find(document => document.id === officeDraft.documentId)!;
+  assert.ok(emptyOffice.model.blocks?.length && emptyOffice.model.blocks.every(block => block.text === ''), 'a new Word recovery test starts from an empty editable paragraph');
   const officeMarker = 'Still-focused Office text must survive normal application quit.';
   await main.locator('.office-word-paragraph').first().waitFor();
   await main.locator('.office-word-paragraph').first().fill(officeMarker);

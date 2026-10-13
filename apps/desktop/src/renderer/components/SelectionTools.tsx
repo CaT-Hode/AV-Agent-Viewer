@@ -22,8 +22,10 @@ export function SelectionTools({native=false}:{native?:boolean}) {
       try {await call('report-context',{viewId:data.viewId,context:{contentRevision:data.revision,selection:data.selection}});const result=await call<State>('selection-tools',{viewId:data.viewId});if(seq!==sequence.current)return;setState(result);setRect(data.selection.rect);}catch(e){setError(String(e));}
     };
     const dismiss=(event:Event)=>{if(toolbar.current?.contains(event.target as Node))return;clear();};
-    window.addEventListener('agentviewer:selection-tools',selected);window.addEventListener('agentviewer:selection-clear',clear);document.addEventListener('pointerdown',dismiss);document.addEventListener('scroll',dismiss,true);
-    return()=>{window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-clear',clear);document.removeEventListener('pointerdown',dismiss);document.removeEventListener('scroll',dismiss,true);};
+    // Clear the previous selection before React publishes the selection made
+    // by this pointerdown. Bubbling here would cancel a cell's new request.
+    window.addEventListener('agentviewer:selection-tools',selected);window.addEventListener('agentviewer:selection-clear',clear);document.addEventListener('pointerdown',dismiss,true);document.addEventListener('scroll',dismiss,true);
+    return()=>{window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-clear',clear);document.removeEventListener('pointerdown',dismiss,true);document.removeEventListener('scroll',dismiss,true);};
   },[native]);
   useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape')clear();};document.addEventListener('keydown',escape);return()=>document.removeEventListener('keydown',escape);},[]);
   useEffect(()=>{if(native)void call('toolbar-panel',{expanded:inputMotion.present||errorMotion.present});},[native,inputMotion.present,errorMotion.present]);

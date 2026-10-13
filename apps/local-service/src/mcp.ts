@@ -5,10 +5,13 @@ import { z } from 'zod';
 import { call } from '../../../packages/sdk/src/client';
 import { browserRequestSchema, editOperationSchema } from '../../../packages/contracts/src/index';
 import { aiReadingRequestSchema, aiReadingResultSchema, aiReadingRetrySchema } from '../../../packages/sdk/src/ai-reading';
+import { documentCreateSchema, readerNavigationSchema } from '../../../packages/sdk/src/authoring-schemas';
 
 const server = new McpServer({ name: 'agent-viewer', version: '0.1.0' });
 const text = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data) }] });
 const schemas = {
+  document_create: { description: '新建独立的空白 Markdown/HTML/Word/PPT/Excel/PDF 文档，不写磁盘或覆盖文件。返回视图身份；Office内容用格式编辑工具填写，document_save确认持久文件。Markdown/HTML可给初始text。每次逻辑新建提供独立幂等键；当前进程内保留256项，重启后不承诺复用。', method: 'new-document', schema: documentCreateSchema },
+  reader_navigate: { description: '按明确版本跳到Office幻灯片、工作表单元格或Word段落，并激活该视图；不编辑内容、不产生文字选区。返回requested只表示已发UI请求，必须再reader_get_context确认实际locator/版本；用户未提交草稿可能阻止跳转。', method: 'reader-navigate', schema: readerNavigationSchema },
   reader_ai_tools: { description: '发现与右侧 AI 工具一致的摘要、解释、术语、证据、大纲、公式、表格与学习工具；返回具体视图的来源可用状态。', method: 'ai-reading-tools', schema: z.object({ viewId: z.string(), snapshotId: z.string().optional() }) },
   reader_ai_run: { description: '在明确冻结的选区或当前可见范围运行阅读分析，返回任务ID；不读取其他范围或修改原文。同一进程内幂等记录保留期间不重复发起，最多256项且在途不淘汰；重启或记录淘汰后先查询原任务。用 workspace_list 查询结果。', method: 'ai-reading-run', schema: aiReadingRequestSchema },
   reader_ai_retry: { description: '对已结束的阅读分析或独立草稿重新运行，沿用原冻结来源，返回新任务ID；服务商模型配置由发起时捕获，外部Harness保留原驱动（具体模型取决于Harness）。不读取当前新选区或写回原文。原任务在运行时拒绝。限当前进程保留的256项AI阅读记录，同一幂等键不重复新建。', method: 'ai-reading-retry', schema: aiReadingRetrySchema },

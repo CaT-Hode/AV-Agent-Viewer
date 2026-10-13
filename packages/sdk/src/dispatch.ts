@@ -3,11 +3,16 @@ import type { Actor, EditOperation, ReadingContext, Rect, ViewInfo } from '../..
 import { browserRequestSchema, normalizeWebAddress, ViewerError } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 import { aiReadingResult, aiReadingTools, retryAIReading, runAIReading } from './ai-reading';
+import { createDocument } from './document-create';
+import { outlineDocument, searchDocument } from './document-content';
+import { navigateReader } from './reader-navigation';
 
 export async function dispatch(core: ViewerCore, method: string, args: Record<string, unknown>, actor: Actor = 'agent'): Promise<unknown> {
   const str = (key: string) => { const value = args[key]; if (typeof value !== 'string') throw new ViewerError('INVALID_ARGUMENT', `${key} 必须是字符串。`); return value; };
   const viewId = typeof args.viewId === 'string' ? args.viewId : undefined;
   switch (method) {
+    case 'new-document': return createDocument(core, args, actor);
+    case 'reader-navigate': return navigateReader(core, args, actor);
     case 'ai-reading-tools': return aiReadingTools(core, args);
     case 'ai-reading-run': return runAIReading(core, args, actor);
     case 'ai-reading-retry': return retryAIReading(core, args, actor);
@@ -38,12 +43,12 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     case 'close': core.closeView(str('viewId'), !!args.retainRecovery); return {};
     case 'context': return args.snapshotId ? core.readSnapshot(str('snapshotId')).context : core.context(viewId);
     case 'selection': return (args.snapshotId ? core.readSnapshot(str('snapshotId')).context : await core.context(viewId)).selection;
-    case 'report-context': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '外部 harness 不能伪造界面上下文。'); core.updateContext(str('viewId'), args.context as Partial<ReadingContext>, actor); return {};
+    case 'report-context': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '外部 harness 不能伪造界面上下文。'); core.updateContext(str('viewId'), args.context as Partial<ReadingContext>, (args.context as Partial<ReadingContext>)?.actor === 'agent' ? 'agent' : actor); return {};
     case 'snapshot': return core.snapshot(viewId);
     case 'snapshot-read': return core.readSnapshot(str('snapshotId'));
     case 'read': { const document = args.snapshotId ? core.readSnapshot(str('snapshotId')).document : core.getDocument(str('documentId')).info; return { ...document.model, revision: document.revision, warnings: document.warnings }; }
-    case 'outline': { const d = core.getDocument(str('documentId')).info; return d.model.slides?.map(s => ({ id: s.id, title: s.blocks[0]?.text })) ?? d.model.sheets?.map(s => ({ id: s.id, title: s.name })) ?? d.model.blocks?.filter(b => b.style?.startsWith('Heading')).map(b => ({ id: b.id, title: b.text })) ?? (d.model.text ?? '').split('\n').filter(t => /^#{1,6} /.test(t)); }
-    case 'search': { const d = core.getDocument(str('documentId')).info; const text = d.model.text ?? d.model.blocks?.map(b => b.text).join('\n') ?? ''; const query = str('query'); if (!query) throw new ViewerError('INVALID_ARGUMENT', '搜索词不能为空。'); const results = []; let offset = 0; while ((offset = text.indexOf(query, offset)) !== -1 && results.length < 200) { results.push({ from: offset, to: offset + query.length, quote: text.slice(Math.max(0, offset - 60), offset + query.length + 60), revision: d.revision }); offset += query.length; } return { results, scope: d.model.text !== undefined || d.model.blocks ? 'text' : 'unsupported', revision: d.revision }; }
+    case 'outline': return outlineDocument(core.getDocument(str('documentId')).info);
+    case 'search': { const query = str('query'); if (!query || query.length > 10000) throw new ViewerError('INVALID_ARGUMENT', '搜索词需为 1–10000 字符。'); return searchDocument(core.getDocument(str('documentId')).info, query); }
     case 'prepare': return core.prepare(str('documentId'), Number(args.expectedRevision), args.operation as EditOperation);
     case 'commit': return core.commit(str('patchId'), str('idempotencyKey'), actor);
     case 'undo': return core.undo(str('transactionId'));

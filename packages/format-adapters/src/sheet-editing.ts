@@ -84,6 +84,11 @@ async function savePackage(original: Uint8Array, workbook: ExcelJS.Workbook) {
   zip.file('[Content_Types].xml',serializer.serializeToString(types));return zip.generateAsync({type:'uint8array',compression:'DEFLATE'});
 }
 function cellFormat(cell: ExcelJS.Cell, op: Extract<EditOperation,{kind:'sheets.setCellFormat'|'sheets.setRangeFormat'}>, range: ReturnType<typeof sheetRange>) {
+  // XLSX loading interns identical styles: font/fill/alignment setters mutate
+  // the shared cell.style object. Detach the complete nested style before a
+  // target edit, preserving border colors, protection, number formats and any
+  // other fields instead of changing every cell with the same style index.
+  cell.style=structuredClone(cell.style);
   const font={...cell.font};for(const key of ['bold','italic','underline','strike']as const)if(op[key]!==undefined)font[key]=op[key];if(op.fontName){font.name=op.fontName;delete font.scheme;}if(op.fontSize!==undefined)font.size=op.fontSize;if(op.color)font.color={argb:'FF'+op.color.toUpperCase()};cell.font=font;
   cell.alignment={...cell.alignment,...(op.horizontal?{horizontal:op.horizontal}:{}),...(op.vertical?{vertical:op.vertical}:{}),...(op.wrap!==undefined?{wrapText:op.wrap}:{})};if(op.numberFormat!==undefined)cell.numFmt=op.numberFormat;if(op.fill||op.highlight)cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF'+(op.fill??op.highlight)!.toUpperCase()}};
   if(op.borders){if(op.borders==='none')cell.border={};else{const edge={style:op.borderStyle??'thin',color:{argb:'FF'+(op.borderColor??'8D99A3').toUpperCase()}},border={...cell.border};for(const [side,active]of [['top',op.borders==='all'||op.borders==='outline'&&Number(cell.row)===range.start.row],['bottom',op.borders==='all'||(op.borders==='bottom'||op.borders==='outline')&&Number(cell.row)===range.end.row],['left',op.borders==='all'||op.borders==='outline'&&Number(cell.col)===range.start.column],['right',op.borders==='all'||op.borders==='outline'&&Number(cell.col)===range.end.column]]as const)if(active)border[side]=edge;cell.border=border;}}

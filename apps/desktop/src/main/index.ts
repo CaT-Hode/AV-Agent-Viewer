@@ -11,7 +11,6 @@ import { ElectronBrowserRuntime } from '../../../../packages/browser-runtime/src
 import { dispatch } from '../../../../packages/sdk/src/dispatch';
 import { readAIReadingResult } from '../../../../packages/sdk/src/ai-reading';
 import { startServer, dataDir } from '../../../local-service/src/server';
-import { blankBytes } from '../../../../packages/document-core/src/fixtures';
 import { CodexDriver, codexExecutable, codexModels } from '../../../../packages/harness-adapters/src/codex';
 import { SettingsService, settingsRegistry, settingsAvailability } from '../../../../packages/settings/src/index';
 import { DocumentTranslationService } from '../../../../packages/translation/src/index';
@@ -387,7 +386,6 @@ void app.whenReady().then(async () => {
     if (method === 'web-translation-apply') { webTranslationSuspended.delete(String(args.viewId)); return applyWebTranslation(String(args.viewId), args.scope === 'selection' ? 'selection' : 'page', String(args.targetLanguage ?? settings.get('translation.targetLanguage'))); }
     if (method === 'choose-file') { const result = await dialog.showOpenDialog(owner, { properties: ['openFile'], filters: [{ name: '文档', extensions: ['md', 'markdown', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf', 'html', 'htm'] }] }); if (result.canceled) return null; const view = await core.openFile(result.filePaths[0], String(args.windowId ?? 'main')); core.activate(view.id); return view; }
     if (method === 'choose-save') { const document = core.getDocument(String(args.documentId)); const result = await dialog.showSaveDialog(owner, { defaultPath: document.info.path ?? document.info.title }); if (result.canceled || !result.filePath) return null; return core.save(document.info.id, result.filePath, true); }
-    if (method === 'new-document') { const format = String(args.format); if (!['markdown', 'html', 'docx', 'pptx', 'xlsx', 'pdf'].includes(format)) throw new Error('INVALID_ARGUMENT'); return core.openBytes(`未命名.${format === 'markdown' ? 'md' : format}`, await blankBytes(format as never), format as never, undefined, String(args.windowId ?? 'main')); }
     if (method === 'new-window') { const id = randomUUID(); const view = args.viewId ? core.getView(String(args.viewId)) : undefined; const next = view ? core.addView(view.documentId, id) : undefined; await createWindow(id); if (next) { const document = core.getDocument(next.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(next.id, document.model.url); } return { windowId: id }; }
     if (method === 'window-control') { if (args.action === 'minimize') owner.minimize(); else if (args.action === 'maximize') owner.isMaximized() ? owner.unmaximize() : owner.maximize(); else owner.close(); return {}; }
     return dispatch(core, method, args, 'human');

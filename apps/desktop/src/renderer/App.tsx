@@ -19,6 +19,7 @@ import { MessageSquare, BookOpen, Braces, Check, ChevronDown, ChevronLeft, Chevr
 import { DocumentPane, type PdfToolsState } from './components/DocumentPane';
 import { OfficeTools, type OfficeTarget } from './components/OfficeTools';
 import type { OfficeDraftController } from './components/OfficeDocument';
+import { parseOfficeNavigationRequest, type OfficeNavigationRequest, type OfficeNavigationResult } from './lib/office-navigation';
 import { call, desktop, samples, state, windowId } from './lib/transport';
 import type { DocumentInfo, EditOperation, HarnessTask, PreparedPatch, ReadingSnapshot, Receipt, ViewInfo, WorkspaceState } from '../../../../packages/contracts/src/index';
 import { normalizeWebAddress } from '../../../../packages/contracts/src/index';
@@ -91,6 +92,8 @@ export function App() {
   const homeCandidates = useMemo(() => buildHomeSearchCandidates({ documents: workspace.documents, samples: sampleFiles, artifacts }), [workspace.documents, sampleFiles, artifacts]);
   const [webTranslated, setWebTranslated] = useState<Record<string, boolean>>({}), [webBusy, setWebBusy] = useState(false);
   const [agentEvent, setAgentEvent] = useState<EventItem>(), eventSeq = useRef(0), selectionSeq = useRef(0);
+  const [officeNavigation, setOfficeNavigation] = useState<OfficeNavigationRequest>();
+  const navigationRequests = useRef(new Set<string>());
   const [agentStatuses, setAgentStatuses] = useState<Record<string, 'running' | 'paused' | 'stopped'>>({});
   const autoOpenedJobs = useRef(new Set<string>());
   const editQueue = useRef(Promise.resolve()), lastTransactions = useRef(new Map<string, string>()), history = useRef<string[]>([]), future = useRef<string[]>([]), mounted = useRef(true);
@@ -98,6 +101,10 @@ export function App() {
   const [officeDraftDirty, setOfficeDraftDirty] = useState<Record<string, boolean>>({});
   const onOfficeDraftController = useCallback((controller: OfficeDraftController | undefined) => { if (controller) officeControllers.current.set(controller.viewId, controller); else officeControllers.current.clear(); }, []);
   const onOfficeDraftChange = useCallback(({ viewId, dirty }: { viewId: string; dirty: boolean }) => setOfficeDraftDirty(previous => previous[viewId] === dirty ? previous : { ...previous, [viewId]: dirty }), []);
+  const onOfficeNavigationResult = useCallback((result: OfficeNavigationResult) => {
+    if (result.status === 'failed') setToast(result.error ?? 'Agent 未跳转到目标位置。');
+    setOfficeNavigation(previous => previous?.requestId === result.requestId ? undefined : previous);
+  }, []);
   async function flushDrafts(viewId?: string) {
     for (const controller of officeControllers.current.values()) if (!viewId || controller.viewId === viewId) {
       await controller.flush();
@@ -149,7 +156,24 @@ export function App() {
       await flushDrafts();
     } catch (error) { alert(error); throw error; }
   }), []);
-  const refresh = async () => { const result = await state(), previous = stateRef.current, next = sharePolledValue(previous, result); if (previous.activeViewId !== next.activeViewId) { setActiveId(next.activeViewId); if (!foreground.current.homeId) foreground.current = { viewId: next.activeViewId }; } if (next !== previous) { stateRef.current = next; if (mounted.current) setWorkspace(next); pollStats.changedRoot++; } pollStats.successfulPolls++; return next; };
+  const refresh = async () => { const result = await state(), previous = stateRef.current, next = sharePolledValue(previous, result); if (previous.activeViewId !== next.activeViewId && ![...officeControllers.current.values()].some(controller => controller.hasDrafts())) { setActiveId(next.activeViewId); if (!foreground.current.homeId) foreground.current = { viewId: next.activeViewId }; } if (next !== previous) { stateRef.current = next; if (mounted.current) setWorkspace(next); pollStats.changedRoot++; } pollStats.successfulPolls++; return next; };
+  useEffect(() => {
+    if (!officeNavigation) return;
+    const request = officeNavigation, targetView = workspace.views.find(item => item.id === request.viewId), source = workspace.documents.find(item => item.id === request.documentId);
+    if (!targetView || !source || source.revision < request.expectedRevision) return;
+    if (targetView.windowId !== windowId) { setOfficeNavigation(undefined); return; }
+    if (source.revision !== request.expectedRevision || targetView.documentId !== request.documentId) { onOfficeNavigationResult({ requestId: request.requestId, status: 'failed', error: '文档版本已变化，Agent 未跳转。' }); return; }
+    const format = request.target.kind === 'paragraph' ? 'docx' : request.target.kind === 'slide' ? 'pptx' : 'xlsx';
+    if (source.format !== format) { onOfficeNavigationResult({ requestId: request.requestId, status: 'failed', error: '导航目标与文档类型不匹配，Agent 未跳转。' }); return; }
+    if ([...officeControllers.current.values()].some(controller => controller.hasDrafts())) { onOfficeNavigationResult({ requestId: request.requestId, status: 'failed', error: '当前文档有未提交输入，Agent 未跳转。请完成或取消输入后重试。' }); return; }
+    if (workspace.activeViewId !== request.viewId || modal || closing) return;
+    foreground.current = { viewId: request.viewId }; setHome(false); setActiveId(request.viewId);
+  }, [officeNavigation, workspace, modal, closing, officeDraftDirty, onOfficeNavigationResult]);
+  useEffect(() => {
+    if (!officeNavigation) return;
+    const timer = setTimeout(() => onOfficeNavigationResult({ requestId: officeNavigation.requestId, status: 'failed', error: '目标视图未准备就绪，Agent 未跳转。' }), 10000);
+    return () => clearTimeout(timer);
+  }, [officeNavigation?.requestId, onOfficeNavigationResult]);
   const refreshTranslations = async () => { if (!desktop) return; const result = await call<{ jobs: TranslationJob[]; artifacts: TranslationArtifact[] }>('translation-list'); setTranslationJobs(previous => sharePolledValue(previous, result.jobs)); setArtifacts(previous => sharePolledValue(previous, result.artifacts)); };
   useEffect(() => {
     mounted.current = true;
@@ -160,7 +184,7 @@ export function App() {
     return () => { mounted.current = false; clearInterval(timer); off?.(); };
   }, []);
   useEffect(() => { const id = setInterval(() => { if (!desktop) return; void call<EventItem[]>('events', { after: eventSeq.current }).then(events => {
-    for (const event of events) { eventSeq.current = Math.max(eventSeq.current, event.seq); if ((event.type === 'browser.input' || event.type === 'document.changed' || event.type === 'ai.reading') && event.data.actor === 'agent') setAgentEvent(event); if (event.type === 'agent.control' && event.data.viewId) setAgentStatuses(old => ({ ...old, [event.data.viewId!]: (event.data as { status: 'running' | 'paused' | 'stopped' }).status })); if (event.type === 'browser.translation' && event.data.viewId) setWebTranslated(old => ({ ...old, [event.data.viewId!]: true })); if (event.type === 'browser.translation-restored' && event.data.viewId) setWebTranslated(old => ({ ...old, [event.data.viewId!]: false })); }
+    for (const event of events) { eventSeq.current = Math.max(eventSeq.current, event.seq); if (event.type === 'reader.navigate') { const request = parseOfficeNavigationRequest(event.data); if (request && !navigationRequests.current.has(request.requestId) && Date.now() - Date.parse(event.time) < 15000) { navigationRequests.current.add(request.requestId); if (navigationRequests.current.size > 256) navigationRequests.current.delete(navigationRequests.current.values().next().value!); setOfficeNavigation(request); void refresh().catch(alert); } } if ((event.type === 'browser.input' || event.type === 'document.changed' || event.type === 'ai.reading') && event.data.actor === 'agent') setAgentEvent(event); if (event.type === 'agent.control' && event.data.viewId) setAgentStatuses(old => ({ ...old, [event.data.viewId!]: (event.data as { status: 'running' | 'paused' | 'stopped' }).status })); if (event.type === 'browser.translation' && event.data.viewId) setWebTranslated(old => ({ ...old, [event.data.viewId!]: true })); if (event.type === 'browser.translation-restored' && event.data.viewId) setWebTranslated(old => ({ ...old, [event.data.viewId!]: false })); }
   }).catch(() => {}); }, 300); return () => clearInterval(id); }, []);
   useEffect(() => { if (!agentEvent) return; const timer = setTimeout(() => setAgentEvent(current => current?.seq === agentEvent.seq ? undefined : current), 2600); return () => clearTimeout(timer); }, [agentEvent, agentStatuses]);
   useEffect(() => { for (const job of translationJobs) if (job.status === 'completed' && job.artifact && !autoOpenedJobs.current.has(job.id)) { autoOpenedJobs.current.add(job.id); if (val('translation.openArtifact', false)) void openUri(job.artifact.path); } }, [translationJobs, settings?.revision]);
@@ -491,7 +515,7 @@ export function App() {
           state={{ format: document.format, zoom: view?.zoom ?? 1, title: document.title, titleIcon: <FileIcon format={document.format} />, address: document.model.url, mode: view?.mode, canUndo: lastTransactions.current.has(document.id), busy: webBusy, translated: view ? webTranslated[view.id] : false }}
           dispatch={action => void navigationAction(action)} progress={navigation.progress} durationMs={navigationDuration} manualHidden={navigation.manualHidden}
           onHover={navigation.onHover} onLeave={navigation.onLeave} onFocus={navigation.onFocus} onBlur={navigation.onBlur} />}
-      {document && view ? <DocumentPane key={view.id} document={document} view={view} edit={edit} onTextChange={editText} reportError={alert} onPdfToolsChange={setPdfTools} onOfficeTargetChange={setOfficeTarget} onOfficeDraftController={onOfficeDraftController} onOfficeDraftChange={onOfficeDraftChange} onReaderScroll={onReaderScroll} onZoomChange={factor => void navigationAction({ type: 'zoom', factor })} obscured={modalMotion.present} annotations={annotations} /> : <div className="empty-workspace"><BookOpen size={40} /><h1>打开文档，开始阅读</h1><button className="button primary" onClick={() => void openFile()}>打开文件</button></div>}
+      {document && view ? <DocumentPane key={view.id} document={document} view={view} edit={edit} onTextChange={editText} reportError={alert} onPdfToolsChange={setPdfTools} onOfficeTargetChange={setOfficeTarget} onOfficeDraftController={onOfficeDraftController} onOfficeDraftChange={onOfficeDraftChange} navigationRequest={officeNavigation?.viewId === view.id && officeNavigation.documentId === document.id && officeNavigation.expectedRevision === document.revision ? officeNavigation : undefined} onOfficeNavigationResult={onOfficeNavigationResult} onReaderScroll={onReaderScroll} onZoomChange={factor => void navigationAction({ type: 'zoom', factor })} obscured={modalMotion.present} annotations={annotations} /> : <div className="empty-workspace"><BookOpen size={40} /><h1>打开文档，开始阅读</h1><button className="button primary" onClick={() => void openFile()}>打开文件</button></div>}
       <MotionPresence show={!!agentEvent && (agentEvent.data.viewId === view?.id || agentEvent.data.documentId === document?.id) && document?.format !== 'web'} surface="agent" duration={200} identity={view?.id} keyboardImmediate={false}>{agentEvent && <AgentOperationCapsule kind={agentEvent.data.kind} status={agentStatuses[view!.id] ?? 'running'} target={val('agent.capsuleDetail', 'minimal') === 'target' ? document?.title : undefined} onControl={status => void controlAgent(status)} />}</MotionPresence>
       {agentEvent && (agentEvent.data.viewId === view?.id || agentEvent.data.documentId === document?.id) && <>{val('agent.pointer', true) && agentEvent.data.point && document?.format !== 'web' && <div className="agent-pointer" style={{ left: agentEvent.data.point.x, top: agentEvent.data.point.y + 72 }}><Sparkles size={18} /></div>}{agentEvent.data.target && <AgentTargetHighlight event={agentEvent} />}</>}
       {document && document.warnings.length > 0 && <div className="engine-notice" title={[...document.warnings, ...document.capabilities.limitations].join('\n')}>{document.warnings[0]}</div>}</main>

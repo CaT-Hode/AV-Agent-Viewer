@@ -3,17 +3,23 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, Grip, Maximize2, Plus } from
 import { editOperationSchema, type DocumentInfo, type EditOperation, type OfficeTextStyle, type ReadingContext, type Sheet, type SheetCell, type TextBlock, type ViewInfo } from '../../../../../packages/contracts/src/index';
 import { addressPosition, columnName, normalizedRange, parseClipboardGrid, rangeContains, serializeGrid, textStyle, type OfficeTarget } from './office/OfficeShared';
 import { OfficeDraftRegistry, useOfficeDraft, type OfficeDraftController } from './office/OfficeDrafts';
+import { officeNodeVisible, scrollOfficeCell, type OfficeNavigationRequest, type OfficeNavigationResult } from '../lib/office-navigation';
+import { slidePreviewMetrics } from '../lib/slide-preview';
+import { scrollReadingTarget } from '../lib/reading-scroll';
 import '../office-editing.css';
 
 export type OfficeDocumentProps = {
   document: DocumentInfo; view: Pick<ViewInfo, 'id'>; edit(operation: EditOperation): Promise<void>; zoom?: number;
   onTarget?(target: OfficeTarget): void; onContext?(context: Partial<ReadingContext>): void;
-  onSelection?(selection: ReadingContext['selection']): void; reportError?(error: unknown): void;
+  onSelection?(selection: ReadingContext['selection'], actor?: 'human' | 'agent'): void; reportError?(error: unknown): void;
+  navigationRequest?: OfficeNavigationRequest;
+  onNavigationContext?(context: Partial<ReadingContext>, requestId: string): void;
+  onNavigationResult?(result: OfficeNavigationResult): void;
   onDraftController?(controller: OfficeDraftController | undefined): void; onDraftChange?(dirty: boolean): void;
 };
 export type { OfficeDraftController } from './office/OfficeDrafts';
 type EditorProps = Pick<OfficeDocumentProps, 'edit' | 'onContext' | 'onSelection' | 'reportError'> & { document: Pick<DocumentInfo, 'capabilities'>; view: Pick<ViewInfo, 'id'>; selectTarget(target: OfficeTarget): void; drafts: OfficeDraftRegistry };
-type RenderProps = EditorProps & { document: Pick<DocumentInfo, 'id' | 'format' | 'model' | 'capabilities'>; zoom?: number; target?: OfficeTarget; editor: EditorProps };
+type RenderProps = EditorProps & { document: Pick<DocumentInfo, 'id' | 'format' | 'model' | 'capabilities' | 'revision'>; zoom?: number; target?: OfficeTarget; editor: EditorProps; navigationRequest?: OfficeNavigationRequest; onNavigationContext?: OfficeDocumentProps['onNavigationContext']; onNavigationResult?: OfficeDocumentProps['onNavigationResult'] };
 const renderCounts = { document: 0, word: 0, presentation: 0, spreadsheet: 0, cell: 0, text: 0, notes: 0 };
 /** Counter-only diagnostics. The trusted test renderer exposes this on demand. */
 export const officeRenderStats = () => ({ ...renderCounts });
@@ -39,6 +45,46 @@ function restoreOffsets(host: HTMLElement, from: number, to: number) {
     if (start && to <= offset + length) { range.setEnd(node, Math.max(0, to - offset)); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); return; }
     offset += length; node = walker.nextNode();
   }
+}
+
+function useAgentOfficeNavigation(props: RenderProps, identity: string, resolve: () => HTMLElement | null | undefined, prepare: (request: OfficeNavigationRequest) => boolean = () => true) {
+  const handlers = useRef({ props, resolve, prepare }); handlers.current = { props, resolve, prepare };
+  const started = useRef<string | undefined>(undefined), finished = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const request = props.navigationRequest; if (!request || finished.current === request.requestId) return;
+    let frame = 0, nextFrame = 0, disposed = false;
+    const fail = (error: unknown) => { if (disposed) return; finished.current = request.requestId; const message = error instanceof Error ? error.message : String(error); if (handlers.current.props.onNavigationResult) handlers.current.props.onNavigationResult({ requestId: request.requestId, status: 'failed', error: message }); else handlers.current.props.reportError?.(message); };
+    try {
+      if (request.viewId !== props.view.id || request.documentId !== props.document.id || request.expectedRevision !== props.document.revision) throw new Error('文档版本已变化，Agent 未跳转。');
+      if (props.drafts.hasDrafts()) throw new Error('当前文档有未提交输入，Agent 未跳转。请完成或取消输入后重试。');
+      if (started.current !== request.requestId) { started.current = request.requestId; window.getSelection()?.removeAllRanges(); props.onSelection?.({ kind: 'none', text: '' }, 'agent'); }
+      if (!prepare(request)) return;
+      frame = requestAnimationFrame(() => {
+        if (disposed) return;
+        try {
+          const latest = handlers.current.props;
+          if (latest.drafts.hasDrafts() || latest.document.revision !== request.expectedRevision) throw new Error('输入或文档版本已变化，Agent 未跳转。');
+          const node = handlers.current.resolve(); if (!node) throw new Error('目标未在当前阅读视图中呈现，Agent 未跳转。');
+          if (request.target.kind === 'cell') { scrollReadingTarget(node.closest<HTMLElement>('.office-grid-scroll')); scrollOfficeCell(node); }
+          else scrollReadingTarget(node);
+          nextFrame = requestAnimationFrame(() => {
+            if (disposed) return;
+            const current = handlers.current.props, pane = node.closest<HTMLElement>('.document-content');
+            if (current.drafts.hasDrafts() || current.document.revision !== request.expectedRevision) { fail('输入或文档版本已变化，Agent 未跳转。'); return; }
+            if (!pane || !node.isConnected || !officeNodeVisible(node, pane)) { fail('目标被筛选、冻结区域或界面布局遮挡，Agent 未跳转。'); return; }
+            const target = request.target, quote = node.querySelector<HTMLInputElement>('input')?.value ?? node.innerText;
+            const locator: ReadingContext['locator'] = target.kind === 'paragraph' ? { kind: 'paragraph', blockId: target.blockId, quote: quote.slice(0, 120) } : target.kind === 'slide' ? { kind: 'slide', slideId: target.slideId, quote: quote.slice(0, 120) } : { kind: 'cell', sheetId: target.sheetId, cell: target.address, quote: quote.slice(0, 120) };
+            current.selectTarget(target.kind === 'paragraph' ? { viewId: request.viewId, blockId: target.blockId } : target.kind === 'slide' ? { viewId: request.viewId, slideId: target.slideId } : { viewId: request.viewId, sheetId: target.sheetId, address: target.address, range: `${target.address}:${target.address}` });
+            const context: Partial<ReadingContext> = { actor: 'agent', locator, selection: { kind: 'none', text: '' } };
+            current.onNavigationContext?.(context, request.requestId);
+            if (!current.onNavigationContext) current.onContext?.(context);
+            finished.current = request.requestId; current.onNavigationResult?.({ requestId: request.requestId, status: 'rendered' });
+          });
+        } catch (error) { fail(error); }
+      });
+    } catch (error) { fail(error); }
+    return () => { disposed = true; cancelAnimationFrame(frame); cancelAnimationFrame(nextFrame); };
+  }, [props.navigationRequest?.requestId, identity, props.document.revision]);
 }
 
 /** Unmanaged text children protect IME, local drafts and the native text range. */
@@ -103,6 +149,8 @@ const EditableBlock = memo(EditableBlockImpl, (left, right) => left.block === ri
 function WordDocumentImpl(props: RenderProps) {
   renderCounts.word++;
   const { document, zoom = 1 } = props, blocks = document.model.blocks ?? [], layout = document.model.pageLayout;
+  const root = useRef<HTMLDivElement>(null);
+  useAgentOfficeNavigation(props, document.id, () => props.navigationRequest?.target.kind === 'paragraph' ? root.current?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(props.navigationRequest.target.blockId)}"]`) : undefined, request => { if (request.target.kind !== 'paragraph') throw new Error('当前 Word 视图不支持此导航目标。'); return true; });
   const groups: ({ kind: 'paragraph'; block: TextBlock } | { kind: 'table'; id: string; blocks: TextBlock[] })[] = [];
   const tables = new Map<string, TextBlock[]>();
   for (const block of blocks) {
@@ -112,7 +160,7 @@ function WordDocumentImpl(props: RenderProps) {
   // TextBlock's scalar font fields summarize the first OOXML run. They are not
   // paragraph defaults: inheriting them would style every unselected sibling.
   const paragraphStyle = (block: TextBlock): CSSProperties => ({ ...(block.runs?.length ? {} : fontStyle(block)), textAlign: block.alignment === 'both' ? 'justify' : block.alignment as CSSProperties['textAlign'], marginTop: (block.spacingBefore ?? 0) * 4 / 3, marginBottom: (block.spacingAfter ?? 8) * 4 / 3, lineHeight: block.lineSpacing ?? 1.5, paddingLeft: (block.indentLeft ?? 0) * 4 / 3, paddingRight: (block.indentRight ?? 0) * 4 / 3, textIndent: (block.indentFirstLine ?? 0) * 4 / 3 });
-  return <div className="office-word-stage"><article className="office-word-paper" style={{ width: layout ? layout.width * 4 / 3 : 816, minHeight: layout ? layout.height * 4 / 3 : 1056, padding: layout ? `${layout.margins.top * 4 / 3}px ${layout.margins.right * 4 / 3}px ${layout.margins.bottom * 4 / 3}px ${layout.margins.left * 4 / 3}px` : undefined, zoom }} aria-label="Word 文档编辑区">
+  return <div className="office-word-stage" ref={root}><article className="office-word-paper" style={{ width: layout ? layout.width * 4 / 3 : 816, minHeight: layout ? layout.height * 4 / 3 : 1056, padding: layout ? `${layout.margins.top * 4 / 3}px ${layout.margins.right * 4 / 3}px ${layout.margins.bottom * 4 / 3}px ${layout.margins.left * 4 / 3}px` : undefined, zoom }} aria-label="Word 文档编辑区">
     {groups.map(group => group.kind === 'paragraph' ? <EditableBlock key={group.block.id} block={group.block} props={props.editor} className="office-word-paragraph" style={paragraphStyle(group.block)} /> : <table className="office-word-table" key={group.id}><tbody>{Array.from({ length: Math.max(...group.blocks.map(block => block.tableRow ?? 0)) + 1 }, (_, row) => <tr key={row}>{Array.from({ length: Math.max(...group.blocks.map(block => block.tableColumn ?? 0)) + 1 }, (_, column) => <td key={column}>{group.blocks.filter(block => block.tableRow === row && block.tableColumn === column).map(block => <EditableBlock key={block.id} block={block} props={props.editor} className="office-word-paragraph" style={paragraphStyle(block)} />)}</td>)}</tr>)}</tbody></table>)}
   </article></div>;
 }
@@ -144,8 +192,14 @@ function PresentationDocumentImpl(props: RenderProps) {
   renderCounts.presentation++;
   const slides = props.document.model.slides ?? [], [slideId, setSlideId] = useState(slides[0]?.id), [dragBounds, setDragBounds] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
   const slide = slides.find(item => item.id === slideId) ?? slides[0], index = slides.findIndex(item => item.id === slide?.id), canvas = useRef<HTMLDivElement>(null);
+  const preview = slidePreviewMetrics(props.document.model.width, props.document.model.height);
+  useAgentOfficeNavigation(props, slide?.id ?? '', () => canvas.current?.dataset.slideId === (props.navigationRequest?.target.kind === 'slide' ? props.navigationRequest.target.slideId : undefined) ? canvas.current : undefined, request => {
+    const target = request.target;
+    if (target.kind !== 'slide' || !slides.some(item => item.id === target.slideId)) throw new Error('当前演示文稿中不存在该幻灯片。');
+    if (slide?.id !== target.slideId) { setSlideId(target.slideId); return false; } return true;
+  });
   useEffect(() => { const navigate = (event: Event) => { const i = (event as CustomEvent<{ index: number }>).detail.index; if (slides[i]) void props.drafts.flush().then(() => setSlideId(slides[i].id)).catch(cause => props.reportError?.(cause)); }; window.addEventListener('agentviewer:navigate-structure', navigate); return () => window.removeEventListener('agentviewer:navigate-structure', navigate); }, [slides]);
-  useEffect(() => { if (slide) { props.selectTarget({ viewId: props.view.id, slideId: slide.id }); props.onContext?.({ locator: { kind: 'slide', slideId: slide.id }, visibleText: slide.blocks.map(block => block.text).join('\n') }); } }, [slide?.id]);
+  useEffect(() => { if (slide && !props.navigationRequest) { props.selectTarget({ viewId: props.view.id, slideId: slide.id }); props.onContext?.({ locator: { kind: 'slide', slideId: slide.id }, actor: 'human' }); } }, [slide?.id]);
   const showSlide = (id: string) => { void props.drafts.flush().then(() => { setSlideId(id); props.selectTarget({ viewId: props.view.id, slideId: id }); }).catch(cause => props.reportError?.(cause)); };
   const drag = (event: PointerEvent<HTMLButtonElement>, block: TextBlock, resize: boolean) => {
     if (!slide || !canvas.current || !props.document.capabilities.editKinds.includes('slides.setShapeBounds')) return;
@@ -159,7 +213,7 @@ function PresentationDocumentImpl(props: RenderProps) {
   };
   if (!slide) return <p className="office-empty">尚无幻灯片。使用工具带创建第一张幻灯片。</p>;
   return <div className="office-presentation-stage">
-    <div className="office-slide-strip" aria-label="幻灯片导航">{slides.map((item, i) => <button key={item.id} className={slide.id === item.id ? 'selected' : ''} aria-label={`第 ${i + 1} 张幻灯片`} aria-current={slide.id === item.id ? 'page' : undefined} onClick={() => showSlide(item.id)}><span className="office-slide-thumbnail" style={{ backgroundColor: hex(item.background) ?? '#fff' }}>{item.blocks.slice(0, 3).map(block => <span key={block.id}>{block.text.slice(0, 48)}</span>)}</span><span>{i + 1}</span></button>)}</div>
+    <div className="office-slide-strip" aria-label="幻灯片导航">{slides.map((item, i) => <button key={item.id} className={slide.id === item.id ? 'selected' : ''} aria-label={`第 ${i + 1} 张幻灯片`} title={item.blocks.find(block => block.text.trim())?.text.slice(0, 160)} aria-current={slide.id === item.id ? 'page' : undefined} onClick={() => showSlide(item.id)}><span className="office-slide-thumbnail" style={{ width: preview.width, height: preview.height, backgroundColor: hex(item.background) ?? '#fff' }} aria-hidden="true"><span className="office-slide-thumbnail-canvas" style={{ width: preview.logicalWidth, height: preview.logicalHeight, transform: `scale(${preview.scale})` }}>{item.blocks.map(block => <span key={block.id} className="office-slide-thumbnail-object" style={{ left: (block.x ?? .1) * 100 + '%', top: (block.y ?? .1) * 100 + '%', width: (block.width ?? .8) * 100 + '%', height: (block.height ?? .2) * 100 + '%', backgroundColor: hex(block.fill), border: block.lineColor ? `${(block.lineWidth ?? 1) * 4 / 3}px solid ${hex(block.lineColor)}` : undefined, transform: block.rotation ? `rotate(${block.rotation}deg)` : undefined }}><span className="office-slide-thumbnail-text" style={{ ...(block.runs?.length ? {} : fontStyle(block)), textAlign: block.alignment as CSSProperties['textAlign'] }}>{(block.runs?.length ? block.runs : [{ text: block.text }]).map((run, n) => <span key={n} style={fontStyle(run)}>{run.text}</span>)}</span></span>)}</span></span><span>{i + 1}</span></button>)}</div>
     <div className="office-slide-stage"><div className="office-slide-canvas" data-slide-id={slide.id} ref={canvas} style={{ aspectRatio: `${props.document.model.width ?? 960} / ${props.document.model.height ?? 540}`, backgroundColor: hex(slide.background) ?? '#fff', zoom: props.zoom ?? 1 }}>
       {slide.blocks.map(block => { const bounds = dragBounds[block.id] ?? block; const selected = props.target?.shapeId === block.id; return <div key={block.id} className={'office-slide-object' + (selected ? ' selected' : '')} data-shape-id={block.id} style={{ left: (bounds.x ?? .1) * 100 + '%', top: (bounds.y ?? .1) * 100 + '%', width: (bounds.width ?? .8) * 100 + '%', height: (bounds.height ?? .2) * 100 + '%', backgroundColor: hex(block.fill), border: block.lineColor ? `${(block.lineWidth ?? 1) * 4 / 3}px solid ${hex(block.lineColor)}` : undefined, transform: block.rotation ? `rotate(${block.rotation}deg)` : undefined }} onPointerDown={() => props.selectTarget({ viewId: props.view.id, slideId: slide.id, shapeId: block.id })}>
         <EditableBlock block={block} slideId={slide.id} props={props.editor} className="office-slide-text" style={{ ...(block.runs?.length ? {} : fontStyle(block)), textAlign: block.alignment as CSSProperties['textAlign'] }} />
@@ -249,6 +303,14 @@ function SpreadsheetDocumentImpl(props: RenderProps) {
   const setFilter = (column: number, value: string) => { void props.drafts.flush().then(() => setFilters(old => ({ ...old, [column]: value }))).catch(cause => props.reportError?.(cause)); };
   useOfficeDraft(props.drafts, `formula:${sheet?.id ?? 'none'}`, { isDirty: () => formulaDirty.current || formulaComposing.current || !!formulaPending.current, flush: applyFormula, discard: () => { formulaDirty.current = false; formulaValue.current = original; formulaBaseline.current = original; setFormula(original); setFormulaError(''); } });
   const jump = () => { const value = nameBox.toUpperCase().trim(); if (!/^[A-Z]+[1-9]\d*(?::[A-Z]+[1-9]\d*)?$/.test(value)) { setFormulaError('请输入单元格地址或范围，如 B8 或 A1:C3'); return; } const [start, end = start] = value.split(':'), position = addressPosition(end), first = addressPosition(start); if (Math.max(position.row, first.row) > 1000 || Math.max(position.column, first.column) > 50) { setFormulaError('当前编辑视图支持前 1000 行、50 列。输入范围已保留。'); return; } setRowLimit(Math.max(rowLimit, position.row, first.row)); select(start, end); requestAnimationFrame(() => grid.current?.querySelector<HTMLElement>(`[data-address="${start}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })); };
+  useAgentOfficeNavigation(props, `${sheet?.id}:${address}:${rowLimit}`, () => props.navigationRequest?.target.kind === 'cell' ? grid.current?.querySelector<HTMLElement>(`[data-address="${props.navigationRequest.target.address}"]`) : undefined, request => {
+    const target = request.target;
+    if (target.kind !== 'cell' || !sheets.some(item => item.id === target.sheetId)) throw new Error('当前工作簿中不存在该工作表。');
+    if (sheet?.id !== target.sheetId) { setSheetId(target.sheetId); return false; }
+    const row = addressPosition(target.address).row;
+    if (address !== target.address || rowLimit < row) { setAddress(target.address); setRange(`${target.address}:${target.address}`); setNameBox(target.address); setRowLimit(old => Math.max(old, row)); return false; }
+    return true;
+  });
   if (!sheet) return <p className="office-empty">尚无工作表。</p>;
   const rangeEnd = addressPosition(range.split(':')[1] ?? address);
   const rowCount = Math.min(rowLimit, Math.max(24, sheet.rowCount ?? sheet.rows.length, rangeEnd.row)), columnCount = Math.min(50, Math.max(12, sheet.columnCount ?? Math.max(0, ...sheet.rows.map(row => row.length)), rangeEnd.column));
@@ -297,8 +359,8 @@ function OfficeDocumentImpl(props: OfficeDocumentProps) {
   // only receive their actual rendering inputs; stable bridges still invoke the
   // latest parent callbacks, and local draft state remains owned by each editor.
   const editor = useMemo<EditorProps>(() => ({ document: { capabilities: props.document.capabilities }, view: { id: props.view.id }, edit: props.edit, onContext: props.onContext, onSelection: props.onSelection, reportError: props.reportError, selectTarget, drafts }), [props.document.capabilities, props.view.id, props.edit, props.onContext, props.onSelection, props.reportError, selectTarget, drafts]);
-  const bodyDocument = useMemo(() => ({ id: props.document.id, format: props.document.format, model: props.document.model, capabilities: props.document.capabilities }), [props.document.id, props.document.format, props.document.model, props.document.capabilities]);
-  const child = useMemo<RenderProps>(() => ({ ...editor, document: bodyDocument, zoom: props.zoom, editor }), [editor, bodyDocument, props.zoom]);
+  const bodyDocument = useMemo(() => ({ id: props.document.id, format: props.document.format, model: props.document.model, capabilities: props.document.capabilities, revision: props.document.revision }), [props.document.id, props.document.format, props.document.model, props.document.capabilities, props.document.revision]);
+  const child = useMemo<RenderProps>(() => ({ ...editor, document: bodyDocument, zoom: props.zoom, editor, navigationRequest: props.navigationRequest, onNavigationContext: props.onNavigationContext, onNavigationResult: props.onNavigationResult }), [editor, bodyDocument, props.zoom, props.navigationRequest, props.onNavigationContext, props.onNavigationResult]);
   return <section className={'office-document-editor office-document-' + props.document.format}>
     {props.document.format === 'docx' && <WordDocument {...child} />}{props.document.format === 'pptx' && <PresentationDocument {...child} target={target} />}{props.document.format === 'xlsx' && <SpreadsheetDocument {...child} />}
   </section>;
