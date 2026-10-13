@@ -70,3 +70,17 @@ test('navigation validates version/target/limits, preserves document bytes and d
   await assert.rejects(dispatch(core, 'reader-navigate', { viewId: excel.id, expectedRevision: 0, target: { kind: 'cell', sheetId: '1', address: 'AY1' }, idempotencyKey: 'outside' }), { code: 'CAPABILITY_UNSUPPORTED' });
   await assert.rejects(dispatch(core, 'report-context', { viewId: excel.id, context: { actor: 'human', visibleText: 'fake' } }), { code: 'AUTH_SCOPE_DENIED' });
 });
+
+test('HTML navigation resolves shared heading identities, rejects ambiguous or stale targets, and stays read-only', async () => {
+  const { core } = await setup();
+  const view = await core.openBytes('story.html', new TextEncoder().encode('<h1 id="title">潮灯町</h1><details><summary>第五章</summary><h2 id="ending">新的初见</h2><p id="body">正文</p></details><h2 id="duplicate">一</h2><h2 id="duplicate">二</h2>'), 'html');
+  const before = core.getDocument(view.documentId).bytes.slice();
+  const args = { viewId: view.id, expectedRevision: 0, target: { kind: 'html-heading', blockId: 'ending' }, idempotencyKey: 'html-navigation' };
+  const receipt = await dispatch(core, 'reader-navigate', args) as any;
+  assert.equal(receipt.status, 'requested'); assert.deepEqual(await dispatch(core, 'reader-navigate', args), receipt);
+  assert.equal(core.getView(view.id).context, undefined); assert.deepEqual(core.getDocument(view.documentId).bytes, before);
+  for (const blockId of ['body', 'missing', 'duplicate']) await assert.rejects(dispatch(core, 'reader-navigate', { ...args, target: { kind: 'html-heading', blockId }, idempotencyKey: 'bad-' + blockId }), { code: 'INVALID_TARGET' });
+  await assert.rejects(dispatch(core, 'reader-navigate', { ...args, expectedRevision: 1, idempotencyKey: 'html-stale' }), { code: 'VERSION_CONFLICT' });
+  const markdown = await core.openBytes('notes.md', new TextEncoder().encode('# 标题'), 'markdown');
+  await assert.rejects(dispatch(core, 'reader-navigate', { ...args, viewId: markdown.id, idempotencyKey: 'html-format' }), { code: 'INVALID_TARGET' });
+});

@@ -73,6 +73,7 @@ function useAgentOfficeNavigation(props: RenderProps, identity: string, resolve:
             if (current.drafts.hasDrafts() || current.document.revision !== request.expectedRevision) { fail('输入或文档版本已变化，Agent 未跳转。'); return; }
             if (!pane || !node.isConnected || !officeNodeVisible(node, pane)) { fail('目标被筛选、冻结区域或界面布局遮挡，Agent 未跳转。'); return; }
             const target = request.target, quote = node.querySelector<HTMLInputElement>('input')?.value ?? node.innerText;
+            if (target.kind === 'html-heading') { fail('HTML 标题需要在 HTML 阅读视图中定位。'); return; }
             const locator: ReadingContext['locator'] = target.kind === 'paragraph' ? { kind: 'paragraph', blockId: target.blockId, quote: quote.slice(0, 120) } : target.kind === 'slide' ? { kind: 'slide', slideId: target.slideId, quote: quote.slice(0, 120) } : { kind: 'cell', sheetId: target.sheetId, cell: target.address, quote: quote.slice(0, 120) };
             current.selectTarget(target.kind === 'paragraph' ? { viewId: request.viewId, blockId: target.blockId } : target.kind === 'slide' ? { viewId: request.viewId, slideId: target.slideId } : { viewId: request.viewId, sheetId: target.sheetId, address: target.address, range: `${target.address}:${target.address}` });
             const context: Partial<ReadingContext> = { actor: 'agent', locator, selection: { kind: 'none', text: '' } };

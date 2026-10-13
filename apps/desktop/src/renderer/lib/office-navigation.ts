@@ -1,4 +1,4 @@
-export type OfficeNavigationTarget = { kind: 'slide'; slideId: string } | { kind: 'cell'; sheetId: string; address: string } | { kind: 'paragraph'; blockId: string };
+export type OfficeNavigationTarget = { kind: 'slide'; slideId: string } | { kind: 'cell'; sheetId: string; address: string } | { kind: 'paragraph'; blockId: string } | { kind: 'html-heading'; blockId: string };
 export type OfficeNavigationRequest = { requestId: string; viewId: string; documentId: string; expectedRevision: number; target: OfficeNavigationTarget; actor: 'agent' };
 export type OfficeNavigationResult = { requestId: string; status: 'rendered' | 'failed'; error?: string };
 
@@ -10,6 +10,7 @@ export function parseOfficeNavigationRequest(value: unknown): OfficeNavigationRe
   let location: OfficeNavigationTarget;
   if (target.kind === 'slide' && identity(target.slideId)) location = { kind: 'slide', slideId: target.slideId };
   else if (target.kind === 'paragraph' && identity(target.blockId)) location = { kind: 'paragraph', blockId: target.blockId };
+  else if (target.kind === 'html-heading' && identity(target.blockId)) location = { kind: 'html-heading', blockId: target.blockId };
   else if (target.kind === 'cell' && identity(target.sheetId) && typeof target.address === 'string') {
     const address = target.address.toUpperCase(), match = /^([A-Z]+)([1-9]\d*)$/.exec(address);
     if (!match) return;

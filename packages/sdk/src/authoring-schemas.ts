@@ -14,5 +14,6 @@ export const readerNavigationSchema = z.object({
     z.object({ kind: z.literal('slide'), slideId: z.string().min(1) }).strict(),
     z.object({ kind: z.literal('cell'), sheetId: z.string().min(1), address: z.string().regex(/^[A-Z]+[1-9]\d*$/) }).strict(),
     z.object({ kind: z.literal('paragraph'), blockId: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('html-heading'), blockId: z.string().min(1) }).strict(),
   ]), idempotencyKey: z.string().min(1).max(160),
 }).strict();

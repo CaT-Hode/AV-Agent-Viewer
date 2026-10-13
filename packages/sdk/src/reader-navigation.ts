@@ -4,6 +4,7 @@ import { ViewerError, type Actor } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 
 import { readerNavigationSchema } from './authoring-schemas';
+import { outlineDocument } from './document-content';
 export { readerNavigationSchema } from './authoring-schemas';
 type NavigationReceipt = { requestId: string; viewId: string; documentId: string; expectedRevision: number; target: z.infer<typeof readerNavigationSchema>['target']; actor: Actor; status: 'requested' };
 const requests = new WeakMap<ViewerCore, Map<string, { payload: string; receipt: NavigationReceipt }>>();
@@ -20,6 +21,7 @@ export function navigateReader(core: ViewerCore, args: Record<string, unknown>, 
   const target = input.target;
   if (target.kind === 'slide' && (document.format !== 'pptx' || !document.model.slides?.some(s => s.id === target.slideId))) throw new ViewerError('INVALID_TARGET', '幻灯片不存在或文档格式不匹配。');
   if (target.kind === 'paragraph' && (document.format !== 'docx' || !document.model.blocks?.some(b => b.id === target.blockId))) throw new ViewerError('INVALID_TARGET', '段落不存在或文档格式不匹配。');
+  if (target.kind === 'html-heading' && (document.format !== 'html' || outlineDocument(document).filter(item => typeof item !== 'string' && item.id === target.blockId).length !== 1)) throw new ViewerError('INVALID_TARGET', 'HTML 标题不存在、不唯一或文档格式不匹配。');
   if (target.kind === 'cell') {
     const match = /^([A-Z]+)([1-9]\d*)$/.exec(target.address)!;
     const column = [...match[1]].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);

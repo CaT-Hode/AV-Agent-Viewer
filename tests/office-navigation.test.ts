@@ -6,6 +6,7 @@ const base = { requestId: 'request', viewId: 'view', documentId: 'document', exp
 test('Office navigation accepts only actual three target kinds with bounded cell addresses', () => {
   assert.deepEqual(parseOfficeNavigationRequest({ ...base, target: { kind: 'cell', sheetId: 'sheet', address: 'ax1000' } })?.target, { kind: 'cell', sheetId: 'sheet', address: 'AX1000' });
   assert.deepEqual(parseOfficeNavigationRequest({ ...base, target: { kind: 'paragraph', blockId: 'p1' } })?.target, { kind: 'paragraph', blockId: 'p1' });
+  assert.deepEqual(parseOfficeNavigationRequest({ ...base, target: { kind: 'html-heading', blockId: 'html/0/1' } })?.target, { kind: 'html-heading', blockId: 'html/0/1' });
   assert.deepEqual(parseOfficeNavigationRequest({ ...base, target: { kind: 'slide', slideId: 'slide1' } })?.target, { kind: 'slide', slideId: 'slide1' });
   for (const address of ['A0','A01','AY1','B1001','A1:B2','A1" onclick="x']) assert.equal(parseOfficeNavigationRequest({ ...base, target: { kind: 'cell', sheetId: 'sheet', address } }), undefined);
 });
