@@ -1,10 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from 'electron';
 import { extname, isAbsolute, join, resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { ViewerCore } from '../../../../packages/document-core/src/index';
 import { JsonWorkspaceRepository } from '../../../../packages/persistence/src/index';
 import { ElectronBrowserRuntime } from '../../../../packages/browser-runtime/src/electron';
@@ -18,15 +15,19 @@ import { SelectionTranslationService } from '../../../../packages/translation/sr
 import type { HarnessDriver, ReadingSnapshot } from '../../../../packages/contracts/src/index';
 import { AIConnectionService, type ToolRoute } from '../../../../packages/ai-providers/src/index';
 import { BabelDocAdapter } from '../../../../packages/translation/src/babeldoc';
-import { babelDocLaunch, engineHealth, libreOfficeExecutable } from '../../../../packages/engines/src/index';
+import { babelDocLaunch, engineHealth } from '../../../../packages/engines/src/index';
 import { recognizeImage } from '../../../../packages/ocr/src/index';
 import { ViewerError } from '../../../../packages/contracts/src/index';
 
 import { WebToolbarHost } from './web-toolbar';
-const toolbarHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/web-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId));
-const selectionHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/selection-toolbar', 'agentviewer:selection-tool');
-const agentHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/agent-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId));
-const aiResultHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/ai-result-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId));
+import { NativeOfficeHost } from './native-office';
+import { nativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
+let office: NativeOfficeHost | undefined;
+const nativeHost = { sourceFor: (viewId: string) => office?.backdrop(viewId) };
+const toolbarHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/web-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
+const selectionHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/selection-toolbar', 'agentviewer:selection-tool', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
+const agentHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/agent-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
+const aiResultHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/ai-result-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
 const root = resolve(__dirname, '../..');
 app.setName('AgentViewer');
 const directory = dataDir(); app.setPath('userData', directory);
@@ -36,6 +37,9 @@ let core: ViewerCore, endpoint: string;
 let translations: DocumentTranslationService;
 let selectionTranslations: SelectionTranslationService;
 const settings = new SettingsService(join(directory, 'settings.json'));
+const officeAppearance = () => nativeOfficeAppearance(settings.get('appearance.theme'), settings.get('appearance.documentBackground'), nativeTheme.shouldUseDarkColors);
+const syncOfficeAppearance = () => void office?.setAppearance(officeAppearance()).catch(error => core?.event('office.appearance-error', { error: String(error) }));
+nativeTheme.on('updated', () => { if (settings.get('appearance.theme') === 'system') syncOfficeAppearance(); });
 const connections = new AIConnectionService(join(directory, 'connections.json'));
 let settingsWindow: BrowserWindow | undefined;
 let browserPoll: NodeJS.Timeout | undefined;
@@ -114,12 +118,14 @@ async function createWindow(id = 'main') {
   windows.set(id, win);
   const readerContentsId = win.webContents.id;
   let closeReady = false;
+  let closePending = false;
   win.on('close', event => {
     if (closeReady || shutdown === 'ready') return;
     event.preventDefault();
-    void flushReaderWindow(win).then(() => { if (!win.isDestroyed()) { closeReady = true; win.close(); } }).catch(error => {
+    if(closePending)return;closePending=true;
+    void flushReaderWindow(win).then(()=>office?.closeOwner(win)).then(() => { if (!win.isDestroyed()) { closeReady = true; win.close(); } }).catch(error => {
       if (!win.isDestroyed()) win.webContents.send('agentviewer:toolbar', { action: 'close-error', message: String(error) });
-    });
+    }).finally(()=>{closePending=false;});
   });
   win.on('closed', () => {
     selectionTranslations?.cancelOwner(String(readerContentsId));
@@ -158,8 +164,16 @@ void app.whenReady().then(async () => {
   await settings.load();
   await connections.load();
   core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); await core.initialize();
+  office = new NativeOfficeHost(core,root,directory,viewId=>windows.get(core.getView(viewId).windowId),(owner,viewId)=>{toolbarHost.sourceChanged(owner,viewId);selectionHost.sourceChanged(owner,viewId);agentHost.sourceChanged(owner,viewId);aiResultHost.sourceChanged(owner,viewId);},officeAppearance());
+  office.runtime.on('application-action',(event:{action?:string;sessionId?:string;viewId?:string;paths?:unknown})=>{
+    if(event.action!=='open-files'||!event.viewId)return;
+    const source=office?.source(event.viewId);if(!source||source.entry.sessionId!==event.sessionId||source.layout.owner.isDestroyed())return;
+    const owner=source.layout.owner;
+    void openDroppedPaths(owner,event.paths).then(result=>owner.webContents.send('agentviewer:toolbar',{action:'files-opened',...result})).catch(error=>{if(!owner.isDestroyed())owner.webContents.send('agentviewer:toolbar',{action:'files-opened',views:[],errors:[String(error)]});});
+  });
+  core.registerNativeOfficeDriver(office);
   core.browser = new ElectronBrowserRuntime(core, id => { const win = windows.get(id); if (!win) throw new Error('窗口不存在'); return win; }, () => [endpoint, process.env.AGENTVIEWER_VITE_URL].filter((value): value is string => !!value), () => settings.get('agent.pointer') === true, {
-    preload: join(__dirname, 'browser-preload.cjs'), onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); },
+    preload: join(__dirname, 'browser-preload.cjs'), onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); },
   });
   ipcMain.on('agentviewer:browser-surface', (event, value: Record<string, unknown>) => {
     if (event.senderFrame !== event.sender.mainFrame || !value || typeof value !== 'object') return;
@@ -276,7 +290,9 @@ void app.whenReady().then(async () => {
       if (request.method === 'agent-control') {
         const state = agentHost.request(event.sender.id, 'toolbar-state', {}) as Record<string, unknown>;
         if (!state.visible || state.viewId !== request.args.viewId) throw new Error('AUTH_SCOPE_DENIED');
-        return dispatch(core, request.method, request.args, 'human');
+        const result=await dispatch(core, request.method, request.args, 'human');
+        if(request.args.status==='stopped'){const view=core.getView(String(state.viewId));if(view.agentState)core.releaseAgentView({viewId:view.id,controlId:view.agentState.controlId});}
+        return result;
       }
       return agentHost.request(event.sender.id, request.method, request.args);
     }
@@ -288,7 +304,7 @@ void app.whenReady().then(async () => {
         if (!['close', 'save', 'retry'].includes(String(request.args.action))) throw new Error('AUTH_SCOPE_DENIED');
         if (request.args.action === 'retry' && (!state.retryable || task.status === 'running')) throw new Error('TASK_NOT_READY');
         if (request.args.action === 'save' && (!task.text || task.status === 'running')) throw new Error('TASK_NOT_READY');
-        const owner = [...windows.values()].find(window => window.contentView.children.some(child => 'webContents' in child && (child as Electron.WebContentsView).webContents.id === event.sender.id));
+        const owner = aiResultHost.ownerFor(event.sender.id);
         if (!owner) throw new Error('AUTH_SCOPE_DENIED');
         owner.webContents.send('agentviewer:toolbar', { action: request.args.action === 'close' ? 'ai-result-dismiss' : request.args.action === 'retry' ? 'ai-result-retry' : 'ai-result-save', taskId, viewId: state.viewId }); return {};
       }
@@ -297,8 +313,8 @@ void app.whenReady().then(async () => {
     const owner = BrowserWindow.fromWebContents(event.sender); if (!owner || ![...windows.values(), settingsWindow].includes(owner)) throw new Error('AUTH_SCOPE_DENIED');
     const { method, args } = request;
     if (method === 'settings-read') return { definitions: settingsRegistry.map(definition => ({ ...definition, ...settingsAvailability(definition.id) })), snapshot: settings.snapshot() };
-    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); return snapshot; }
-    if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); return snapshot; }
+    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground') syncOfficeAppearance(); return snapshot; }
+    if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-open') { await openSettings(typeof args.category === 'string' ? args.category : undefined); return {}; }
     if (method === 'connections-read') return connections.snapshot();
     if (method === 'connections-upsert') return connections.upsert(args as never);
@@ -309,21 +325,33 @@ void app.whenReady().then(async () => {
     if (method === 'connections-test') return { text: await connections.test(String(args.id)) };
     if (method === 'engine-status') return engineHealth(root);
     if (owner === settingsWindow && method !== 'window-control') throw new Error('AUTH_SCOPE_DENIED');
+    // The native surface already owns Office body rendering. Routine chrome
+    // polling must not copy every cell/shape/page through Chromium again.
+    if (method === 'state') return core.stateForDisplay();
+    if (method === 'office-statistics') return office?.runtime.statistics;
     if (method === 'drop-files') return openDroppedPaths(owner, args.paths);
+    if (method === 'office-layout') {
+      if(!office || !Array.isArray(args.views) || args.views.length>1)throw new Error('INVALID_NATIVE_LAYOUT');
+      const views=args.views as {viewId:string;bounds:{x:number;y:number;width:number;height:number}}[];
+      const content=owner.getContentBounds();
+      for(const entry of views){const b=entry.bounds;if(!b||![b.x,b.y,b.width,b.height].every(Number.isFinite)||b.x<0||b.y<0||b.width<1||b.height<1||b.x+b.width>content.width+2||b.y+b.height>content.height+2)throw new Error('INVALID_NATIVE_LAYOUT');}
+      await office.layoutWindow(owner,views);return {};
+    }
+    if (method === 'office-flush') { const view=core.getView(String(args.viewId));if(windows.get(view.windowId)!==owner)throw new Error('AUTH_SCOPE_DENIED');if(office?.exited)return {recoveryRetained:true};return core.synchronizeNativeDocument(view.documentId); }
     if (method === 'toolbar-focus') { toolbarHost.focus(owner); return {}; }
     if (method === 'selection-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); selectionHost.update(owner, args); return {}; }
-    if (method === 'toolbar-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); toolbarHost.update(owner, args); return {}; }
-    if (method === 'agent-layout') { if (args.viewId && (core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0] || core.getDocument(core.getView(String(args.viewId)).documentId).info.format !== 'web')) throw new Error('AUTH_SCOPE_DENIED'); agentHost.update(owner, args); return {}; }
+    if (method === 'toolbar-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED');const native=typeof args.viewId==='string'&&office?.source(args.viewId); toolbarHost.update(owner, native?{...args,canUndo:native.entry.state?.undo?.canUndo}:args); return {}; }
+    if (method === 'agent-layout') { if (args.viewId && (core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0])) throw new Error('AUTH_SCOPE_DENIED'); agentHost.update(owner, args); return {}; }
     if (method === 'ai-result-layout') {
       if (!args.visible) {
         const prior = aiResultHost.stateFor(owner);
         const view = typeof args.viewId === 'string' ? core.views.get(args.viewId) : undefined;
-        const animate = args.animate === true && view?.id === prior?.viewId && view?.windowId === [...windows].find(([, window]) => window === owner)?.[0] && !!view && (core.browser as ElectronBrowserRuntime).entries.get(view.id)?.visible;
+        const animate = args.animate === true && view?.id === prior?.viewId && view?.windowId === [...windows].find(([, window]) => window === owner)?.[0] && !!view && ((core.browser as ElectronBrowserRuntime).entries.get(view.id)?.visible || !!office?.source(view.id));
         const requestedDuration = typeof args.hideDurationMs === 'number' && Number.isFinite(args.hideDurationMs) ? Math.max(0, Math.min(650, args.hideDurationMs)) : undefined;
         aiResultHost.update(owner, { visible: false, viewId: animate ? view?.id : undefined, animate: !!animate, settings: settings.snapshot(), ...(requestedDuration === undefined ? {} : { hideDurationMs: requestedDuration }) }); return {};
       }
       const view = core.getView(String(args.viewId)), task = core.tasks.get(String(args.taskId)), bounds = args.bounds as { x: number; y: number; width: number; height: number } | undefined;
-      if (view.windowId !== [...windows].find(([, window]) => window === owner)?.[0] || core.getDocument(view.documentId).info.format !== 'web' || !task || (task.viewId ?? core.readSnapshot(task.snapshotId).context.viewId) !== view.id) throw new Error('AUTH_SCOPE_DENIED');
+      if (view.windowId !== [...windows].find(([, window]) => window === owner)?.[0] || !['web','docx','xlsx','pptx'].includes(core.getDocument(view.documentId).info.format) || !task || (task.viewId ?? core.readSnapshot(task.snapshotId).context.viewId) !== view.id) throw new Error('AUTH_SCOPE_DENIED');
       if (!bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width < 180 || bounds.width > 832 || bounds.height < 100 || bounds.height > 652) throw new Error('INVALID_GEOMETRY');
       let sourceText: string | undefined, sourceLabel: string | undefined, sourceUpdated = false, retryable = false;
       try {
@@ -342,26 +370,6 @@ void app.whenReady().then(async () => {
         } catch { /* The generic result remains readable without its expired source. */ }
       }
       aiResultHost.update(owner, { viewId: view.id, taskId: task.id, task: { ...task }, label: String(args.label ?? 'AI 分析').slice(0, 100), source: String(sourceLabel ?? args.source ?? '').slice(0, 500), sourceText, sourceUpdated, retryable, visible: true, settings: settings.snapshot(), bounds }); return {};
-    }
-    if (method === 'office-open-full-editor' || method === 'office-reload-from-disk') {
-      const view = core.getView(String(args.viewId));
-      const ownerId = [...windows].find(([, window]) => window === owner)?.[0];
-      if (view.windowId !== ownerId) throw new Error('AUTH_SCOPE_DENIED');
-      const document = core.getDocument(view.documentId).info;
-      if (!['docx', 'pptx', 'xlsx'].includes(document.format)) throw new Error('CAPABILITY_UNSUPPORTED');
-      if (method === 'office-reload-from-disk') return core.reloadFromDisk(document.id);
-      if (!document.path || document.dirty) throw new Error('请先保存文档，再在完整 Office 编辑器中打开。');
-      const office = libreOfficeExecutable(root);
-      if (!office) throw new Error('内置 LibreOffice 不可用。');
-      const gui = office.path.replace(/soffice\.com$/i, 'soffice.exe');
-      const executable = existsSync(gui) ? gui : office.path;
-      await new Promise<void>((resolveLaunch, rejectLaunch) => {
-        const profile = pathToFileURL(join(directory, 'libreoffice-profile')).href;
-        const child = spawn(executable, ['-env:UserInstallation=' + profile, '-o', document.path!], { detached: true, stdio: 'ignore', windowsHide: false });
-        child.once('error', rejectLaunch);
-        child.once('spawn', () => { child.unref(); resolveLaunch(); });
-      });
-      return { opened: true };
     }
     if (method === 'ocr-image') {
       const view = core.getView(String(args.viewId));
@@ -407,6 +415,13 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (shutdown === 'saving') return;
   shutdown = 'saving';
-  void Promise.all([...windows.values()].map(win => flushReaderWindow(win))).then(async () => { selectionTranslations?.dispose(); await translations?.pauseAll(); return core.persist(); }).then(() => { clearInterval(browserPoll); shutdown = 'ready'; app.quit(); }).catch(error => { shutdown = 'idle'; dialog.showErrorBox('恢复点保存失败', String(error)); });
+  void Promise.all([...windows.values()].map(win => flushReaderWindow(win))).then(async () => { await translations?.pauseAll(); await core.shutdownNativeOffice(); await office?.shutdown(); return core.persist(); }).then(() => { selectionTranslations?.dispose(); clearInterval(browserPoll); shutdown = 'ready'; app.quit(); }).catch(error => {
+    shutdown = 'idle';
+    const message = '恢复点尚未保存完成，应用保持打开。' + String(error);
+    core.event('workspace.recovery-error', { message });
+    // A recoverable native failure must not block the Node event loop in a
+    // synchronous OS dialog, especially while the Windows desktop is locked.
+    for (const win of windows.values()) if (!win.isDestroyed()) win.webContents.send('agentviewer:toolbar', { action: 'close-error', message });
+  });
 });
 app.on('window-all-closed', () => app.quit());

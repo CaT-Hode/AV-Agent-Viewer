@@ -4,9 +4,10 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { HtmlPreview } from './HtmlPreview';
 import { call, desktop, windowId } from '../lib/transport';
-import type { DocumentInfo, EditOperation, ReadingContext, ViewInfo } from '../../../../../packages/contracts/src/index';
-import type { OfficeTarget } from './OfficeTools';
+import type { DocumentInfo, EditOperation, ReadingContext, Rect, ViewInfo } from '../../../../../packages/contracts/src/index';
+import type { OfficeTarget, OfficeToolboxController } from './OfficeTools';
 import { OfficeDocument, type OfficeDraftController } from './OfficeDocument';
+import { NativeOfficeDocument } from './NativeOfficeDocument';
 import { officeNodeVisible, type OfficeNavigationRequest, type OfficeNavigationResult } from '../lib/office-navigation';
 import type { SharedOutlineItem } from '../lib/document-outline';
 import { createTrailingEmitter } from '../lib/trailing-emitter';
@@ -15,7 +16,11 @@ const TextEditor = lazy(() => import('./TextEditor').then(m => ({ default: m.Tex
 export type PdfToolsState = { note: string; highlight: boolean; ocrBusy: boolean; ocrResult?: { pageIndex: number; text: string; confidence: number } };
 type PdfToolCommand = { viewId: string; action: 'note' | 'highlight' | 'rotate' | 'add-page' | 'ocr' | 'clear-ocr'; text?: string };
 
-export function DocumentPane({ document, view, edit, onTextChange, reportError, onPdfToolsChange, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, htmlOutline, navigationRequest, onOfficeNavigationResult, onReaderScroll, onZoomChange, obscured, annotations = [] }: { document: DocumentInfo; view: ViewInfo; edit(operation: EditOperation): Promise<void>; onTextChange(text: string): void; reportError(error: unknown): void; annotations?: {sourceRevision:number;selection:ReadingContext['selection']}[]; obscured?: boolean; htmlOutline?: readonly SharedOutlineItem[]; navigationRequest?: OfficeNavigationRequest; onOfficeNavigationResult?(result: OfficeNavigationResult): void; onReaderScroll?: (y: number) => void; onZoomChange?(factor: number): void; onPdfToolsChange?: (state: PdfToolsState) => void; onOfficeTargetChange?: (target: OfficeTarget) => void; onOfficeDraftController?(controller: OfficeDraftController | undefined): void; onOfficeDraftChange?(state: { viewId: string; dirty: boolean }): void }) {
+export function DocumentPane(props: Parameters<typeof LegacyDocumentPane>[0]) {
+  if (desktop && ['docx','pptx','xlsx'].includes(props.document.format)) return <NativeOfficeDocument {...props} />;
+  return <LegacyDocumentPane {...props} />;
+}
+function LegacyDocumentPane({ document, view, edit, onTextChange, reportError, onPdfToolsChange, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, onOfficeToolboxController, htmlOutline, navigationRequest, onOfficeNavigationResult, onReaderScroll, onZoomChange, obscured, annotations = [] }: { document: DocumentInfo; view: ViewInfo; edit(operation: EditOperation): Promise<void>; onTextChange(text: string): void; reportError(error: unknown): void; annotations?: {sourceRevision:number;selection:ReadingContext['selection']}[]; obscured?: boolean; htmlOutline?: readonly SharedOutlineItem[]; navigationRequest?: OfficeNavigationRequest; onOfficeNavigationResult?(result: OfficeNavigationResult): void; onReaderScroll?: (y: number) => void; onZoomChange?(factor: number): void; onPdfToolsChange?: (state: PdfToolsState) => void; onOfficeTargetChange?: (target: OfficeTarget) => void; onOfficeDraftController?(controller: OfficeDraftController | undefined): void; onOfficeDraftChange?(state: { viewId: string; dirty: boolean }): void; onOfficeToolboxController?(controller: OfficeToolboxController | undefined): void }) {
   const host = useRef<HTMLDivElement>(null), page = useRef(0), [slideIndex, setSlideIndex] = useState(0), [sheetId, setSheetId] = useState(document.model.sheets?.[0]?.id), [note, setNote] = useState(''), [highlight, setHighlight] = useState(false), [ocrBusy, setOcrBusy] = useState(false), [ocrResult, setOcrResult] = useState<{ pageIndex: number; text: string; confidence: number }>();
   const selection = useRef<ReadingContext['selection']>({ kind: 'none', text: '' }), sourceContext = useRef<Partial<ReadingContext>>({}), previewContext = useRef<Partial<ReadingContext>>({});
   const reports = useMemo(() => createTrailingEmitter<[Partial<ReadingContext>, string | undefined]>(120, () => {}), [document.id, view.id]);
@@ -84,6 +89,15 @@ export function DocumentPane({ document, view, edit, onTextChange, reportError, 
     return () => window.removeEventListener('agentviewer:pdf-tool', handleTool);
   }, [document.format, document.revision, view.id, highlight, ocrBusy]);
   const publishSelection = (selected: ReadingContext['selection'], actor: 'human' | 'agent' = 'human') => { selection.current = selected; if (['docx','pptx','xlsx'].includes(document.format)) officeContext.current = { ...officeContext.current, actor }; emit({ actor }, true); window.dispatchEvent(new CustomEvent('agentviewer:selection-tools', { detail: { viewId: view.id, revision: document.revision, selection: selected } })); };
+  useEffect(() => {
+    const move = (event: Event) => {
+      const data = (event as CustomEvent<{ viewId: string; revision: number; text: string; rect: Rect }>).detail;
+      if (data?.viewId !== view.id || data.revision !== document.revision || selection.current.kind === 'none' || selection.current.text !== data.text) return;
+      selection.current = { ...selection.current, rect: data.rect }; emit();
+    };
+    window.addEventListener('agentviewer:selection-position', move);
+    return () => window.removeEventListener('agentviewer:selection-position', move);
+  }, [view.id, document.revision, reports]);
   const onSelection = () => {
     const native = window.getSelection();
     if (!native?.rangeCount || !native.anchorNode || !host.current?.contains(native.anchorNode) || !native.toString()) return;
@@ -102,8 +116,8 @@ export function DocumentPane({ document, view, edit, onTextChange, reportError, 
     }
     publishSelection({kind:'text',text,rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},pageRects:pageRects.length?pageRects:undefined,locator:{kind:'text-quote',quote:text,blockId:document.format==='docx'?block?.dataset.blockId:undefined,shapeId:document.format==='pptx'?block?.dataset.blockId:undefined,pageIndex:pdfPage?Number(pdfPage.dataset.pageIndex):undefined,slideId:block?.closest<HTMLElement>('[data-slide-id]')?.dataset.slideId ?? officeContext.current.locator?.slideId ?? document.model.slides?.[slideIndex]?.id,from,to}});
   };
-  const officeCallbacks = useRef({ edit, reportError, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, onOfficeNavigationResult, emit, publishSelection, viewId: view.id });
-  officeCallbacks.current = { edit, reportError, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, onOfficeNavigationResult, emit, publishSelection, viewId: view.id };
+  const officeCallbacks = useRef({ edit, reportError, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, onOfficeToolboxController, onOfficeNavigationResult, emit, publishSelection, viewId: view.id });
+  officeCallbacks.current = { edit, reportError, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, onOfficeToolboxController, onOfficeNavigationResult, emit, publishSelection, viewId: view.id };
   const officeView = useMemo(() => ({ id: view.id }), [view.id]);
   // React memo can skip the whole Office tree when only reading context polls.
   // These bridges preserve callback identity while always calling fresh owners
@@ -113,14 +127,15 @@ export function DocumentPane({ document, view, edit, onTextChange, reportError, 
     reportError: (error: unknown) => officeCallbacks.current.reportError(error),
     onTarget: (target: OfficeTarget) => officeCallbacks.current.onOfficeTargetChange?.(target),
     onDraftController: (controller: OfficeDraftController | undefined) => officeCallbacks.current.onOfficeDraftController?.(controller),
+    onToolboxController: (controller: OfficeToolboxController | undefined) => officeCallbacks.current.onOfficeToolboxController?.(controller),
     onDraftChange: (dirty: boolean) => officeCallbacks.current.onOfficeDraftChange?.({ viewId: officeCallbacks.current.viewId, dirty }),
     onContext: (partial: Partial<ReadingContext>) => { const { visibleText: _modelText, ...reading } = partial; officeContext.current = { actor: 'human', ...reading }; officeCallbacks.current.emit(officeContext.current, true); },
     onSelection: (selected: ReadingContext['selection'], actor?: 'human' | 'agent') => officeCallbacks.current.publishSelection(selected, actor),
     onNavigationContext: (partial: Partial<ReadingContext>, requestId: string) => { const { visibleText: _modelText, ...reading } = partial; selection.current = { kind: 'none', text: '' }; officeContext.current = { ...reading, actor: 'agent' }; officeCallbacks.current.emit(officeContext.current, true, requestId); },
     onNavigationResult: (result: OfficeNavigationResult) => officeCallbacks.current.onOfficeNavigationResult?.(result),
   }), []);
-  const textEditor = <Suspense fallback={<p className="loading">加载编辑器…</p>}><TextEditor value={document.model.text ?? ''} format={document.format} onChange={onTextChange} onContext={context => { onReaderScroll?.(context.scrollTop); selection.current = { kind: context.text ? 'text' : 'none', text: context.text, locator: { kind: 'source-range', from: context.from, to: context.to } }; sourceContext.current = { locator: { kind: 'source-range', from: context.from, to: context.to, scrollTop: context.scrollTop }, visibleText: context.visibleText }; emit(sourceContext.current, true); if(context.text && context.rect) publishSelection({...selection.current,rect:context.rect}); }} /></Suspense>;
-  const reading = document.format === 'markdown' ? <article className="prose"><ReactMarkdown urlTransform={url => url.startsWith('agentviewer://document/') ? url : defaultUrlTransform(url)} remarkPlugins={[remarkGfm]}>{document.model.text ?? ''}</ReactMarkdown></article> : <HtmlPreview documentId={document.id} viewId={view.id} revision={document.revision} outline={htmlOutline} navigationRequest={obscured ? undefined : navigationRequest} onNavigationResult={onOfficeNavigationResult} onError={reportError} highlights={annotations.filter(note=>note.sourceRevision===document.revision).map(note=>note.selection.text)} html={document.model.text ?? ''} onContext={(text, selected, scrollTop, rect, location) => { onReaderScroll?.(scrollTop); selection.current = { kind: selected ? 'text' : 'none', text: selected, locator: selected ? { kind: 'html-text-quote', quote: selected } : undefined }; previewContext.current = { actor: location?.actor ?? 'human', quality: location?.unavailable ? 'not-ready' : 'confirmed', locator: location?.blockId ? { kind: 'html-block', blockId: location.blockId, scrollTop, quote: location.quote ?? text.slice(0, 120) } : { kind: 'html-viewport', scrollTop, quote: text.slice(0, 120) }, visibleText: text }; emit(previewContext.current, true, location?.requestId); if(selected && rect) publishSelection({...selection.current,rect}); }} />;
+  const textEditor = <Suspense fallback={<p className="loading">加载编辑器…</p>}><TextEditor value={document.model.text ?? ''} format={document.format} onChange={onTextChange} onContext={context => { onReaderScroll?.(context.scrollTop); selection.current = { kind: context.text ? 'text' : 'none', text: context.text, locator: { kind: 'source-range', from: context.from, to: context.to } }; sourceContext.current = { locator: { kind: 'source-range', from: context.from, to: context.to, scrollTop: context.scrollTop }, visibleText: context.visibleText }; emit(sourceContext.current, true); if(context.text && context.rect) publishSelection({...selection.current,rect:context.rect}); else window.dispatchEvent(new Event("agentviewer:selection-clear")); }} /></Suspense>;
+  const reading = document.format === 'markdown' ? <article className="prose"><ReactMarkdown urlTransform={url => url.startsWith('agentviewer://document/') ? url : defaultUrlTransform(url)} remarkPlugins={[remarkGfm]}>{document.model.text ?? ''}</ReactMarkdown></article> : <HtmlPreview documentId={document.id} viewId={view.id} revision={document.revision} outline={htmlOutline} navigationRequest={obscured ? undefined : navigationRequest} onNavigationResult={onOfficeNavigationResult} onError={reportError} highlights={annotations.filter(note=>note.sourceRevision===document.revision).map(note=>note.selection.text)} html={document.model.text ?? ''} onContext={(text, selected, scrollTop, rect, location) => { onReaderScroll?.(scrollTop); selection.current = { kind: selected ? 'text' : 'none', text: selected, locator: selected ? { kind: 'html-text-quote', quote: selected } : undefined }; previewContext.current = { actor: location?.actor ?? 'human', quality: location?.unavailable ? 'not-ready' : 'confirmed', locator: location?.blockId ? { kind: 'html-block', blockId: location.blockId, scrollTop, quote: location.quote ?? text.slice(0, 120) } : { kind: 'html-viewport', scrollTop, quote: text.slice(0, 120) }, visibleText: text }; emit(previewContext.current, true, location?.requestId); if(selected && rect) publishSelection({...selection.current,rect}); else window.dispatchEvent(new Event("agentviewer:selection-clear")); }} />;
   let content;
   if (document.format === 'markdown' || document.format === 'html') content = view.mode === 'source' ? textEditor : view.mode === 'split' ? <div className="split-view"><div>{textEditor}</div><div className="split-reading">{reading}</div></div> : reading;
   else if (['docx', 'pptx', 'xlsx'].includes(document.format)) content = <OfficeDocument document={document} view={officeView} zoom={zoom} navigationRequest={obscured ? undefined : navigationRequest} {...officeBridge} />;

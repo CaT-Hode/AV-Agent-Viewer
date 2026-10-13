@@ -50,7 +50,7 @@ try{
   let snapshot=await settingsState(settings),revision=snapshot.revision;
   await motion.getByRole('radio',{name:'标准',exact:true}).click();await settings.locator('html[data-motion="standard"]').waitFor();snapshot=await settingsState(settings);assert.equal(snapshot.revision,revision+1);
   revision=snapshot.revision;await motion.getByRole('radio',{name:'优雅',exact:true}).click();await settings.locator('html[data-motion="elegant"]').waitFor();snapshot=await settingsState(settings);assert.equal(snapshot.revision,revision+1);results.elegantSettingUI=true;
-  const autoHide=settings.getByRole('switch',{name:'顶部胶囊自动隐藏',exact:true});await autoHide.scrollIntoViewIfNeeded();await settings.waitForTimeout(800);
+  const autoHide=settings.getByRole('switch',{name:'导航栏自动隐藏',exact:true});await autoHide.scrollIntoViewIfNeeded();await settings.waitForTimeout(800);
   const box=await autoHide.boundingBox();assert.ok(box);const thumb=autoHide.locator('.glass-switch-thumb');
   const initialThumb=await thumb.boundingBox();assert.ok(initialThumb);const initialCenter=initialThumb.x+initialThumb.width/2;
   const startX=initialCenter,y=box.y+box.height/2;

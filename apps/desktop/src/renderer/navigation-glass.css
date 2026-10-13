@@ -4,13 +4,16 @@
   --navigation-blur: 1px;
   --navigation-refraction-width: 29px;
   --navigation-saturation: 1;
-  --navigation-tint: rgb(255 255 255 / var(--glass-material-fill, .05));
+  --navigation-tint: rgb(255 255 255 / .18);
+  --reader-capsule-tint: rgb(255 255 255 / .18);
   --navigation-solid: var(--glass-panel);
   --navigation-ink: var(--glass-ink);
   --navigation-edge: var(--glass-edge);
   --navigation-shadow: var(--glass-shadow);
 }
 :root[data-theme="dark"] {
+  --navigation-tint: rgb(9 13 18 / .30);
+  --reader-capsule-tint: rgb(9 13 18 / .30);
   --navigation-saturation: 1;
   --navigation-ink: color-mix(in srgb, var(--glass-ink) 40%, white);
 }

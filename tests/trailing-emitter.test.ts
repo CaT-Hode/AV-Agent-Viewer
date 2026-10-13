@@ -58,3 +58,17 @@ test('identity/unmount cancellation prevents old trailing callbacks from reporti
   nextView.request(['last']); time.advance(1); nextView.request(['unmounted']); nextView.cancel(); time.advance(500);
   assert.deepEqual(reports, ['old:initial', 'new:current', 'new:last']);
 });
+
+test('the default cancellation preserves the global receiver required by browser timer APIs', () => {
+  const original = globalThis.clearTimeout, reports: string[] = [];
+  let cancellations = 0;
+  globalThis.clearTimeout = function (this: typeof globalThis, timer: Parameters<typeof clearTimeout>[0]) {
+    assert.equal(this, globalThis, 'WebIDL timer methods cannot use the Timing object as their receiver');
+    cancellations++; original.call(globalThis, timer);
+  } as typeof clearTimeout;
+  const emitter = createTrailingEmitter<[string]>(120, value => reports.push(value));
+  try {
+    emitter.request(['initial']); emitter.request(['pending']); emitter.request(['forced selection'], true);
+    assert.equal(cancellations, 1); assert.deepEqual(reports, ['initial', 'forced selection']);
+  } finally { globalThis.clearTimeout = original; emitter.cancel(); }
+});

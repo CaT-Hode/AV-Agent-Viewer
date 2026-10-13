@@ -49,6 +49,6 @@ export function engineHealth(appRoot: string) {
     babeldoc: { available: !!babeldoc, source: babeldoc?.source, path: babeldoc?.command, version: babeldoc ? '0.6.4' : undefined, license: 'AGPL-3.0', offlineReady: !!assets && existsSync(join(assets, 'models')) && existsSync(join(assets, 'fonts')) && existsSync(join(assets, 'cmap')), reason: babeldoc ? undefined : '未找到随应用提供的 PDF 翻译引擎。' } satisfies EngineHealth,
     libreoffice: { available: !!libreoffice, source: libreoffice?.source, path: libreoffice?.path, version: libreoffice ? '26.8.1' : undefined, license: 'MPL-2.0 / LGPL-3.0+', offlineReady: !!libreoffice, reason: libreoffice ? undefined : '未找到随应用提供的旧 Office 转换器。' } satisfies EngineHealth,
     ocr: { available: !!ocr, source: ocr ? 'bundled' as const : undefined, path: ocr, version: ocr ? 'Tesseract.js 7.0.0' : undefined, license: 'Apache-2.0', offlineReady: !!ocr, reason: ocr ? undefined : '缺少本地中英文字库。' } satisfies EngineHealth,
-    office: { available: true, source: 'bundled' as const, version: 'OOXML 工具 + LibreOffice 编辑入口', license: '项目内置 / LibreOffice MPL-2.0、LGPL-3.0+', offlineReady: !!libreoffice, reason: libreoffice ? '复杂排版和修订可在独立 LibreOffice 窗口处理，保存后需重新载入。' : '完整排版需要 LibreOffice 引擎。' } satisfies EngineHealth,
+    office: { available: !!libreoffice, source: libreoffice?.source, version: libreoffice ? 'LibreOffice 26.8.1 · 原生文档模型 / UNO' : undefined, license: 'LibreOffice MPL-2.0、LGPL-3.0+', offlineReady: !!libreoffice, reason: libreoffice ? undefined : '内置 Office 引擎不可用。' } satisfies EngineHealth,
   };
 }

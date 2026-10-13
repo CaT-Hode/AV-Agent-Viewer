@@ -1,4 +1,4 @@
-import { _electron as electron, type Page } from 'playwright';
+import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
 import { createRequire } from 'node:module';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -6,7 +6,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
-import type { ReadingContext, ViewInfo, WorkspaceState } from '../packages/contracts/src/index';
+import JSZip from 'jszip';
+import type { DocumentModel, NativeOfficeState, PreparedPatch, ReadingContext, Receipt, ViewInfo, WorkspaceState } from '../packages/contracts/src/index';
 
 // A real single-instance lock is essential here. All processes share this
 // disposable profile; none connect to or manipulate the installed user app.
@@ -27,6 +28,8 @@ const primary = application.process(), errors: string[] = [], stderr: string[] =
 const activations: { label: string; pid?: number; code: number | null; signal: string | null; output: string }[] = [];
 const checks: string[] = [], stages: Record<string, unknown> = {};
 let stopped = false;
+let recoveredApplication: ElectronApplication | undefined;
+let recoveredPrimary: ChildProcess | undefined;
 primary.stderr?.on('data', value => stderr.push(String(value)));
 const watch = (target: Page) => target.on('pageerror', error => errors.push(`${target.url()}: ${error.message}`));
 application.context().pages().forEach(watch); application.context().on('page', watch);
@@ -43,6 +46,26 @@ const windows = () => application.evaluate(({ BrowserWindow }) => BrowserWindow.
 const endpoint = `http://127.0.0.1:${port}/`, fixture = endpoint + 'fixtures/interaction.html';
 const readers = async () => (await windows()).filter(win => win.url === endpoint);
 const invoke = <T = unknown>(target: Page, method: string, args: Record<string, unknown> = {}) => target.evaluate(input => window.agentViewer!.call(input.method, input.args), { method, args }) as Promise<T>;
+const nativeReady = async (target: Page, view: ViewInfo) => {
+  let state: NativeOfficeState | undefined;
+  await until(async () => {
+    try {
+      state = await invoke<NativeOfficeState>(target, 'office-status', { viewId: view.id });
+      return state.status === 'ready' && !!state.visible && !!state.nativeGeometry && !!state.viewport && state.viewport.width > 100 && state.viewport.height > 100;
+    } catch { return false; }
+  }, 'actual Writer controller ready: ' + view.id, 120_000);
+  assert.equal(state!.documentId, view.documentId); assert.equal(state!.viewId, view.id);
+  assert.match(state!.nativeHwnd ?? '', /^[1-9]\d*$/); assert.ok((state!.nativePid ?? 0) > 0);
+  await target.locator(`.native-office-content[data-native-office="${view.id}"][data-native-ready="true"]`).waitFor();
+  return state!;
+};
+const quitNormally = async (target: ElectronApplication) => {
+  const process = target.process();
+  const exit = new Promise<{ code: number | null; signal: string | null }>(done => process.once('exit', (code, signal) => done({ code, signal })));
+  await target.evaluate(({ app }) => { setTimeout(() => app.quit(), 0); });
+  let deadline: NodeJS.Timeout | undefined;
+  return Promise.race([exit, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Primary did not quit normally with a native checkpoint')), 30_000); })]).finally(() => clearTimeout(deadline));
+};
 const launchAgain = (label: string) => new Promise<void>((done, reject) => {
   const child = spawn(executable, ['.'], { cwd: resolve('.'), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   secondaries.add(child); let output = '';
@@ -127,23 +150,29 @@ try {
   assert.deepEqual(afterRapid.documents.map(doc => doc.id).sort(), documentIds); assert.deepEqual(afterRapid.views.map(view => view.id).sort(), viewIds);
   stages.rapidRecreated = await windows(); checks.push('four real concurrent secondary processes share one reader creation flight');
 
-  // Add a draft immediately before quitting. before-quit persistence must
-  // write it even if the ordinary debounced workspace save has not fired yet.
+  // Normal quit must retain the native engine's unsaved committed content,
+  // rather than relying on a contenteditable renderer that no longer exists.
   const marker = '# 正常退出恢复验证\n由 startup 回归测试生成。';
   const draft = await invoke<ViewInfo>(main, 'create-text', { title: 'startup-recovery.md', text: marker });
   const officeDraft = await invoke<ViewInfo>(main, 'new-document', { format: 'docx', windowId: 'main' });
-  const emptyOffice = (await invoke<WorkspaceState>(main, 'state')).documents.find(document => document.id === officeDraft.documentId)!;
-  assert.ok(emptyOffice.model.blocks?.length && emptyOffice.model.blocks.every(block => block.text === ''), 'a new Word recovery test starts from an empty editable paragraph');
-  const officeMarker = 'Still-focused Office text must survive normal application quit.';
-  await main.locator('.office-word-paragraph').first().waitFor();
-  await main.locator('.office-word-paragraph').first().fill(officeMarker);
-  assert.equal(await main.locator('.office-word-paragraph').first().evaluate(element => document.activeElement === element), true);
+  const nativeBefore = await nativeReady(main, officeDraft);
+  const emptyOffice = await invoke<DocumentModel & { revision: number }>(main, 'read', { documentId: officeDraft.documentId });
+  assert.ok(emptyOffice.blocks?.length && emptyOffice.blocks.every(block => block.text === ''), 'a new Writer recovery test starts with an explicitly empty paragraph');
+  const officeMarker = 'Native unsaved Office text must survive normal application quit.';
+  const emptyParagraph = emptyOffice.blocks[0];
+  const patch = await invoke<PreparedPatch>(main, 'prepare', { documentId: officeDraft.documentId, viewId: officeDraft.id, expectedRevision: emptyOffice.revision, operation: { kind: 'word.setBlock', blockId: emptyParagraph.id, text: officeMarker } });
+  assert.equal(patch.nativeSessionId, nativeBefore.sessionId, 'the patch is bound to the actual native writer');
+  const committed = await invoke<Receipt>(main, 'commit', { patchId: patch.id, idempotencyKey: crypto.randomUUID() });
+  assert.equal(committed.status, 'applied');
+  const sourceBeforeQuit = await invoke<{ data: { text: string } }>(main, 'office-query', { viewId: officeDraft.id, target: { kind: 'document' } });
+  assert.equal(sourceBeforeQuit.data.text, officeMarker, 'actual IPC edits reached the native Word document');
   const beforeQuitOffice = (await invoke<WorkspaceState>(main, 'state')).documents.find(document => document.id === officeDraft.documentId)!;
-  assert.ok(!beforeQuitOffice.model.blocks?.some(block => block.text === officeMarker), 'Office text is still a local draft before the quit handshake');
-  const exit = new Promise<{ code: number | null; signal: string | null }>(done => primary.once('exit', (code, signal) => done({ code, signal })));
-  await application.evaluate(({ app }) => { setTimeout(() => app.quit(), 0); });
-  let quitDeadline: NodeJS.Timeout | undefined;
-  const result = await Promise.race([exit, new Promise<never>((_, reject) => { quitDeadline = setTimeout(() => reject(new Error('Primary did not quit normally')), 15000); })]).finally(() => clearTimeout(quitDeadline));
+  assert.equal(beforeQuitOffice.capabilities.engine, 'libreoffice-native');
+  assert.deepEqual(beforeQuitOffice.model, { format: 'docx' }, 'display state does not transfer a native mirror body');
+  const beforeQuitModel = await invoke<DocumentModel>(main, 'read', { documentId: officeDraft.documentId });
+  assert.ok(beforeQuitModel.blocks?.some(block => block.text === officeMarker));
+  assert.equal(beforeQuitOffice.dirty, true); assert.equal(beforeQuitOffice.path, undefined, 'the test never saves over a source file');
+  const result = await quitNormally(application);
   stopped = true; assert.deepEqual(result, { code: 0, signal: null });
   const workspace = JSON.parse(await readFile(join(directory, 'workspace.json'), 'utf8')) as { documents: { info: { id: string }; bytes: string }[]; views: ViewInfo[] };
   for (const id of documentIds) assert.ok(workspace.documents.some(doc => doc.info.id === id));
@@ -151,12 +180,35 @@ try {
   const savedDraft = workspace.documents.find(doc => doc.info.id === draft.documentId)!;
   assert.equal(Buffer.from(savedDraft.bytes, 'base64').toString('utf8'), marker); assert.ok(workspace.views.some(view => view.id === draft.id));
   const persistedOffice = workspace.documents.find(doc => doc.info.id === officeDraft.documentId) as unknown as { info: { dirty: boolean; model: { blocks: { text: string }[] } }; bytes: string };
-  assert.ok(persistedOffice.info.model.blocks.some(block => block.text === officeMarker), 'normal app quit flushes the focused Office editor before saving recovery');
+  assert.ok(persistedOffice.info.model.blocks.some(block => block.text === officeMarker), 'normal app quit saves the native Word checkpoint');
   assert.equal(persistedOffice.info.dirty, true, 'recovery preserves unsaved Office status');
-  assert.ok(Buffer.from(persistedOffice.bytes, 'base64').length > 0);
+  const checkpoint = await JSZip.loadAsync(Buffer.from(persistedOffice.bytes, 'base64'));
+  const checkpointXml = await checkpoint.file('word/document.xml')?.async('string');
+  assert.ok(checkpointXml?.includes(officeMarker), 'the persisted OOXML bytes contain the committed native text');
+
+  // A fresh process must import those bytes into a new real controller. Reading
+  // workspace.json alone would not prove that the checkpoint is recoverable.
+  recoveredApplication = await electron.launch({ executablePath: executable, args: ['.'], cwd: resolve('.'), env, timeout: 45_000 });
+  recoveredPrimary = recoveredApplication.process();
+  recoveredApplication.context().pages().forEach(watch); recoveredApplication.context().on('page', watch);
+  recoveredPrimary.stderr?.on('data', value => stderr.push('[recovery] ' + String(value)));
+  await until(async () => recoveredApplication!.context().pages().some(page => !page.isClosed() && page.url() === endpoint), 'fresh recovered reader');
+  const recoveredMain = recoveredApplication.context().pages().find(page => !page.isClosed() && page.url() === endpoint)!;
+  const recoveredNative = await nativeReady(recoveredMain, officeDraft);
+  assert.notEqual(recoveredNative.engineEpoch, nativeBefore.engineEpoch, 'recovery starts a new native engine instead of retaining a stale controller');
+  const recoveredState = await invoke<WorkspaceState>(recoveredMain, 'state');
+  assert.equal(recoveredState.activeViewId, officeDraft.id);
+  const recoveredOffice = recoveredState.documents.find(document => document.id === officeDraft.documentId)!;
+  assert.equal(recoveredOffice.capabilities.engine, 'libreoffice-native'); assert.equal(recoveredOffice.dirty, true);
+  assert.deepEqual(recoveredOffice.model, { format: 'docx' });
+  const recoveredModel = await invoke<DocumentModel>(recoveredMain, 'read', { documentId: officeDraft.documentId });
+  assert.ok(recoveredModel.blocks?.some(block => block.text === officeMarker));
+  const recoveredText = await invoke<{ data: { text: string } }>(recoveredMain, 'office-query', { viewId: officeDraft.id, target: { kind: 'document' } });
+  assert.equal(recoveredText.data.text, officeMarker, 'the restored native Writer source contains the unsaved text');
+  const recoveryExit = await quitNormally(recoveredApplication); assert.deepEqual(recoveryExit, { code: 0, signal: null });
   assert.equal(secondaries.size, 0); assert.deepEqual(errors, []);
-  stages.shutdown = { result, documentCount: workspace.documents.length, viewCount: workspace.views.length, draftDocumentId: draft.documentId };
-  checks.push('normal primary exit persists original documents, a just-created draft, and an unblurred Office editor through the close handshake');
+  stages.shutdown = { result, recoveryExit, documentCount: workspace.documents.length, viewCount: workspace.views.length, draftDocumentId: draft.documentId, officeDocumentId: officeDraft.documentId, nativeSessionBefore: nativeBefore.sessionId, recoveredNativeSession: recoveredNative.sessionId, officeTransactionId: committed.transactionId };
+  checks.push('normal primary exit preserves native unsaved Word OOXML, and a fresh real engine restores the same document/view and dirty content');
   const report = { passed: true, checks, evidence, stages, activations, rendererErrors: errors };
   await writeFile(join(evidence, 'startup-report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
@@ -166,6 +218,10 @@ try {
 } finally {
   for (const child of secondaries) child.kill();
   await writeFile(join(evidence, 'primary-stderr.log'), stderr.join(''));
+  if (recoveredApplication && recoveredPrimary?.exitCode === null) {
+    const closing = recoveredApplication.close(), deadline = setTimeout(() => recoveredPrimary?.kill(), 30_000);
+    try { await closing; } finally { clearTimeout(deadline); }
+  }
   if (!stopped) {
     const closing = application.close(), deadline = setTimeout(() => primary.kill(), 15000);
     try { await closing; } finally { clearTimeout(deadline); }

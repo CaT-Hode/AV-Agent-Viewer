@@ -9,18 +9,47 @@ import { navigationExitDuration, retainedSurfaceExit } from './toolbar-motion';
 const backdropFrames = new NativeBackdropFrameHub();
 type Rect = { x: number; y: number; width: number; height: number };
 export type BackdropSource = { view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
+export type NativeBackdropSource = { bounds: Rect; navigationId: string; layoutRevision: number; revision: number; sourceId: number; capture(rect: Rect): Promise<{ image: NativeImage; rect: Rect }>; attach(window: BrowserWindow): Promise<void> };
+type NativeHostOptions = { sourceFor(viewId: string): NativeBackdropSource | undefined };
 type TooltipReply = { ticket: number; offsetY: number; viewId?: unknown; placement?: ReturnType<typeof nativeTooltipLayout>['placement'] };
-type ToolbarEntry = { view: WebContentsView; state: Record<string, unknown>; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout>; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
+type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout>; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
 type CaptureRequest = { state: Record<string, unknown>; source: BackdropSource; page: WebContentsView; b: Rect; p: Rect; zoom: number; density: number; frameAligned: boolean; capsule: Rect; capture: Rect; geometryRevision: number; key: string; shape: string };
 
 // A trusted, capsule-sized surface above the website; no page script or full-width scrim.
 export class WebToolbarHost {
   private entries = new Map<BrowserWindow, ToolbarEntry>();
-  constructor(private url: () => string, private preload: string, private route = '/web-toolbar', private channel = 'agentviewer:toolbar', private sourceFor?: (viewId: string) => BackdropSource | undefined) {}
+  constructor(private url: () => string, private preload: string, private route = '/web-toolbar', private channel = 'agentviewer:toolbar', private sourceFor?: (viewId: string) => BackdropSource | undefined, private nativeHost?: NativeHostOptions) {}
+  ownerFor(id: number) { return [...this.entries].find(([,entry])=>!entry.view.webContents.isDestroyed()&&entry.view.webContents.id===id)?.[0]; }
+  private bounds(entry: ToolbarEntry) { return entry.rootBounds ?? entry.view.getBounds(); }
+  private nativeSource(entry: ToolbarEntry) { return this.nativeHost?.sourceFor(String(entry.state.viewId)); }
+  private syncHost(owner: BrowserWindow, entry: ToolbarEntry) {
+    if(entry.overlay?.isDestroyed()){
+      const bounds=entry.rootBounds;entry.overlay=undefined;entry.overlayViewId=undefined;entry.rootBounds=undefined;
+      if(!entry.view.webContents.isDestroyed()&&!owner.isDestroyed()){if(bounds)entry.view.setBounds(bounds);owner.contentView.addChildView(entry.view);}
+    }
+    if(entry.view.webContents.isDestroyed()||owner.isDestroyed())return;
+    const source=this.nativeSource(entry);
+    if(!source){if(entry.overlay){const b=entry.rootBounds;entry.overlay.contentView.removeChildView(entry.view);entry.overlay.close();entry.overlay=undefined;entry.overlayViewId=undefined;entry.rootBounds=undefined;if(b)entry.view.setBounds(b);owner.contentView.addChildView(entry.view);}return;}
+    if(!entry.overlay){
+      const b=entry.view.getBounds(),p=owner.getContentBounds();entry.rootBounds=b;
+      owner.contentView.removeChildView(entry.view);
+      const overlay=new BrowserWindow({parent:owner,x:p.x+b.x,y:p.y+b.y,width:b.width,height:b.height,frame:false,transparent:true,show:false,skipTaskbar:true,resizable:false,hasShadow:false,backgroundColor:'#00000000',webPreferences:{sandbox:true}});
+      overlay.contentView.addChildView(entry.view);entry.overlay=overlay;
+      entry.view.setBounds({x:0,y:0,width:b.width,height:b.height});
+      overlay.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+      const follow=()=>{if(!owner.isDestroyed()&&!overlay.isDestroyed()&&entry.rootBounds){const p=owner.getContentBounds(),b=entry.rootBounds;overlay.setBounds({x:p.x+b.x,y:p.y+b.y,width:b.width,height:b.height});}};
+      const hide=()=>{if(!overlay.isDestroyed())overlay.hide();},show=()=>{follow();if(!overlay.isDestroyed()&&entry.state.visible)overlay.showInactive();};
+      owner.on('move',follow);owner.on('resize',follow);owner.on('minimize',hide);owner.on('hide',hide);owner.on('restore',show);owner.on('show',show);
+      overlay.once('closed',()=>{owner.removeListener('move',follow);owner.removeListener('resize',follow);owner.removeListener('minimize',hide);owner.removeListener('hide',hide);owner.removeListener('restore',show);owner.removeListener('show',show);});
+    }
+    if(entry.overlayViewId!==source.navigationId){entry.overlayViewId=source.navigationId;const overlay=entry.overlay;void source.attach(overlay).then(()=>{if(entry.overlay===overlay&&!overlay.isDestroyed()&&this.nativeSource(entry)?.navigationId===source.navigationId&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized())overlay.showInactive();}).catch(()=>{if(!overlay.isDestroyed())overlay.hide();});}
+  }
   sourceChanged(owner: BrowserWindow, viewId: string) {
     const entry = this.entries.get(owner);
     if (!entry || entry.state.viewId !== viewId) return;
-    const source = this.sourceFor?.(viewId), sample = entry.state.backdropSample as { navigationId?: string; layoutRevision?: number } | undefined;
+    if(entry.view.webContents.isDestroyed()){this.update(owner,entry.state);return;}
+    this.syncHost(owner,entry);
+    const source = this.sourceFor?.(viewId) ?? this.nativeSource(entry), sample = entry.state.backdropSample as { navigationId?: string; layoutRevision?: number } | undefined;
     if (sample && (source?.navigationId !== sample.navigationId || source?.layoutRevision !== sample.layoutRevision)) {
       entry.cache.clear();
       entry.frameSignature = undefined;
@@ -30,12 +59,12 @@ export class WebToolbarHost {
     this.syncFrameSubscription(owner, entry);
     this.sampleBackdrop(owner, entry);
   }
-  permitsSnapshot(id: number, snapshotId: string) { const entry = [...this.entries.values()].find(e => e.view.webContents.id === id); return !!entry?.state.visible && (entry.state.selection as any)?.snapshot?.id === snapshotId; }
-  owns(id: number) { return [...this.entries.values()].some(entry => entry.view.webContents.id === id); }
+  permitsSnapshot(id: number, snapshotId: string) { const entry = [...this.entries.values()].find(e => !e.view.webContents.isDestroyed()&&e.view.webContents.id === id); return !!entry?.state.visible && (entry.state.selection as any)?.snapshot?.id === snapshotId; }
+  owns(id: number) { return [...this.entries.values()].some(entry => !entry.view.webContents.isDestroyed()&&entry.view.webContents.id === id); }
   stateFor(owner: BrowserWindow) { return this.entries.get(owner)?.state; }
   focus(owner: BrowserWindow) { const entry = this.entries.get(owner); if (!entry) return; clearTimeout(entry.exitTimer); entry.exitTimer=undefined; entry.state={...entry.state,visible:true,hideProgress:0,instant:true}; entry.view.setVisible(true); this.sendState(entry); this.syncFrameSubscription(owner, entry); this.sampleBackdrop(owner, entry); entry.view.webContents.focus(); entry.view.webContents.send('agentviewer:toolbar', { action: 'focus-address' }); }
   request(id: number, method: string, args: Record<string, unknown>) {
-    const pair = [...this.entries].find(([, entry]) => entry.view.webContents.id === id);
+    const pair = [...this.entries].find(([, entry]) => !entry.view.webContents.isDestroyed()&&entry.view.webContents.id === id);
     if (!pair) throw new Error('AUTH_SCOPE_DENIED');
     const [owner, entry] = pair;
     if (method === 'toolbar-state') { if (args.backdropPatches === true && this.hasBackdrop()) entry.backdropPatches = true; return { ...entry.state, tooltipOffsetY: entry.tooltipLayout?.offsetY ?? 0, backdropDiagnostics: { ...entry.stats }, backdropFrameHub: backdropFrames.stats() }; }
@@ -55,7 +84,7 @@ export class WebToolbarHost {
           if(!entry.state.visible)throw new Error('STALE_TOOLTIP');
           const anchor=args.anchor as TooltipRect,size=args.size as TooltipSize;
           if(!anchor||!size||![anchor.x,anchor.y,anchor.width,anchor.height,size.width,size.height].every(Number.isFinite)||size.width<=0||size.width>1000||size.height<=0||size.height>700)throw new Error('INVALID_TOOLTIP');
-          entry.tooltip=true;entry.tooltipLayout=nativeTooltipLayout(anchor,size,entry.view.getBounds(),this.normalBounds(owner,entry),owner.getContentBounds(),entry.view.webContents.getZoomFactor());
+          entry.tooltip=true;entry.tooltipLayout=nativeTooltipLayout(anchor,size,this.bounds(entry),this.normalBounds(owner,entry),owner.getContentBounds(),entry.view.webContents.getZoomFactor());
           this.resizeTooltip(owner,entry);return this.tooltipReply(entry);
         }
         const close=()=>{entry.tooltip=false;entry.tooltipLayout=undefined;this.resizeTooltip(owner,entry);const reply=this.tooltipReply(entry);entry.tooltipClose?.(reply);entry.tooltipClose=undefined;return reply;};
@@ -65,7 +94,7 @@ export class WebToolbarHost {
       }
       return {};
     }
-    if (method !== 'toolbar-action' || !['back', 'forward', 'reload', 'navigate', 'copy', 'translate', 'zoom', 'focus', 'blur', 'hover', 'leave', 'dismiss', 'result', 'geometry'].includes(String(args.action))) throw new Error('AUTH_SCOPE_DENIED');
+    if (method !== 'toolbar-action' || !['back', 'forward', 'reload', 'navigate', 'copy', 'translate', 'zoom', 'undo', 'save', 'focus', 'blur', 'hover', 'leave', 'dismiss', 'result', 'geometry'].includes(String(args.action))) throw new Error('AUTH_SCOPE_DENIED');
     if (typeof args.viewId === 'string' && args.viewId !== entry.state.viewId) throw new Error('STALE_VIEW');
     if ((this.route === '/agent-toolbar' || this.route === '/ai-result-toolbar') && args.action !== 'geometry') throw new Error('AUTH_SCOPE_DENIED');
     if (args.action === 'geometry') {
@@ -80,7 +109,12 @@ export class WebToolbarHost {
     return {};
   }
   update(owner: BrowserWindow, state: Record<string, unknown>) {
+    if(owner.isDestroyed())return;
     let entry = this.entries.get(owner);
+    if(entry?.view.webContents.isDestroyed()){
+      this.clearFrameSubscription(entry);clearInterval(entry.timer);clearTimeout(entry.sampleTimer);clearTimeout(entry.exitTimer);clearTimeout(entry.tooltipTimer);
+      entry.tooltipClose?.(this.tooltipReply(entry));this.entries.delete(owner);entry=undefined;
+    }
     if (!entry && !state.viewId) return;
     if (!entry) {
       const view = new WebContentsView({ webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: process.env.AGENTVIEWER_TEST_MODE === '1' ? ['--agentviewer-test-mode=1'] : [] } });
@@ -121,11 +155,12 @@ export class WebToolbarHost {
       if (visible && !entry.timer) { entry.timer = setInterval(() => { this.syncFrameSubscription(owner, entry!); this.sampleBackdrop(owner, entry!, true); }, 400); entry.timer.unref(); }
       if (!visible) { clearInterval(entry.timer); entry.timer = undefined; }
     }
+    this.syncHost(owner,entry);
     if (state.bounds) {
       this.setBounds(owner, entry);
     }
-    owner.contentView.addChildView(entry.view);
-    if(visible)entry.view.setVisible(true);
+    if(!entry.overlay)owner.contentView.addChildView(entry.view);
+    if(visible){entry.view.setVisible(true);if(entry.overlay&&!entry.overlay.isDestroyed())entry.overlay.showInactive();}
     else if(wasExiting&&(state.animate||state.viewId===previous.viewId)&&(!retainedExit||retainedExit==='keep')){/* Keep the existing exit during layout updates. */}
     else if((animate||retainedExit==='restart')&&duration){clearTimeout(entry.exitTimer);const current=entry;entry.exitTimer=setTimeout(()=>{current.exitTimer=undefined;if(!current.view.webContents.isDestroyed())this.hide(owner,current);},duration);}
     else {clearTimeout(entry.exitTimer);entry.exitTimer=undefined;this.hide(owner,entry);}
@@ -137,24 +172,25 @@ export class WebToolbarHost {
     this.clearFrameSubscription(entry);
     clearTimeout(entry.sampleTimer); entry.sampleTimer = undefined; entry.pending = false;
     const focused=entry.view.webContents.isFocused();entry.view.setVisible(false);
+    if(entry.overlay&&!entry.overlay.isDestroyed())entry.overlay.hide();
     if(focused&&!owner.isDestroyed()&&owner.isFocused()){
       const page=owner.contentView.children.find(v=>v instanceof WebContentsView&&v!==entry.view&&v.getVisible()&&!(v as WebContentsView).webContents.getURL().includes('#/')) as WebContentsView|undefined;
       (page?.webContents??owner.webContents).focus();
     }
   }
-  private hasBackdrop() { return this.route === '/web-toolbar' || this.route === '/agent-toolbar' || this.route === '/ai-result-toolbar'; }
+  private hasBackdrop() { return this.route === '/web-toolbar' || this.route === '/selection-toolbar' || this.route === '/agent-toolbar' || this.route === '/ai-result-toolbar'; }
   private tooltipReply(entry: ToolbarEntry): TooltipReply { return {ticket:entry.tooltipTicket??0,offsetY:entry.tooltipLayout?.offsetY??0,placement:entry.tooltipLayout?.placement,viewId:entry.state.viewId}; }
   private resizeTooltip(owner:BrowserWindow,entry:ToolbarEntry){
     if(owner.isDestroyed()||entry.view.webContents.isDestroyed())return;
-    const before=entry.view.getBounds(),zoom=entry.view.webContents.getZoomFactor();entry.tooltipTicket=(entry.tooltipTicket??0)+1;entry.tooltipPending=true;
-    this.setBounds(owner,entry);const after=entry.view.getBounds(),shift=(before.y-after.y)/zoom;
+    const before=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor();entry.tooltipTicket=(entry.tooltipTicket??0)+1;entry.tooltipPending=true;
+    this.setBounds(owner,entry);const after=this.bounds(entry),shift=(before.y-after.y)/zoom;
     if(entry.capsuleBounds&&shift){entry.capsuleBounds={...entry.capsuleBounds,y:entry.capsuleBounds.y+shift};entry.geometryRevision++;}
     const sample=entry.state.backdropSample as {origin:{x:number;y:number};capsuleBounds:Rect;geometryRevision:number}|undefined;
     if(sample&&shift){entry.state={...entry.state,backdropSample:{...sample,origin:{...sample.origin,y:sample.origin.y+shift},capsuleBounds:{...sample.capsuleBounds,y:sample.capsuleBounds.y+shift},geometryRevision:entry.geometryRevision}};this.sendBackdrop(entry,undefined,entry.state.backdropSample,false);}
     this.sendState(entry);
   }
   private normalBounds(owner: BrowserWindow, entry: ToolbarEntry): Rect {
-    const b = entry.state.bounds as Rect | undefined; if (!b) return entry.view.getBounds();
+    const b = entry.state.bounds as Rect | undefined; if (!b) return this.bounds(entry);
     const agent = this.route === '/agent-toolbar', normalHeight = Math.max(1, Math.round(b.height));
     const width = agent && entry.capsuleBounds ? Math.min(Math.round(b.width), Math.ceil(entry.capsuleBounds.width) + 2 * AGENT_OPERATION_METRICS.shadowGutter) : Math.max(1, Math.round(b.width));
     const height = entry.panel ? 255 : normalHeight;
@@ -163,10 +199,11 @@ export class WebToolbarHost {
   }
   private setBounds(owner:BrowserWindow,entry:ToolbarEntry){
     if(!entry.state.bounds)return;const agent=this.route==='/agent-toolbar',next=entry.tooltipLayout?.bounds??this.normalBounds(owner,entry),width=next.width;
-    if (agent && entry.capsuleBounds && entry.view.getBounds().width !== width) { entry.capsuleBounds = { ...entry.capsuleBounds, x: AGENT_OPERATION_METRICS.shadowGutter }; entry.geometryRevision++; }
-    if (['x', 'y', 'width', 'height'].some(key => entry.view.getBounds()[key as keyof Rect] !== next[key as keyof Rect])) {
+    if (agent && entry.capsuleBounds && this.bounds(entry).width !== width) { entry.capsuleBounds = { ...entry.capsuleBounds, x: AGENT_OPERATION_METRICS.shadowGutter }; entry.geometryRevision++; }
+    if (['x', 'y', 'width', 'height'].some(key => this.bounds(entry)[key as keyof Rect] !== next[key as keyof Rect])) {
       if (agent && entry.state.backdropSample && !entry.tooltipPending) { entry.cache.clear(); entry.state = { ...entry.state, backdropImage: undefined, backdropSample: undefined }; this.sendBackdrop(entry, undefined, undefined); }
-      entry.view.setBounds(next);
+      if(entry.overlay&&!entry.overlay.isDestroyed()){const p=owner.getContentBounds();entry.rootBounds=next;entry.overlay.setBounds({x:p.x+next.x,y:p.y+next.y,width:next.width,height:next.height});entry.view.setBounds({x:0,y:0,width:next.width,height:next.height});}
+      else entry.view.setBounds(next);
     }
   }
   private send(entry: ToolbarEntry, payload: Record<string, unknown>) {
@@ -236,6 +273,7 @@ export class WebToolbarHost {
   }
   private sampleBackdrop(owner: BrowserWindow, entry: ToolbarEntry, force = false) {
     if (!this.canSample(owner, entry)) return;
+    if(this.nativeSource(entry)){this.sampleNativeBackdrop(owner,entry,force);return;}
     const request = this.captureRequest(owner, entry), frame = entry.frameSource && backdropFrames.peek(entry.frameSource.id);
     if (!force && request && frame && entry.frameSignature === this.frameSourceSignature(request) && frame.presentedAt >= (entry.pixelAt ?? 0)) {
       entry.stats.frameReuses++; if (this.acceptFrame(owner, entry, frame.image, frame.presentedAt, request)) return;
@@ -248,6 +286,28 @@ export class WebToolbarHost {
     const wait = !force && entry.unsubscribeFrame ? 100 : Math.max(0, 32 - (performance.now() - (entry.sampledAt ?? -Infinity)));
     if (wait > 0) { entry.sampleTimer = setTimeout(() => { entry.sampleTimer = undefined; this.captureLatest(owner, entry); }, wait); return; }
     this.captureLatest(owner, entry);
+  }
+  private sampleNativeBackdrop(owner:BrowserWindow,entry:ToolbarEntry,force:boolean) {
+    if(entry.sampling){entry.pending=true;return;}
+    const source=this.nativeSource(entry);if(!source)return;
+    const b=this.bounds(entry),p=source.bounds,zoom=entry.view.webContents.getZoomFactor(),metrics=this.route==='/agent-toolbar'?AGENT_OPERATION_METRICS:NAVIGATION_METRICS;
+    const capsule=entry.capsuleBounds??{x:metrics.shadowGutter,y:metrics.shadowGutter,width:b.width/zoom-2*metrics.shadowGutter,height:this.route==='/ai-result-toolbar'?330:metrics.height};
+    const extra=metrics.captureOverscan,captureTop=this.route==='/web-toolbar'?metrics.shadowGutter-NAVIGATION_METRICS.hideShift:capsule.y,captureBottom=this.route==='/web-toolbar'?metrics.shadowGutter+capsule.height:capsule.y+capsule.height;
+    const left=Math.max(0,Math.floor(b.x-p.x+(capsule.x-extra)*zoom)),top=Math.max(0,Math.floor(b.y-p.y+(captureTop-extra)*zoom));
+    const right=Math.min(p.width,Math.ceil(b.x-p.x+(capsule.x+capsule.width+extra)*zoom)),bottom=Math.min(p.height,Math.ceil(b.y-p.y+(captureBottom+extra)*zoom));
+    const rect={x:left,y:top,width:right-left,height:bottom-top};if(rect.width<=0||rect.height<=0)return;
+    const key=JSON.stringify([source.navigationId,source.layoutRevision,source.revision,rect,zoom]),shape=JSON.stringify([rect.width,rect.height,zoom]);
+    const publish=(pixels:BackdropPixels,actual=rect)=>{
+      const latest=this.nativeSource(entry);if(!this.canSample(owner,entry)||!latest||latest.navigationId!==source.navigationId||latest.layoutRevision!==source.layoutRevision||latest.revision!==source.revision)return;
+      const current=this.bounds(entry);if(JSON.stringify(current)!==JSON.stringify(b)||JSON.stringify(latest.bounds)!==JSON.stringify(p)||(entry.capsuleBounds?.width??capsule.width)!==capsule.width)return;
+      if(this.route!=='/web-toolbar'&&entry.capsuleBounds&&JSON.stringify(entry.capsuleBounds)!==JSON.stringify(capsule))return;
+      const cssSize={width:actual.width/zoom,height:actual.height/zoom};
+      const sample={sequence:(entry.sequence??0)+1,capturedAt:pixels.capturedAt,sourceContentsId:source.sourceId,navigationId:source.navigationId,layoutRevision:source.layoutRevision,sourceRevision:source.revision,scrollX:0,scrollY:0,geometryRevision:entry.geometryRevision,capsuleBounds:entry.capsuleBounds??capsule,origin:{x:(p.x+actual.x-current.x)/zoom,y:(p.y+actual.y-current.y)/zoom},cssSize,pixelSize:pixels.pixelSize,density:{x:pixels.pixelSize.width/cssSize.width,y:pixels.pixelSize.height/cssSize.height},captureBounds:actual};
+      entry.sequence=sample.sequence;const changed=entry.state.backdropImage!==pixels.image;entry.state={...entry.state,backdropImage:pixels.image,backdropSample:sample};this.sendBackdrop(entry,pixels.image,sample,changed);
+    };
+    const cached=!force&&entry.cache.reuse(key);if(cached){publish(cached);return;}
+    entry.sampling=true;entry.pending=false;entry.stats.captures++;
+    void source.capture(rect).then(({image,rect:actual})=>{if(image.isEmpty())return;const accepted=entry.cache.accept(key,shape,image.toBitmap(),()=>{const png=image.toPNG();entry.stats.pngEncodes++;return {image:'data:image/png;base64,'+png.toString('base64'),pixelSize:{width:png.readUInt32BE(16),height:png.readUInt32BE(20)}};},Date.now());publish(accepted.pixels,actual);}).catch(()=>{entry.stats.frameErrors++;}).finally(()=>{entry.sampling=false;if(entry.pending&&this.canSample(owner,entry))this.sampleNativeBackdrop(owner,entry,false);});
   }
   private canSample(owner: BrowserWindow, entry: ToolbarEntry) {
     const values = (entry.state.settings as any)?.values;
@@ -282,7 +342,7 @@ export class WebToolbarHost {
     }).catch(() => {}).finally(() => { entry.sampling = false; if (entry.pending) this.sampleBackdrop(owner, entry); });
   }
   private captureRequest(owner: BrowserWindow, entry: ToolbarEntry): CaptureRequest | undefined {
-    const state = entry.state, b = entry.view.getBounds(), source = this.sourceFor?.(String(state.viewId));
+    const state = entry.state, b = this.bounds(entry), source = this.sourceFor?.(String(state.viewId));
     if (!source || source.view.webContents.isDestroyed() || source.view.webContents.isLoading()) return;
     const page = source.view, p = page.getBounds(), zoom = entry.view.webContents.getZoomFactor();
     const progress = Number(state.hideProgress ?? 0);

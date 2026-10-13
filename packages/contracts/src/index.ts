@@ -23,17 +23,25 @@ export interface DocumentModel {
 }
 export interface DocumentInfo {
   id: string; title: string; path?: string; format: Format; revision: number; diskRevision: number; dirty: boolean;
-  capabilities: Capabilities; model: DocumentModel; warnings: string[];
+  capabilities: Capabilities; model: DocumentModel; warnings: string[]; nativeOffice?: import('./native-office').NativeOfficeMetadata;
 }
 export interface ReadingContext {
   viewId: string; documentId: string; contentRevision: number; viewRevision: number; capturedAt: string;
   quality: 'confirmed' | 'last-confirmed' | 'not-ready'; actor: Actor;
   locator: Locator; visibleText: string; selection: { kind: 'none' | 'text' | 'cells' | 'objects' | 'region'; text: string; locator?: Locator; rect?: Rect; pageRects?: (Rect & { pageIndex: number })[] };
   viewport?: { width: number; height: number; scrollX: number; scrollY: number; deviceScaleFactor: number; navigationId?: string; layoutRevision?: number };
+  nativeOffice?: { sessionId: string; engineEpoch: string; engineRevision: number; selectionEpoch?: number; selectionActions?: string[]; sheetName?: string; range?: string; visibleTextReady?: boolean; visibleTextTruncated?: boolean; visibleTextSource?: 'actual-a11y' | 'unavailable' };
 }
-export interface ViewInfo { id: string; documentId: string; windowId: string; mode: 'read' | 'source' | 'split'; pinned: boolean; context?: ReadingContext; zoom?: number }
+/** Ephemeral collaboration metadata, never a lock on human input. */
+export interface AgentViewState {
+  controlId: string; viewId: string; documentId: string; agentId?: string;
+  phase: 'reading' | 'editing'; acquiredAt: string; updatedAt: string;
+  lastEdit?: { transactionId: string; revision: number; kind: string };
+}
+export interface AgentViewStatus { viewId: string; documentId: string; state: AgentViewState | null; userControl?: 'running' | 'paused' | 'stopped' }
+export interface ViewInfo { id: string; documentId: string; windowId: string; mode: 'read' | 'source' | 'split'; pinned: boolean; context?: ReadingContext; zoom?: number; agentState?: AgentViewState }
 export interface ReadingSnapshot { id: string; schemaVersion: string; context: ReadingContext; document: DocumentInfo; createdAt: string }
-export interface WorkspaceState { protocolVersion: string; documents: DocumentInfo[]; views: ViewInfo[]; activeViewId?: string; eventsSeq: number; tasks: HarnessTask[] }
+export interface WorkspaceState { protocolVersion: string; documents: DocumentInfo[]; views: ViewInfo[]; activeViewId?: string; eventsSeq: number; tasks: HarnessTask[]; agentStates?: AgentViewState[] }
 export interface HarnessTask { id: string; snapshotId: string; viewId?: string; sourceScope?: 'selection' | 'visible'; prompt: string; text: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; error?: string }
 
 const color = z.string().regex(/^[0-9A-Fa-f]{6}$/);
@@ -87,8 +95,8 @@ export const editOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('pdf.addPage') }),
 ]);
 export type EditOperation = z.infer<typeof editOperationSchema>;
-export interface PreparedPatch { id: string; documentId: string; expectedRevision: number; operation: EditOperation; preview: { before: string; after: string; warnings: string[] }; createdAt: string }
-export interface Receipt { transactionId: string; documentId: string; revision: number; status: 'applied' | 'saved' | 'undone'; idempotencyKey?: string; path?: string; warnings?: string[] }
+export interface PreparedPatch { id: string; documentId: string; viewId?: string; agentControlId?: string; agentStateEpoch?: number; nativeSessionId?: string; nativeWriterEpoch?: string; nativeEngineEpoch?: string; nativeEngineRevision?: number; expectedRevision: number; operation: EditOperation; preview: { before: string; after: string; warnings: string[] }; createdAt: string }
+export interface Receipt { transactionId: string; documentId: string; revision: number; status: 'applied' | 'saved' | 'undone' | 'dispatched' | 'no-change'; idempotencyKey?: string; path?: string; warnings?: string[]; nativeSessionId?: string; controlReleased?: boolean }
 
 const modifiers = z.array(z.enum(['shift', 'control', 'alt', 'meta'])).max(4).default([]);
 const point = { x: z.number().finite().nonnegative(), y: z.number().finite().nonnegative() };
@@ -141,3 +149,6 @@ export class ViewerError extends Error {
 
 export { normalizeWebAddress, documentSuffixes } from './web-address';
 export type { WebAddressInference } from './web-address';
+export type { NativeOfficeFormat, UNOProperty, NativeOfficeQuery, NativeOfficeNavigateTarget, NativeOfficeExportFormat, NativeOfficeState, NativeOfficeMetadata, NativeOfficeSnapshot, NativeOfficeCommand, NativeOfficeExecution, NativeOfficeExecuteRequest, NativeOfficeInputRequest, NativeOfficeCapture, NativeOfficeDriver, NativeOfficeStylePatch, NativeOfficeStyleTarget, NativeOfficeStyleValues, NativeOfficeStyleField, NativeOfficeStyleInspection } from './native-office';
+export { nativeOfficeStylePatchSchema } from './native-office';
+export { nativeOfficeCommandPolicy } from './native-office-policy';

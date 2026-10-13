@@ -6,13 +6,19 @@ import { aiReadingResult, aiReadingTools, retryAIReading, runAIReading } from '.
 import { createDocument } from './document-create';
 import { outlineDocument, searchDocument } from './document-content';
 import { navigateReader } from './reader-navigation';
+import { agentAcquireSchema, agentReleaseSchema, agentStatusSchema } from './authoring-schemas';
+import { officeSession } from './office-session';
 
 export async function dispatch(core: ViewerCore, method: string, args: Record<string, unknown>, actor: Actor = 'agent'): Promise<unknown> {
   const str = (key: string) => { const value = args[key]; if (typeof value !== 'string') throw new ViewerError('INVALID_ARGUMENT', `${key} 必须是字符串。`); return value; };
   const viewId = typeof args.viewId === 'string' ? args.viewId : undefined;
+  if (method.startsWith('office-')) return officeSession(core, method, args, actor);
   switch (method) {
     case 'new-document': return createDocument(core, args, actor);
     case 'reader-navigate': return navigateReader(core, args, actor);
+    case 'agent-acquire': return core.acquireAgentView(agentAcquireSchema.parse(args));
+    case 'agent-release': return core.releaseAgentView(agentReleaseSchema.parse(args));
+    case 'agent-status': return core.agentViewStatus(agentStatusSchema.parse(args));
     case 'ai-reading-tools': return aiReadingTools(core, args);
     case 'ai-reading-run': return runAIReading(core, args, actor);
     case 'ai-reading-retry': return retryAIReading(core, args, actor);
@@ -38,20 +44,20 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     case 'create-text': { const format = args.format === 'html' ? 'html' : 'markdown'; const view = await core.openBytes(String(args.title ?? (format === 'html' ? '未命名.html' : '未命名.md')), new TextEncoder().encode(String(args.text ?? '')), format, undefined, args.windowId as string | undefined); if (actor === 'human') core.activate(view.id, actor); return view; }
     case 'activate': { const view = core.getView(str('viewId')), document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(view.id, document.model.url); core.activate(view.id, actor); return {}; }
     case 'mode': { const mode = str('mode'); if (!['read', 'source', 'split'].includes(mode)) throw new ViewerError('INVALID_ARGUMENT', '未知视图模式。'); core.setMode(str('viewId'), mode as ViewInfo['mode']); return {}; }
-    case 'zoom': return core.setViewZoom(str('viewId'), Number(args.factor), actor);
+    case 'zoom': return core.setNativeViewZoom(str('viewId'), Number(args.factor), actor);
     case 'duplicate-view': { const view = core.getView(str('viewId')), next = core.addView(view.documentId, args.windowId as string | undefined ?? view.windowId), document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(next.id, document.model.url); return next; }
-    case 'close': core.closeView(str('viewId'), !!args.retainRecovery); return {};
+    case 'close': await core.requestCloseView(str('viewId'), !!args.retainRecovery); return {};
     case 'context': return args.snapshotId ? core.readSnapshot(str('snapshotId')).context : core.context(viewId);
     case 'selection': return (args.snapshotId ? core.readSnapshot(str('snapshotId')).context : await core.context(viewId)).selection;
     case 'report-context': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '外部 harness 不能伪造界面上下文。'); core.updateContext(str('viewId'), args.context as Partial<ReadingContext>, (args.context as Partial<ReadingContext>)?.actor === 'agent' ? 'agent' : actor); return {};
     case 'snapshot': return core.snapshot(viewId);
     case 'snapshot-read': return core.readSnapshot(str('snapshotId'));
-    case 'read': { const document = args.snapshotId ? core.readSnapshot(str('snapshotId')).document : core.getDocument(str('documentId')).info; return { ...document.model, revision: document.revision, warnings: document.warnings }; }
-    case 'outline': return outlineDocument(core.getDocument(str('documentId')).info);
-    case 'search': { const query = str('query'); if (!query || query.length > 10000) throw new ViewerError('INVALID_ARGUMENT', '搜索词需为 1–10000 字符。'); return searchDocument(core.getDocument(str('documentId')).info, query); }
-    case 'prepare': return core.prepare(str('documentId'), Number(args.expectedRevision), args.operation as EditOperation);
+    case 'read': { if(!args.snapshotId)await core.synchronizeNativeDocument(str('documentId'));const document = args.snapshotId ? core.readSnapshot(str('snapshotId')).document : core.getDocument(str('documentId')).info; return { ...document.model, revision: document.revision, warnings: document.warnings }; }
+    case 'outline': await core.synchronizeNativeDocument(str('documentId'));return outlineDocument(core.getDocument(str('documentId')).info);
+    case 'search': { const query = str('query'); if (!query || query.length > 10000) throw new ViewerError('INVALID_ARGUMENT', '搜索词需为 1–10000 字符。'); await core.synchronizeNativeDocument(str('documentId'));return searchDocument(core.getDocument(str('documentId')).info, query); }
+    case 'prepare': await core.synchronizeNativeDocument(str('documentId'));return core.prepare(str('documentId'), Number(args.expectedRevision), args.operation as EditOperation, { viewId: args.viewId === undefined ? undefined : str('viewId'), controlId: args.controlId === undefined ? undefined : str('controlId') });
     case 'commit': return core.commit(str('patchId'), str('idempotencyKey'), actor);
-    case 'undo': return core.undo(str('transactionId'));
+    case 'undo': return core.undo(str('transactionId'), actor);
     case 'save': return core.save(str('documentId'), args.path as string | undefined, actor === 'human' && !!args.allowOverwrite);
     case 'browser-input': return core.browserInput(browserRequestSchema.parse(args));
     case 'browser-capture': if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。'); return core.browser.capture(str('viewId'));

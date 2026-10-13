@@ -8,10 +8,19 @@ export const selectionActionSchema = z.object({ snapshotId: z.string(), action: 
 export type SelectionAction = z.infer<typeof selectionActionSchema>;
 const labels: Record<SelectionAction['action'],string> = { copy:'复制选区',citation:'复制引用',extract:'保存为 Markdown 摘录',note:'添加批注',highlight:'高亮选区',underline:'下划线',strike:'删除线',bold:'加粗选区',italic:'斜体选区',code:'行内代码',replace:'替换选中文字',heading:'设为二级标题', 'align-left':'段落左对齐','align-center':'段落居中','center-object':'对象水平居中',translate:'翻译选区',ask:'询问 AI' };
 export function actionsFor(snapshot: ReadingSnapshot, ai: boolean) {
-  const {document:d,context:{selection:s}}=snapshot, l=s.locator;
+  const {document:d,context:{selection:s,nativeOffice:native}}=snapshot, l=s.locator;
   if(s.kind==='none')return [];
   const actions: SelectionAction['action'][]=['copy','citation','extract','note'];
   if(s.text && ai) actions.push('translate','ask');
+  if(d.nativeOffice) {
+    actions.push('highlight');
+    if(native && Number.isInteger(native.selectionEpoch)) for(const action of ['bold','italic','underline','strike','align-left','align-center','replace'] as const) {
+      if(!native.selectionActions?.includes(action)) continue;
+      if(action==='replace' && s.kind==='cells' && (!native.sheetName || !/^[A-Z]+[1-9]\d*$/.test(native.range??''))) continue;
+      actions.push(action);
+    }
+    return actions.map(id=>({id,label:labels[id],input:['note','replace','ask'].includes(id)}));
+  }
   if(d.format==='pdf') { if(s.pageRects?.length) actions.push('highlight','underline','strike'); }
   else actions.push('highlight');
   if(['markdown','html'].includes(d.format) && s.text) actions.push('bold','italic','strike','code','replace');
@@ -37,11 +46,24 @@ export async function selectionAction(core:ViewerCore,input:unknown,actor:Actor)
       if(d.revision!==snapshot.document.revision)throw new ViewerError('VERSION_CONFLICT','选区所属内容已变化，请重新选择。');
       if(d.format==='web') { const current=await core.context(snapshot.context.viewId);if(current.viewport?.navigationId!==snapshot.context.viewport?.navigationId || current.viewport?.layoutRevision!==snapshot.context.viewport?.layoutRevision)throw new ViewerError('STALE_NAVIGATION','网页已导航或重新排版，请重新选择。'); }
       if(args.action==='extract') { const view=await core.openBytes(snapshot.document.title.replace(/\.[^.]+$/,'')+' · 摘录.md',new TextEncoder().encode(citation),'markdown',undefined,core.getView(snapshot.context.viewId).windowId);result={view}; }
-      else if(args.action==='note'||args.action==='highlight'&&!['pdf','xlsx'].includes(d.format)) {
+      else if(args.action==='note'||args.action==='highlight'&&(!!snapshot.document.nativeOffice||!['pdf','xlsx'].includes(d.format))) {
         if(args.action==='note'&&!args.value?.trim())throw new ViewerError('INVALID_ARGUMENT','请填写批注内容。');
         const annotation:Annotation={id:crypto.randomUUID(),documentId:d.id,sourceRevision:d.revision,sourceUri:d.model.url,selection:structuredClone(s),kind:args.action==='note'?'note':'highlight',text:args.value??'',createdAt:new Date().toISOString()};core.annotations.set(annotation.id,annotation);core.event('annotation.added',{annotationId:annotation.id,documentId:d.id,actor}); if(d.format==='web') await core.extensions.get('annotation-display')?.({viewId:snapshot.context.viewId,annotation},actor); result={annotation};
       } else if(args.action==='translate'||args.action==='ask') result=await core.extensions.get('selection-ai')!({...args,snapshot},actor);
-      else { const operation=operationFor(snapshot,args);const patch=core.prepare(d.id,d.revision,operation);result={receipt:await core.commit(patch.id,args.idempotencyKey+':edit',actor)}; }
+      else if(snapshot.document.nativeOffice) {
+        const native=snapshot.context.nativeOffice;
+        if(!native || native.selectionEpoch===undefined)throw new ViewerError('CAPABILITY_UNSUPPORTED','选区缺少原生版本身份，请重新选择。');
+        const current=await core.nativeOfficeState(snapshot.context.viewId);
+        if(current.sessionId!==native.sessionId)throw new ViewerError('NATIVE_SESSION_EXPIRED','原生选区来源已重新打开。');
+        const input={viewId:snapshot.context.viewId,expectedEngineEpoch:native.engineEpoch,expectedEngineRevision:native.engineRevision,expectedSelectionEpoch:native.selectionEpoch,idempotencyKey:args.idempotencyKey+':native-edit'};
+        if(args.action==='replace') result=await core.executeNativeOffice({...input,...(s.kind==='cells'?{cell:{sheetName:native.sheetName!,address:native.range!,content:args.value??''}}:{replacement:{expectedText:s.text,text:args.value??''}})},actor);
+        else {
+          const command=({bold:'.uno:Bold',italic:'.uno:Italic',underline:'.uno:Underline',strike:'.uno:Strikeout','align-left':'.uno:LeftPara','align-center':'.uno:CenterPara'} as Record<string,string>)[args.action];
+          if(!command)throw new ViewerError('CAPABILITY_UNSUPPORTED','此选区工具尚无原生引擎映射。');
+          result=await core.executeNativeOffice({...input,command},actor);
+        }
+      }
+      else { const operation=operationFor(snapshot,args);const patch=core.prepare(d.id,d.revision,operation,{viewId:snapshot.context.viewId});result={receipt:await core.commit(patch.id,args.idempotencyKey+':edit',actor)}; }
     }
     core.receipts.set(args.idempotencyKey,{payload,receipt:result});await core.persist();return result;
   });queues.set(core,pending);return pending;

@@ -106,3 +106,45 @@
 .office-tools-v2 :is(button,input,select),.office-slide-strip button,.office-sheet-tabs button { transition: background-color 130ms, border-color 130ms, color 130ms; }
 :root[data-motion=off] .office-tools-v2 :is(button,input,select),:root[data-motion=off] :is(.office-slide-strip,.office-sheet-tabs) button { transition: none; }
 @media (prefers-reduced-motion: reduce) { .office-tools-v2 :is(button,input,select),.office-slide-strip button,.office-sheet-tabs button { transition: none; } }
+
+/* One format toolbox: categories occupy the sidebar; the canvas keeps its space. */
+.office-tools-v3 { min-width: 0; padding-top: 2px; }
+.office-categories { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; padding: 2px 0 12px; margin-bottom: 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 40%, transparent); }
+.office-categories::-webkit-scrollbar { display: none; }
+.office-categories > button { flex: 1 0 auto; min-height: 30px; padding: 5px 7px; border-radius: 9px; color: var(--muted); font-size: 11px; white-space: nowrap; transition: color 130ms, background-color 130ms; }
+.office-categories > button:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--ink); }
+.office-categories > button.selected { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-weight: 600; }
+.office-category-panel { min-width: 0; }
+.office-capability-note { flex: 1 0 100%; margin: 2px 0 0; font-size: 11px; line-height: 1.65; color: var(--muted); }
+.office-sidebar .office-tool-group { margin-bottom: 16px; padding-bottom: 13px; }
+.office-sidebar > .office-category-panel > .office-tools-v2 > .office-property-field { margin: 0 0 15px; }
+.office-sidebar-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 12px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.office-slide-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.office-slide-list > button { display: flex; flex-direction: column; align-items: center; width: 100%; padding: 4px; border-radius: 10px; color: var(--muted); }
+.office-slide-list > button:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.office-slide-list .office-slide-thumbnail { flex-shrink: 0; margin-bottom: 5px; }
+.office-slide-list > button.selected .office-slide-thumbnail { outline: 2px solid var(--accent); outline-offset: 2px; }
+.office-slide-number { font-size: 10px; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.office-word-stage { padding: 0 8px 22px; }
+.office-presentation-stage { padding: 0 10px 20px; }
+.office-slide-canvas { width: 100%; max-width: none; }
+.office-slide-notes { max-width: none; margin-top: 12px; }
+
+/* Spreadsheet chrome stays fixed while only the grid scrolls. The parent can
+   reduce this inset as its floating navigation retracts, without body rerenders. */
+:root[data-theme] .workbench .reader-format-xlsx > .document-content { padding-top: var(--office-header-offset, 76px); overflow: hidden; }
+.document-content.format-xlsx > .reading-content-body { height: 100%; min-height: 0; }
+.office-document-xlsx { height: 100%; min-height: 0; }
+.office-spreadsheet-stage { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0 4px 0; }
+.office-formula-bar { flex: 0 0 36px; min-height: 36px; padding: 3px 6px; gap: 6px; border-radius: 0; }
+.office-formula-bar input { height: 26px; padding: 3px 4px; }
+.office-formula-bar .office-name-box { width: 90px; flex-basis: 90px; }
+.office-formula-bar .icon-button { width: 26px; height: 26px; }
+.office-grid-scroll { flex: 1; max-height: none; min-height: 0; }
+.office-spreadsheet-stage > .office-edit-error { flex: 0 0 auto; margin: 3px 6px; width: auto; }
+.office-sheet-footer { flex: 0 0 27px; min-height: 27px; gap: 8px; padding: 1px 2px; }
+.office-sheet-tabs { gap: 2px; }
+.office-sheet-tabs > button:not(.icon-button) { min-height: 24px; padding: 3px 9px; border-radius: 0 0 5px 5px; font-size: 11px; }
+.office-sheet-footer > button { flex-shrink: 0; font-size: 10px; padding: 3px 5px; }
+:root[data-motion=off] .office-categories > button { transition: none; }
+@media (prefers-reduced-motion: reduce) { .office-categories > button { transition: none; } }

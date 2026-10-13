@@ -60,7 +60,7 @@ try {
   // A spring can cross the resting position before its velocity settles.
   await settings.waitForFunction(() => (document.querySelector('.glass-preview-lens') as HTMLElement).style.willChange === '');
   assert.equal(await lens.evaluate(element => element.style.willChange), '', 'the spring releases will-change when it settles');
-  const autoHide = settings.getByRole('switch', { name: '顶部胶囊自动隐藏', exact: true });
+  const autoHide = settings.getByRole('switch', { name: '导航栏自动隐藏', exact: true });
   await autoHide.click(); await until(async () => (await autoHide.getAttribute('aria-checked')) === 'true', 'switch commits click');
   let snapshot = (await invoke<{ snapshot: SettingsSnapshot }>(settings, 'settings-read')).snapshot;
   const revision = snapshot.revision, switchBox = await autoHide.boundingBox(); assert.ok(switchBox);

@@ -1,5 +1,6 @@
 .agent-operation-capsule.material-host { position: absolute; z-index: 8; bottom: var(--agent-bottom, 18px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; width: max-content; max-width: calc(100% - 32px); height: var(--agent-height, 42px); padding: 0 10px 0 13px; border: 1px solid var(--glass-edge); border-radius: var(--agent-radius, 21px); background: transparent; color: var(--glass-ink); box-shadow: var(--glass-shadow), var(--glass-lip); backdrop-filter: none; isolation: auto; opacity: 1; animation: none; font-size: 12px; white-space: nowrap; }
 .agent-operation-capsule .agent-operation-label { overflow: hidden; text-overflow: ellipsis; }
+.agent-operation-capsule > .liquid-glass-surface { --liquid-glass-tint: var(--reader-capsule-tint); }
 .agent-operation-capsule .icon-button { flex-shrink: 0; width: var(--agent-button-size, 30px); height: var(--agent-button-size, 30px); border: 0; border-radius: calc(var(--agent-button-size, 30px) / 2); color: inherit; }
 .agent-operation-capsule .agent-operation-pulse { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: #4699d2; box-shadow: 0 0 0 3px rgb(70 153 210 / .12); }
 .agent-operation-capsule[data-agent-status="paused"] .agent-operation-pulse { background: #be963c; }

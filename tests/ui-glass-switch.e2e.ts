@@ -208,7 +208,7 @@ try {
   await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().includes('#/settings'))!; window.setContentSize(1120, 800); });
   await settings.getByRole('button', { name: '外观与布局', exact: true }).click();
   assert.equal(await settings.locator('.glass-preview-lens').count(), 0, 'closed preview is lazy and does not mount a hidden optical lens');
-  const control = settings.getByRole('switch', { name: '顶部胶囊自动隐藏', exact: true }), thumb = control.locator('.glass-switch-thumb');
+  const control = settings.getByRole('switch', { name: '导航栏自动隐藏', exact: true }), thumb = control.locator('.glass-switch-thumb');
   await control.scrollIntoViewIfNeeded();
   const settled = async () => { await until(async () => { const value = await geometry(control), on = await control.getAttribute('aria-checked') === 'true'; return value.willChange === '' && Math.abs(value.thumb.width - expected.thumbWidth) < .35 && Math.abs(value.thumb.x - value.track.x - expected.margin - (on ? expected.travel : 0)) < .35; }, 'switch returns to its full resting pill and finishes its independent position spring'); return geometry(control); };
   const themeCases: Record<string, unknown> = {};

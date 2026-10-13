@@ -1,6 +1,6 @@
 type Timer = ReturnType<typeof setTimeout>;
 type Timing = { now(): number; schedule(callback: () => void, delay: number): Timer; cancel(timer: Timer): void };
-const defaultTiming: Timing = { now: () => performance.now(), schedule: (callback, delay) => setTimeout(callback, delay), cancel: clearTimeout };
+const defaultTiming: Timing = { now: () => performance.now(), schedule: (callback, delay) => globalThis.setTimeout(callback, delay), cancel: timer => globalThis.clearTimeout(timer) };
 
 /** Leading reports are bounded, but the last request is always sampled fresh. */
 export function createTrailingEmitter<Args extends unknown[]>(interval: number, initial: (...args: Args) => void, timing: Timing = defaultTiming) {

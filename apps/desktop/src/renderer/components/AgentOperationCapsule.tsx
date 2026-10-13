@@ -4,7 +4,7 @@ import { LiquidGlassSurface } from './LiquidGlassSurface';
 import { AGENT_OPERATION_METRICS as metrics, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
 import '../agent-operation.css';
 
-export const agentOperationLabels: Record<string, string> = { click: '点击', move: '移动光标', drag: '拖动选择', scroll: '滚动', press: '按键', type: '输入文字', analysis: '阅读分析' };
+export const agentOperationLabels: Record<string, string> = { click: '点击', move: '移动光标', drag: '拖动选择', scroll: '滚动', press: '按键', type: '输入文字', analysis: '阅读分析', reading: '阅读此页', editing: '编辑此页' };
 export type AgentOperationStatus = 'running' | 'paused' | 'stopped';
 
 /** One presentation for document and trusted native webpage overlays. Only its

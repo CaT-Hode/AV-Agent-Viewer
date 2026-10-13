@@ -1,21 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import type { z } from 'zod';
-import { ViewerError, type Actor } from '../../contracts/src/index';
+import { ViewerError, type Actor, type NativeOfficeNavigateTarget } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 
 import { readerNavigationSchema } from './authoring-schemas';
 import { outlineDocument } from './document-content';
 export { readerNavigationSchema } from './authoring-schemas';
-type NavigationReceipt = { requestId: string; viewId: string; documentId: string; expectedRevision: number; target: z.infer<typeof readerNavigationSchema>['target']; actor: Actor; status: 'requested' };
+type NavigationReceipt = { requestId: string; viewId: string; documentId: string; expectedRevision: number; target: z.infer<typeof readerNavigationSchema>['target']; actor: Actor; status: 'requested' | 'rendered' };
 const requests = new WeakMap<ViewerCore, Map<string, { payload: string; receipt: NavigationReceipt }>>();
 
 /** Publishes a UI request. A receipt is not proof that a renderer reached it. */
-export function navigateReader(core: ViewerCore, args: Record<string, unknown>, actor: Actor) {
+export async function navigateReader(core: ViewerCore, args: Record<string, unknown>, actor: Actor) {
   const input = readerNavigationSchema.parse(args), view = core.getView(input.viewId), document = core.getDocument(view.documentId).info;
   const payload = JSON.stringify({ ...input, actor });
   let cache = requests.get(core); if (!cache) { cache = new Map(); requests.set(core, cache); }
   const previous = cache.get(input.idempotencyKey);
   if (previous) { if (previous.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '同一幂等键不能用于不同的阅读位置。'); return structuredClone(previous.receipt); }
+  if (document.nativeOffice) await core.synchronizeNativeDocument(document.id);
   if (actor === 'agent' && ['paused','stopped'].includes(core.agentControl.get(view.id) ?? core.agentControl.get(document.id) ?? '')) throw new ViewerError('AGENT_PAUSED', 'Agent 已暂停。');
   if (document.revision !== input.expectedRevision) throw new ViewerError('VERSION_CONFLICT', '内容版本已变化，请重新读取位置。');
   const target = input.target;
@@ -26,7 +27,23 @@ export function navigateReader(core: ViewerCore, args: Record<string, unknown>, 
     const match = /^([A-Z]+)([1-9]\d*)$/.exec(target.address)!;
     const column = [...match[1]].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
     if (document.format !== 'xlsx' || !document.model.sheets?.some(s => s.id === target.sheetId)) throw new ViewerError('INVALID_TARGET', '工作表不存在或文档格式不匹配。');
-    if (column > 50 || Number(match[2]) > 1000) throw new ViewerError('CAPABILITY_UNSUPPORTED', '当前表格阅读视图支持前 1000 行、50 列。');
+    if (!document.nativeOffice && (column > 50 || Number(match[2]) > 1000)) throw new ViewerError('CAPABILITY_UNSUPPORTED', '当前表格阅读视图支持前 1000 行、50 列。');
+  }
+  if (document.nativeOffice) {
+    let nativeTarget: NativeOfficeNavigateTarget;
+    if (target.kind === 'slide') nativeTarget = { kind: 'slide', index: document.model.slides!.findIndex(slide => slide.id === target.slideId) };
+    else if (target.kind === 'cell') nativeTarget = { kind: 'cell', sheetName: document.model.sheets!.find(sheet => sheet.id === target.sheetId)!.name, address: target.address };
+    else if (target.kind === 'paragraph') {
+      const index = document.model.blocks!.findIndex(block => block.id === target.blockId);
+      if (index < 0 || target.blockId !== 'paragraph-' + index) throw new ViewerError('CAPABILITY_UNSUPPORTED', '当前段落身份无法映射到原生文档，请重新读取目录。');
+      nativeTarget = { kind: 'paragraph', paragraphIndex: index };
+    } else throw new ViewerError('CAPABILITY_UNSUPPORTED', '此目标不适用于原生Office。');
+    const state = await core.nativeOfficeState(view.id);
+    const result = await core.navigateNativeOffice({ viewId: view.id, target: nativeTarget, expectedEngineEpoch: state.engineEpoch, expectedEngineRevision: state.engineRevision, expectedSelectionEpoch: state.selectionEpoch, idempotencyKey: 'reader-' + input.idempotencyKey }, actor) as { requestId: string; status: 'requested' | 'rendered' };
+    const receipt: NavigationReceipt = { requestId: result.requestId, viewId: view.id, documentId: document.id, expectedRevision: document.revision, target: structuredClone(target), actor, status: result.status };
+    cache.set(input.idempotencyKey, { payload, receipt }); if (cache.size > 256) cache.delete(cache.keys().next().value!);
+    // The legacy entry explicitly activates a view; native office-navigate itself does not.
+    core.activate(view.id, actor); return structuredClone(receipt);
   }
   const receipt: NavigationReceipt = { requestId: randomUUID(), viewId: view.id, documentId: document.id, expectedRevision: document.revision, target: structuredClone(target), actor, status: 'requested' };
   cache.set(input.idempotencyKey, { payload, receipt }); if (cache.size > 256) cache.delete(cache.keys().next().value!);
