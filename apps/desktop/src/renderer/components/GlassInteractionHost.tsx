@@ -1,36 +1,44 @@
 import { useEffect } from 'react';
-import { createGlassElasticController } from '../lib/glass-elasticity';
+import { createGlassElasticController, glassElasticControllerOwner, shouldDelegateGlassInteraction, type GlassElasticController, type GlassElasticPreset } from '../lib/glass-elasticity';
 
-/** One delegated coordinator, no hook/RAF per idle button. Each short spring
- * affects presentation only and preserves the existing click and focus path. */
+/** One lazy delegated coordinator for controls and material backgrounds. A
+ * surface-only panel spring preserves foreground, layout and native bounds.
+ * Explicit React thumb/lens controllers always own their gesture subtree. */
 export function GlassInteractionHost() {
   useEffect(() => {
-    const controllers = new Map<HTMLElement, ReturnType<typeof createGlassElasticController>>();
-    const pointers = new Map<number, ReturnType<typeof createGlassElasticController>[]>();
+    const controllers = new Map<HTMLElement, GlassElasticController>();
+    const pointers = new Map<number, GlassElasticController[]>();
     const searchSelector = '.settings-search,.search-field,.navigation-capsule,.home-search-capsule';
-    const searchController = (host: HTMLElement) => {
+    const controllerFor = (host: HTMLElement, preset: GlassElasticPreset, layer: 'host' | 'surface' = 'host') => {
+      if (!shouldDelegateGlassInteraction(host)) return;
       let controller = controllers.get(host);
+      if (controller && glassElasticControllerOwner(host) !== 'delegated') { controllers.delete(host); controller = undefined; }
       if (!controller) {
-        controller = createGlassElasticController(host, { preset: 'search', deform: !host.matches('.navigation-capsule'), disabled: () => !host.isConnected || !!host.closest('[inert]') });
+        controller = createGlassElasticController(host, { preset, layer, owner: 'delegated', disabled: () => !host.isConnected || !shouldDelegateGlassInteraction(host) });
         controllers.set(host, controller);
       }
       return controller;
     };
+    const searchController = (host: HTMLElement) => controllerFor(host, host.matches('.navigation-capsule') ? 'panel' : 'search', host.matches('.navigation-capsule') ? 'surface' : 'host');
     for (const host of document.querySelectorAll<HTMLElement>(searchSelector)) searchController(host);
-    const selector = 'button.icon-button,button.button,.activity-rail button,.ai-rail button,.view-modes button,.tab-select,.outline-item,.settings-nav button,.recent-card';
+    const selector = 'button.icon-button,button.button,.activity-rail button,.ai-rail button,.view-modes button,.tab-select,.outline-item,.settings-nav button,.recent-card,.selection-tool-icons button,.translation-actions button,button.tab-close';
+    const materialTarget = (event: Event) => {
+      const host = event.target instanceof Element ? event.target.closest<HTMLElement>('.material-host') : null;
+      if (!host || !shouldDelegateGlassInteraction(host) || !(event.target instanceof HTMLElement || event.target instanceof SVGElement) || event.target.closest('[data-glass-control-owner],.glass-switch,.glass-range-control,.glass-segmented,.glass-preview-lens,:disabled,[aria-disabled="true"],[inert]')) return;
+      const surface = [...host.children].find(child => child.classList.contains('liquid-glass-surface')) as HTMLElement | undefined;
+      if (!surface || surface.dataset.glassInteraction === 'none' || surface.dataset.glassVariant === 'tooltip') return;
+      if (host.matches(searchSelector)) return searchController(host);
+      return controllerFor(host, surface.dataset.glassVariant === 'button' ? 'button' : 'panel', 'surface');
+    };
     const target = (event: Event) => {
       const element = event.target instanceof Element ? event.target.closest<HTMLElement>(selector) : null;
-      if (!element || element.closest('.glass-switch,.glass-range-control,.glass-preview-lens') || (element instanceof HTMLButtonElement && element.disabled) || element.closest('[inert]')) return;
-      let controller = controllers.get(element);
-      if (!controller) {
-        controller = createGlassElasticController(element, { preset: 'button', disabled: () => !element.isConnected || (element instanceof HTMLButtonElement && element.disabled) });
-        controllers.set(element, controller);
-      }
-      return controller;
+      if (!element || !shouldDelegateGlassInteraction(element)) return;
+      // A clickable card/material button is one host, not two stacked springs.
+      if (element.classList.contains('material-host')) return materialTarget(event);
+      return controllerFor(element, 'button');
     };
     const down = (event: PointerEvent) => {
-      const controller = target(event), host = event.target instanceof Element ? event.target.closest<HTMLElement>(searchSelector) : null;
-      const active = [controller, host ? searchController(host) : undefined].filter((value): value is ReturnType<typeof createGlassElasticController> => !!value);
+      const active = [...new Set([target(event), materialTarget(event)].filter((value): value is GlassElasticController => !!value))];
       if (!active.length) return; pointers.set(event.pointerId, active); for (const item of active) item.pointerDown(event);
     };
     const move = (event: PointerEvent) => { for (const item of pointers.get(event.pointerId) ?? []) item.pointerMove(event); };
@@ -41,7 +49,7 @@ export function GlassInteractionHost() {
     const focusIn = (event: FocusEvent) => {
       const host = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(searchSelector) : null;
       if (!host) return;
-      searchController(host).focus();
+      searchController(host)?.focus();
     };
     const focusOut = (event: FocusEvent) => {
       if (!(event.target instanceof HTMLElement)) return;
@@ -51,7 +59,7 @@ export function GlassInteractionHost() {
     };
     const blur = () => { pointers.clear(); for (const controller of controllers.values()) controller.reset(); };
     const cleanup = new MutationObserver(() => {
-      for (const [element, controller] of controllers) if (!element.isConnected) { controller.destroy(); controllers.delete(element); }
+      for (const [element, controller] of controllers) if (!element.isConnected || glassElasticControllerOwner(element) === 'explicit') { controller.destroy(); controllers.delete(element); }
       for (const host of document.querySelectorAll<HTMLElement>(searchSelector)) if (!controllers.has(host)) searchController(host);
     });
     cleanup.observe(document.body, { childList: true, subtree: true });

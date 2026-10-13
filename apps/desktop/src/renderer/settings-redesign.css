@@ -60,23 +60,25 @@
 .settings-shell .settings-unavailable > p { font-size: 11px; color: var(--muted); margin: 12px 0; }
 .settings-shell .settings-save-indicator { position: fixed; left: 54px; top: 17px; font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 5px; pointer-events: none; }
 .settings-shell .glass-material-preview { margin-bottom: 28px; }
-.glass-segmented { position: relative; isolation: isolate; height: 36px; min-height: 36px; max-width: 100%; padding: 3px; display: flex; gap: 0; align-items: stretch; background: #849aaf12; border: 1px solid #879eb514; border-radius: 18px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; touch-action: pan-y; user-select: none; }
-.glass-segmented::-webkit-scrollbar { display: none; }
+.glass-segmented { position: relative; isolation: isolate; height: 36px; min-height: 36px; min-width: 0; max-width: 100%; padding: 0; display: flex; align-items: stretch; background: #849aaf12; border: 1px solid #879eb514; border-radius: 18px; overflow: visible; touch-action: pan-y; user-select: none; }
+/* Only captions and the lower fill scroll/clip. The optical sibling remains
+   outside this viewport so its raised lens can exceed the original capsule. */
+.glass-segmented-viewport { position: relative; min-width: 0; flex: 1 1 auto; display: flex; align-items: stretch; padding: 3px; border-radius: inherit; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.glass-segmented-viewport::-webkit-scrollbar { display: none; }
 .glass-segmented-fill,.glass-segmented-thumb { position: absolute; top: 3px; left: 0; height: calc(100% - 6px); border-radius: 999px; pointer-events: none; }
-.glass-segmented-fill { z-index: 0; background: #fff; }
+.glass-segmented-fill { z-index: 0; background: rgb(30 126 64 / .94); }
 .glass-segmented-thumb.material-host { z-index: 2; --liquid-glass-tint: rgb(255 255 255 / calc(var(--glass-material-fill,1) * .04)); }
 :root[data-theme=dark] .glass-segmented-fill { background: rgb(30 126 64 / .94); }
 :root[data-theme=dark] .glass-segmented-thumb.material-host { --liquid-glass-tint: rgb(255 255 255 / calc(var(--glass-material-fill,1) * .025)); }
-.glass-segmented > button { flex: 1 0 auto; min-width: 65px; position: relative; z-index: 1; border: 0; border-radius: 14px; background: transparent; padding: 4px 12px; color: var(--muted); font-size: 11px; font-weight: 450; white-space: nowrap; }
-.glass-segmented > button[aria-checked=true] { color: var(--text); font-weight: 650; }
-:root[data-theme=dark] .glass-segmented > button[aria-checked=true] { color: #f8fff9; }
+.glass-segmented-viewport > button { flex: 1 0 auto; min-width: 65px; position: relative; z-index: 1; border: 0; border-radius: 14px; background: transparent; padding: 4px 12px; color: var(--muted); font-size: 11px; font-weight: 450; white-space: nowrap; }
+.glass-segmented-viewport > button[aria-checked=true] { color: #f8fff9; font-weight: 650; }
 :root:is([data-glass="off"],[data-reduce-transparency="true"],[data-contrast="high"]) .glass-segmented-thumb { visibility: hidden; }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) { .glass-segmented-thumb { visibility: hidden; } }
 @media (forced-colors: active) {
   :root[data-theme] .glass-segmented-fill { background: Highlight; }
-  :root[data-theme] .glass-segmented > button[aria-checked=true] { color: HighlightText; }
+  :root[data-theme] .glass-segmented-viewport > button[aria-checked=true] { color: HighlightText; }
 }
-.glass-segmented > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.glass-segmented-viewport > button:focus-visible { outline: 1px solid currentColor; outline-offset: -3px; }
 .settings-shell .connection-section { border: 1px solid var(--line); border-radius: 22px; background: #ffffffb8; padding: 24px; margin-top: 28px; }
 :root[data-theme=dark] .settings-shell .connection-section { background: #1b253080; }
 .settings-shell .connection-section h2 { font-size: 15px; margin: 0 0 14px; font-weight: 620; }

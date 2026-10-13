@@ -1,16 +1,48 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { KUBE_GLASS_SPRINGS } from './glass-presets';
+import { KUBE_GLASS_INTERACTION, KUBE_GLASS_SPRINGS } from './glass-presets';
 import { animatedMotion, resolveMotionMode, useMotionSnapshot, type MotionMode } from './motion';
 
-export type GlassElasticPreset = 'button' | 'thumb' | 'switch' | 'slider' | 'search' | 'lens';
+export type GlassElasticPreset = 'button' | 'thumb' | 'switch' | 'slider' | 'search' | 'lens' | 'panel';
 export type SpringAxis = { value: number; velocity: number };
 export type SpringParameters = { stiffness: number; damping: number; mass?: number };
 export type ElasticTarget = { scaleX: number; scaleY: number; x: number; y: number };
 export type ElasticMotion = MotionMode;
-export type GlassElasticOptions = { preset?: GlassElasticPreset; disabled?: boolean | (() => boolean); motion?: () => ElasticMotion; deform?: boolean };
+export type GlassElasticOptions = { preset?: GlassElasticPreset; disabled?: boolean | (() => boolean); motion?: () => ElasticMotion; deform?: boolean; layer?: 'host' | 'surface'; owner?: 'explicit' | 'delegated' };
 type PointerLike = { pointerId: number; clientX: number; clientY: number; timeStamp: number; button?: number; isPrimary?: boolean; currentTarget?: EventTarget | null };
 type KeyLike = { key: string; repeat?: boolean; isComposing?: boolean };
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+export type GlassElasticController = {
+  pointerDown(event: PointerLike): void; pointerMove(event: PointerLike): void;
+  pointerUp(event: { pointerId: number }): void; pointerCancel(event: { pointerId: number }): void;
+  keyDown(event: KeyLike): void; keyUp(event: KeyLike): void; focus(): void; blur(): void;
+  reset(immediate?: boolean): void; destroy(): void;
+};
+const registeredControllers = new WeakMap<HTMLElement, { owner: 'explicit' | 'delegated'; controller: GlassElasticController }>();
+const replaceControllerEvent = 'agentviewer:glass-elastic-replace';
+export const glassElasticControllerOwner = (element: HTMLElement) => registeredControllers.get(element)?.owner;
+/** An explicit thumb/lens owns its whole gesture subtree. Delegated panel
+ * feedback must never multiply it or fade an independently controlled fill. */
+export function shouldDelegateGlassInteraction(element: HTMLElement) {
+  return glassElasticControllerOwner(element) !== 'explicit' && !element.closest('[data-glass-control-owner],.glass-switch,.glass-range-control,.glass-segmented,.glass-preview-lens,[data-glass-elastic-owner="explicit"],:disabled,[aria-disabled="true"],[inert]');
+}
+
+/** Pointer coordinates remain presentation data, never document geometry or
+ * an input event injected into a page. A zero-size/hidden host cannot produce
+ * NaN origins or an arbitrarily large deformation. */
+export function glassPointerOrigin(point: { x: number; y: number }, bounds: { left: number; top: number; width: number; height: number }) {
+  return { x: bounds.width > 0 ? clamp((point.x - bounds.left) / bounds.width, 0, 1) * 100 : 50, y: bounds.height > 0 ? clamp((point.y - bounds.top) / bounds.height, 0, 1) * 100 : 50 };
+}
+
+/** Adapt the exact source lens's horizontal-speed compression to a tall
+ * fixed panel. The optical background moves; the document/foreground does not.
+ * Scaling by the source player's 63px height keeps a large sidebar restrained. */
+export function glassPanelElasticTarget(active: boolean, velocity = { x: 0, y: 0 }, height: number = KUBE_GLASS_INTERACTION.panelReferenceHeight): ElasticTarget {
+  const base = active ? KUBE_GLASS_INTERACTION.panelPressScale : 1;
+  const gain = Math.min(1, KUBE_GLASS_INTERACTION.panelReferenceHeight / Math.max(1, height));
+  const compression = Math.max(KUBE_GLASS_INTERACTION.minimumVelocityScale, 1 - Math.abs(velocity.x) / KUBE_GLASS_INTERACTION.velocityDivisor);
+  const scaleY = base * (1 - (1 - compression) * gain);
+  return { scaleX: base + 1 - scaleY, scaleY, x: 0, y: 0 };
+}
 
 /** Exact damped oscillator step. Retargeting preserves velocity, so a quick
  * press/release/reversal never starts a separate, uninterruptible animation. */
@@ -37,11 +69,11 @@ export function stepGlassSpring(axis: SpringAxis, target: number, seconds: numbe
   return { value: target + displacement, velocity };
 }
 
-/** Standard preserves the source targets. Elegant adds a restrained button
- * press while keeping thumb geometry and direct pointer tracking unchanged. */
+/** Source Music controls press at .9; source search and thumb geometry remain
+ * independent. Motion preference changes response time, not these targets. */
 export function glassElasticTarget(preset: GlassElasticPreset, active: boolean, velocity = { x: 0, y: 0 }, focused = false, mode: MotionMode = 'standard'): ElasticTarget {
-  let scale = preset === 'switch' ? active ? .9 : .65 : preset === 'slider' || preset === 'thumb' ? active ? 1 : .6 : preset === 'search' ? (focused ? 1 : .8) * (active ? .99 : 1) : active ? .99 : 1;
-  if (active && mode === 'elegant' && (preset === 'button' || preset === 'search')) scale *= .975 / .99;
+  if (preset === 'panel') return glassPanelElasticTarget(active, velocity);
+  let scale = preset === 'switch' ? active ? .9 : .65 : preset === 'slider' || preset === 'thumb' ? active ? 1 : .6 : preset === 'search' ? (focused ? 1 : .8) * (active ? .99 : 1) : active ? KUBE_GLASS_INTERACTION.buttonPressScale : 1;
   if (preset === 'lens') {
     scale = active ? 1 : .8;
     const scaleY = scale * Math.max(.7, 1 - Math.abs(velocity.x) / 5000);
@@ -53,6 +85,7 @@ export function glassElasticTarget(preset: GlassElasticPreset, active: boolean, 
 export function glassMaterialTarget(preset: GlassElasticPreset, active: boolean, focused = false) {
   if (preset === 'switch' || preset === 'slider' || preset === 'thumb') return { fill: active ? .1 : 1, refraction: active ? .9 : .4, magnification: 24 };
   if (preset === 'lens') return { fill: 0, refraction: active ? 1 : .8, magnification: active ? 48 : 24 };
+  if (preset === 'panel') return { fill: .6, refraction: 1, magnification: 24 };
   return { fill: active ? .3 : focused ? .2 : .05, refraction: 1, magnification: 24 };
 }
 
@@ -71,45 +104,71 @@ export function sampleGlassDragAxis(axis: SpringAxis, value: number, elapsedMs: 
   const velocity = elapsedMs > 0 && elapsedMs <= 100 ? clamp((value - axis.value) / Math.max(.008, elapsedMs / 1000), -500, 500) : 0;
   return { value, velocity };
 }
-const variables = ['--glass-elastic-scale-x', '--glass-elastic-scale-y', '--glass-elastic-x', '--glass-elastic-y', '--glass-material-fill'] as const;
+const variables = ['--glass-elastic-scale-x', '--glass-elastic-scale-y', '--glass-elastic-x', '--glass-elastic-y', '--glass-material-fill', '--glass-elastic-origin-x', '--glass-elastic-origin-y', '--glass-material-shadow-x', '--glass-material-shadow-y', '--glass-material-shadow-blur', '--glass-material-shadow-alpha', '--glass-material-inset-alpha'] as const;
 
-/** Imperative controller for delegated buttons and React controls alike. It
- * owns no permanent event listener and runs RAF only until its spring rests. */
-export function createGlassElasticController(element: HTMLElement, options: GlassElasticOptions = {}) {
+/** Imperative controller for delegated buttons and React controls alike. Its
+ * sole host listener arbitrates same-origin portal ownership; RAF runs only
+ * until rest, with no permanent global listener for each idle surface. */
+export function createGlassElasticController(element: HTMLElement, options: GlassElasticOptions = {}): GlassElasticController {
+  // Replacing a controller retires its RAF before acquiring the same host.
+  // In particular an explicit React thumb can never multiply a delegated one.
+  registeredControllers.get(element)?.controller.destroy();
+  // A portalled explicit hook can live in the parent JS realm while the child
+  // window delegates interaction. Their WeakMaps differ, but a real DOM event
+  // synchronously retires the old owner before new presentation is captured.
+  if (typeof element.dispatchEvent === 'function') element.dispatchEvent(new Event(replaceControllerEvent));
+  const owner = options.owner ?? 'explicit', layer = options.layer ?? 'host';
+  const presentation = layer === 'surface' ? [...element.children].find(child => child.classList.contains('liquid-glass-surface')) as HTMLElement | undefined ?? element : element;
   const preset = options.preset ?? 'button', resting = glassElasticTarget(preset, false);
+  // Controls position their thumb independently and must expand about its
+  // center. Only deformed panels/lenses anchor their material to the pointer.
+  const pointerAnchored = options.deform !== false && (preset === 'panel' || preset === 'lens');
   let axes = { scaleX: { value: resting.scaleX, velocity: 0 }, scaleY: { value: resting.scaleY, velocity: 0 }, x: { value: 0, velocity: 0 }, y: { value: 0, velocity: 0 } };
   const materialRest = glassMaterialTarget(preset, false);
   let material = { fill: { value: materialRest.fill, velocity: 0 }, refraction: { value: materialRest.refraction, velocity: 0 }, magnification: { value: materialRest.magnification, velocity: 0 } };
   let lensBase: SpringAxis = { value: .8, velocity: 0 };
   let shadow = { x: { value: 0, velocity: 0 }, y: { value: 4, velocity: 0 }, blur: { value: 9, velocity: 0 }, alpha: { value: .16, velocity: 0 }, inset: { value: .2, velocity: 0 } };
+  let origin = { x: 50, y: 50 }, pointerBounds: DOMRect | undefined;
   let pointer: { id: number; x: number; y: number; at: number; vx: number; vy: number; movedAt: number } | undefined;
   let keyboard = false, focused = false, frame = 0, previousAt = 0, startedAt = 0, destroyed = false, moving = false;
-  const original = variables.map(name => ({ name, value: element.style.getPropertyValue(name), priority: element.style.getPropertyPriority(name) }));
-  const originalWillChange = element.style.getPropertyValue('will-change'), originalWillPriority = element.style.getPropertyPriority('will-change');
-  const originalShadow = element.style.getPropertyValue('box-shadow');
+  const original = variables.map(name => ({ name, value: presentation.style.getPropertyValue(name), priority: presentation.style.getPropertyPriority(name) }));
+  const originalWillChange = presentation.style.getPropertyValue('will-change'), originalWillPriority = presentation.style.getPropertyPriority('will-change');
+  const originalShadow = presentation.style.getPropertyValue('box-shadow');
   const hadClass = element.classList.contains('glass-elastic'), originalState = element.getAttribute('data-glass-elastic-state');
+  const originalOwner = element.getAttribute('data-glass-elastic-owner'), originalLayer = element.getAttribute('data-glass-elastic-layer');
   const media = window.matchMedia('(prefers-reduced-motion: reduce)');
   const disabled = () => (typeof options.disabled === 'function' ? options.disabled() : options.disabled) || !!element.closest(':disabled,[aria-disabled="true"],[inert]');
   const mode = () => resolveMotionMode(options.motion?.() ?? document.documentElement.dataset.motion, media.matches);
   const enabled = () => !destroyed && !disabled() && animatedMotion(mode());
-  const restoreWillChange = () => { moving = false; if (originalWillChange) element.style.setProperty('will-change', originalWillChange, originalWillPriority); else element.style.removeProperty('will-change'); };
+  const restoreWillChange = () => { moving = false; if (originalWillChange) presentation.style.setProperty('will-change', originalWillChange, originalWillPriority); else presentation.style.removeProperty('will-change'); };
   const draw = () => {
+    if (destroyed) return;
     if (!element.classList.contains('glass-elastic')) element.classList.add('glass-elastic');
     if (options.deform !== false) {
-      element.style.setProperty(variables[0], axes.scaleX.value.toFixed(5)); element.style.setProperty(variables[1], axes.scaleY.value.toFixed(5));
-      element.style.setProperty(variables[2], `${axes.x.value.toFixed(3)}px`); element.style.setProperty(variables[3], `${axes.y.value.toFixed(3)}px`);
+      presentation.style.setProperty(variables[0], axes.scaleX.value.toFixed(5)); presentation.style.setProperty(variables[1], axes.scaleY.value.toFixed(5));
+      presentation.style.setProperty(variables[2], `${axes.x.value.toFixed(3)}px`); presentation.style.setProperty(variables[3], `${axes.y.value.toFixed(3)}px`);
     }
-    element.style.setProperty(variables[4], material.fill.value.toFixed(5));
-    for (const map of element.querySelectorAll<SVGElement>('[data-glass-displacement]')) map.setAttribute('scale', String(Number(map.dataset.glassBaseScale) * material.refraction.value));
-    for (const map of element.querySelectorAll<SVGElement>('[data-glass-magnification]')) map.setAttribute('scale', String(material.magnification.value));
-    if (preset === 'lens') element.style.boxShadow = `${shadow.x.value}px ${shadow.y.value}px ${shadow.blur.value}px rgb(0 0 0 / ${shadow.alpha.value}),inset ${shadow.x.value / 2}px ${shadow.y.value / 2}px 24px rgb(0 0 0 / ${shadow.inset.value}),inset ${-shadow.x.value / 2}px ${-shadow.y.value / 2}px 24px rgb(255 255 255 / ${shadow.inset.value})`;
+    presentation.style.setProperty(variables[4], material.fill.value.toFixed(5));
+    presentation.style.setProperty(variables[5], `${origin.x.toFixed(3)}%`); presentation.style.setProperty(variables[6], `${origin.y.toFixed(3)}%`);
+    // A panel must not change a nested switch's maps or green fill. Each
+    // optical leaf belongs to its immediate material host only.
+    for (const map of element.querySelectorAll<SVGElement>('[data-glass-displacement]')) if (map.closest('.liquid-glass-surface')?.parentElement === element) map.setAttribute('scale', String(Number(map.dataset.glassBaseScale) * material.refraction.value));
+    for (const map of element.querySelectorAll<SVGElement>('[data-glass-magnification]')) if (map.closest('.liquid-glass-surface')?.parentElement === element) map.setAttribute('scale', String(material.magnification.value));
+    if (preset === 'panel') {
+      presentation.style.setProperty(variables[7], `${shadow.x.value.toFixed(3)}px`); presentation.style.setProperty(variables[8], `${shadow.y.value.toFixed(3)}px`);
+      presentation.style.setProperty(variables[9], `${shadow.blur.value.toFixed(3)}px`); presentation.style.setProperty(variables[10], shadow.alpha.value.toFixed(5)); presentation.style.setProperty(variables[11], shadow.inset.value.toFixed(5));
+    }
+    if (preset === 'lens') presentation.style.boxShadow = `${shadow.x.value}px ${shadow.y.value}px ${shadow.blur.value}px rgb(0 0 0 / ${shadow.alpha.value}),inset ${shadow.x.value / 2}px ${shadow.y.value / 2}px 24px rgb(0 0 0 / ${shadow.inset.value}),inset ${-shadow.x.value / 2}px ${-shadow.y.value / 2}px 24px rgb(255 255 255 / ${shadow.inset.value})`;
   };
   const target = (now: number) => {
     const decay = pointer ? Math.exp(-(now - pointer.movedAt) / 85) : 0;
-    return glassElasticTarget(preset, !!pointer || keyboard, { x: (pointer?.vx ?? 0) * decay, y: (pointer?.vy ?? 0) * decay }, focused, mode());
+    const velocity = { x: (pointer?.vx ?? 0) * decay, y: (pointer?.vy ?? 0) * decay };
+    return preset === 'panel' ? glassPanelElasticTarget(!!pointer || keyboard, velocity, pointerBounds?.height) : glassElasticTarget(preset, !!pointer || keyboard, velocity, focused, mode());
   };
   const reset = (immediate = true) => {
+    if (destroyed) return;
     pointer = undefined; keyboard = false; focused = false; element.dataset.glassElasticState = 'rest';
+    if (immediate) { origin = { x: 50, y: 50 }; pointerBounds = undefined; }
     if (!immediate) { animate(); return; }
     cancelAnimationFrame(frame); frame = 0;
     axes = { scaleX: { value: resting.scaleX, velocity: 0 }, scaleY: { value: resting.scaleY, velocity: 0 }, x: { value: 0, velocity: 0 }, y: { value: 0, velocity: 0 } };
@@ -119,11 +178,12 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
     draw(); restoreWillChange();
   };
   const tick = (now: number) => {
+    if (destroyed) return;
     frame = 0;
     if (!enabled()) { reset(); return; }
     const next = target(now), seconds = (now - previousAt) / 1000; previousAt = now;
     const spring = (parameters: SpringParameters) => glassSpringParameters(parameters, mode());
-    const parameters = spring(preset === 'lens' ? KUBE_GLASS_SPRINGS.lensShape : preset === 'switch' || preset === 'slider' || preset === 'thumb' ? KUBE_GLASS_SPRINGS.thumbScale : KUBE_GLASS_SPRINGS.searchScale);
+    const parameters = spring(preset === 'lens' || preset === 'panel' ? KUBE_GLASS_SPRINGS.lensShape : preset === 'switch' || preset === 'slider' || preset === 'thumb' ? KUBE_GLASS_SPRINGS.thumbScale : KUBE_GLASS_SPRINGS.searchScale);
     let settled = true;
     if (preset === 'lens') {
       const active = !!pointer || keyboard;
@@ -131,7 +191,9 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
       const speed = pointer ? pointer.vx * Math.exp(-(now - pointer.movedAt) / 85) : 0;
       next.scaleY = lensBase.value * Math.max(.7, 1 - Math.abs(speed) / 5000);
       next.scaleX = lensBase.value + 1 - axes.scaleY.value;
-      const shadowNext = { x: active ? 4 : 0, y: active ? 16 : 4, blur: active ? 24 : 9, alpha: active ? .22 : .16, inset: active ? .27 : .2 };
+    }
+    if (preset === 'lens' || preset === 'panel') {
+      const shadowNext = pointer || keyboard ? KUBE_GLASS_INTERACTION.shadowActive : KUBE_GLASS_INTERACTION.shadowRest;
       for (const key of ['x', 'y', 'blur', 'alpha', 'inset'] as const) {
         shadow[key] = stepGlassSpring(shadow[key], shadowNext[key], seconds, spring(key === 'alpha' || key === 'inset' ? KUBE_GLASS_SPRINGS.lensShadow : KUBE_GLASS_SPRINGS.lensShape));
         if (Math.abs(shadow[key].value - shadowNext[key]) > .0004 || Math.abs(shadow[key].velocity) > .003) settled = false;
@@ -156,8 +218,9 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
     draw(); frame = requestAnimationFrame(tick);
   };
   function animate() {
+    if (destroyed) return;
     if (!enabled()) { reset(); return; }
-    if (!moving) { moving = true; element.style.setProperty('will-change', 'scale, translate'); }
+    if (!moving) { moving = true; presentation.style.setProperty('will-change', 'scale, translate'); }
     // Real input may continue for minutes. Bound work after the last input,
     // rather than snapping an ongoing drag every 1.2 seconds.
     startedAt = performance.now();
@@ -165,24 +228,27 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
     previousAt = startedAt; frame = requestAnimationFrame(tick);
   }
   const endPointer = (event: { pointerId: number }) => {
-    if (!pointer || pointer.id !== event.pointerId) return;
+    if (destroyed || !pointer || pointer.id !== event.pointerId) return;
     pointer = undefined; element.dataset.glassElasticState = keyboard ? 'press' : 'rest'; animate();
   };
-  draw(); element.dataset.glassElasticState = 'rest';
-  return {
+  draw(); element.dataset.glassElasticState = 'rest'; element.dataset.glassElasticOwner = owner; element.dataset.glassElasticLayer = layer;
+  const controller: GlassElasticController = {
     pointerDown(event: PointerLike) {
       if (!enabled() || event.isPrimary === false || (event.button ?? 0) !== 0 || pointer) return;
       const owner = event.currentTarget instanceof HTMLElement ? event.currentTarget : element;
       if (owner.closest(':disabled,[aria-disabled="true"],[inert]')) return;
+      pointerBounds = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : undefined;
+      origin = pointerAnchored && pointerBounds ? glassPointerOrigin({ x: event.clientX, y: event.clientY }, pointerBounds) : { x: 50, y: 50 };
       pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, at: event.timeStamp, vx: 0, vy: 0, movedAt: performance.now() };
       element.dataset.glassElasticState = 'press'; animate();
     },
     pointerMove(event: PointerLike) {
-      if (!pointer || pointer.id !== event.pointerId) return;
+      if (destroyed || !pointer || pointer.id !== event.pointerId) return;
       const seconds = Math.max(8, event.timeStamp - pointer.at) / 1000;
       pointer.vx += (clamp((event.clientX - pointer.x) / seconds, -4000, 4000) - pointer.vx) * .4;
       pointer.vy += (clamp((event.clientY - pointer.y) / seconds, -4000, 4000) - pointer.vy) * .4;
       pointer.x = event.clientX; pointer.y = event.clientY; pointer.at = event.timeStamp; pointer.movedAt = performance.now();
+      if (pointerAnchored && pointerBounds) origin = glassPointerOrigin({ x: event.clientX, y: event.clientY }, pointerBounds);
       element.dataset.glassElasticState = 'drag'; animate();
     },
     pointerUp: endPointer,
@@ -192,19 +258,31 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
       keyboard = true; element.dataset.glassElasticState = 'press'; animate();
     },
     keyUp(event: KeyLike) {
-      if (!keyboard || ![' ', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      if (destroyed || !keyboard || ![' ', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
       keyboard = false; element.dataset.glassElasticState = pointer ? 'press' : 'rest'; animate();
     },
-    focus() { focused = true; animate(); },
+    focus() { if (destroyed) return; focused = true; animate(); },
     blur() { reset(false); }, reset,
     destroy() {
-      destroyed = true; cancelAnimationFrame(frame); frame = 0; restoreWillChange();
-      for (const { name, value, priority } of original) { if (value) element.style.setProperty(name, value, priority); else element.style.removeProperty(name); }
+      if (destroyed) return;
+      // A replacement owner may already receive pointer events before a
+      // delegated event table drops this reference. Retirement is terminal;
+      // only this first destroy restores the original presentation below.
+      destroyed = true; pointer = undefined; keyboard = false; focused = false; pointerBounds = undefined;
+      cancelAnimationFrame(frame); frame = 0; restoreWillChange();
+      for (const { name, value, priority } of original) { if (value) presentation.style.setProperty(name, value, priority); else presentation.style.removeProperty(name); }
       if (!hadClass) element.classList.remove('glass-elastic');
-      if (preset === 'lens') { if (originalShadow) element.style.setProperty('box-shadow', originalShadow); else element.style.removeProperty('box-shadow'); }
+      if (preset === 'lens') { if (originalShadow) presentation.style.setProperty('box-shadow', originalShadow); else presentation.style.removeProperty('box-shadow'); }
       if (originalState === null) element.removeAttribute('data-glass-elastic-state'); else element.setAttribute('data-glass-elastic-state', originalState);
+      for (const [name, value] of [['data-glass-elastic-owner', originalOwner], ['data-glass-elastic-layer', originalLayer]] as const) { if (value === null) element.removeAttribute(name); else element.setAttribute(name, value); }
+      if (registeredControllers.get(element)?.controller === controller) registeredControllers.delete(element);
+      element.removeEventListener?.(replaceControllerEvent, retire);
     },
   };
+  const retire = () => controller.destroy();
+  element.addEventListener?.(replaceControllerEvent, retire);
+  registeredControllers.set(element, { owner, controller });
+  return controller;
 }
 
 export function useGlassElasticity<T extends HTMLElement = HTMLElement>(options: GlassElasticOptions = {}) {
@@ -212,8 +290,9 @@ export function useGlassElasticity<T extends HTMLElement = HTMLElement>(options:
   const controller = useRef<ReturnType<typeof createGlassElasticController> | undefined>(undefined);
   useLayoutEffect(() => {
     if (!ref.current) return;
-    const elastic = createGlassElasticController(ref.current, { preset: options.preset, deform: options.deform, disabled: () => typeof currentOptions.current.disabled === 'function' ? currentOptions.current.disabled() : !!currentOptions.current.disabled, motion: () => currentOptions.current.motion?.() ?? (document.documentElement.dataset.motion as ElasticMotion || 'standard') });
+    const elastic = createGlassElasticController(ref.current, { preset: options.preset, deform: options.deform, layer: options.layer, owner: options.owner, disabled: () => typeof currentOptions.current.disabled === 'function' ? currentOptions.current.disabled() : !!currentOptions.current.disabled, motion: () => currentOptions.current.motion?.() ?? (document.documentElement.dataset.motion as ElasticMotion || 'standard') });
     controller.current = elastic;
+    const eventWindow = ref.current.ownerDocument?.defaultView ?? window;
     const end = (event: PointerEvent) => elastic.pointerUp(event), cancel = (event: PointerEvent) => elastic.pointerCancel(event), blur = () => elastic.blur();
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     let lastMotion = document.documentElement.dataset.motion, lastReduced = media.matches;
@@ -223,9 +302,9 @@ export function useGlassElasticity<T extends HTMLElement = HTMLElement>(options:
       lastMotion = next; lastReduced = media.matches; elastic.reset();
     };
     const observer = new MutationObserver(preference); observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-motion'] });
-    window.addEventListener('pointerup', end, true); window.addEventListener('pointercancel', cancel, true); window.addEventListener('blur', blur); media.addEventListener('change', preference);
-    return () => { observer.disconnect(); window.removeEventListener('pointerup', end, true); window.removeEventListener('pointercancel', cancel, true); window.removeEventListener('blur', blur); media.removeEventListener('change', preference); elastic.destroy(); controller.current = undefined; };
-  }, [options.preset, options.deform]);
+    eventWindow.addEventListener('pointerup', end, true); eventWindow.addEventListener('pointercancel', cancel, true); eventWindow.addEventListener('blur', blur); media.addEventListener('change', preference);
+    return () => { observer.disconnect(); eventWindow.removeEventListener('pointerup', end, true); eventWindow.removeEventListener('pointercancel', cancel, true); eventWindow.removeEventListener('blur', blur); media.removeEventListener('change', preference); elastic.destroy(); controller.current = undefined; };
+  }, [options.preset, options.deform, options.layer, options.owner]);
   return {
     ref, className: 'glass-elastic', bindings: {
       onPointerDown: (event: ReactPointerEvent<HTMLElement>) => controller.current?.pointerDown(event),

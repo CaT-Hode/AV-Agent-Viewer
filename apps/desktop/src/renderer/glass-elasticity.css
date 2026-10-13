@@ -1,9 +1,17 @@
 /* Individual transform properties compose with existing positioned transforms.
    JS supplies finite spring samples; these properties are not CSS-transitioned. */
-.glass-elastic {
+.glass-elastic:not([data-glass-elastic-layer="surface"]) {
   scale: var(--glass-elastic-scale-x, 1) var(--glass-elastic-scale-y, 1);
   translate: var(--glass-elastic-x, 0px) var(--glass-elastic-y, 0px);
-  transform-origin: center;
+  transform-origin: var(--glass-elastic-origin-x,50%) var(--glass-elastic-origin-y,50%);
+}
+/* A panel's presentation responds without transforming text, focus rings,
+   resize handles or the native reading/capture coordinate space. */
+.glass-elastic[data-glass-elastic-layer="surface"] > .liquid-glass-surface {
+  scale: var(--glass-elastic-scale-x,1) var(--glass-elastic-scale-y,1);
+  translate: var(--glass-elastic-x,0px) var(--glass-elastic-y,0px);
+  transform-origin: var(--glass-elastic-origin-x,50%) var(--glass-elastic-origin-y,50%);
+  transition-property: opacity;
 }
 /* Retire only the older button press transforms; thumb/lens positioning keeps
    its original transform. The individual properties above own deformation. */

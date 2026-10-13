@@ -20,6 +20,10 @@ const until=async(predicate:()=>Promise<boolean>,label:string)=>{for(let i=0;i<1
 const settingsState=async(page:Page)=>(await invoke<{snapshot:SettingsSnapshot}>(page,'settings-read')).snapshot;
 try{
   await main.locator('.prose h1').waitFor();await main.locator('html[data-motion="elegant"]').waitFor();
+  // Production still requires an explicitly selected route. The test-only
+  // translator supplies deterministic text without sending a model request.
+  const fixture = await invoke<{profiles:{id:string}[]}>(main,'connections-upsert',{name:'Motion translation fixture',protocol:'chat-completions',baseUrl:`http://127.0.0.1:${port}`,modelId:'test-only-no-request',enabled:true});
+  await invoke(main,'connections-route',{tool:'selection',id:fixture.profiles[0].id});
   const toggle=main.getByRole('button',{name:'目录与结构',exact:true});
   if(!await main.locator('.format-sidebar').count()){await toggle.click();await main.locator('.format-sidebar[data-motion-phase="open"]').waitFor();}
   const shellBefore=await main.locator('.tab-strip').boundingBox();

@@ -53,7 +53,10 @@ async function alignText(page: Page, format: 'markdown' | 'pdf' | 'html') {
       window.scrollTo(0, window.scrollY + heading.getBoundingClientRect().top - desiredTop);
     }, offset);
   } else {
-    await page.locator(format === 'markdown' ? '.prose h1' : '.textLayer span').first().evaluate(heading => {
+    await page.locator(format === 'markdown' ? '.prose' : '.textLayer span').first().evaluate(element => {
+      // With a full-width canvas the short title occupies one bezel only.
+      // Keep the real document and align a real dense paragraph to both edges.
+      const heading = element.matches('.prose') ? [...element.querySelectorAll<HTMLElement>('p')].sort((a,b) => (b.textContent?.length ?? 0) - (a.textContent?.length ?? 0))[0] ?? element.querySelector<HTMLElement>('h1')! : element;
       const container = heading.closest<HTMLElement>('.document-content')!;
       const capsule = document.querySelector('.navigation-capsule')!.getBoundingClientRect();
       container.scrollTop += heading.getBoundingClientRect().top - capsule.top + 4;
@@ -95,7 +98,8 @@ async function verifyContent(app: ElectronApplication, page: Page, format: 'mark
     };
   });
   const box = geometry.capsule;
-  assert.equal(geometry.edgeWidth, NAVIGATION_METRICS.bezelWidth); assert.equal(box.height, NAVIGATION_METRICS.height);
+  assert.equal(geometry.edgeWidth, NAVIGATION_METRICS.bezelWidth);
+  assert.ok(Math.abs(box.height - NAVIGATION_METRICS.height * (1 - progress * .035)) < .01, 'the actual exit scale follows its production presentation');
   assert.ok(Math.abs(geometry.sourceScale - SOURCE_NAVIGATION_SCALE) < .0001);
   const gutter = NAVIGATION_METRICS.shadowGutter;
   const clip = { x: Math.max(0, box.x - gutter), y: Math.max(0, box.y - gutter), width: Math.min(geometry.viewport.width, box.x + box.width + gutter) - Math.max(0, box.x - gutter), height: Math.min(geometry.viewport.height, box.y + box.height + gutter) - Math.max(0, box.y - gutter) };
@@ -200,6 +204,12 @@ async function runScale(scale: number) {
       }
       await page.locator('.navigation-toolbar').evaluate(toolbar => { (toolbar as HTMLElement).style.removeProperty('--navigation-hide-progress'); });
     };
+    // A scrollable real Markdown document supplies ink across the full-width
+    // canvas; the short start document no longer has sufficient scroll travel
+    // to place its paragraph behind both bezels at 100% and 200%.
+    const paragraph = '这是一份通过阅读器正式文档模型打开的中文验收文档。正文保持正常排版与实际滚动，用于观察液态玻璃边缘对文字的折射。导航中的文字和图标保持清晰，正文的中间与胶囊外部保持原样。改变滚动位置时，采样来源应始终来自同一份当前文档。';
+    await invoke('create-text', { format: 'markdown', title: '正文折射验收.md', text: '# 实际文档折射验收\n\n' + Array.from({ length: 24 }, (_, index) => '## 阅读段落 ' + (index + 1) + '\n\n' + paragraph + paragraph).join('\n\n') });
+    await page.locator('.prose h1').filter({ hasText: '实际文档折射验收' }).waitFor();
     await verify('markdown');
     await page.locator('.tab').filter({ hasText: '示例.pdf' }).locator('.tab-select').click();
     await page.locator('.textLayer span').first().waitFor(); await page.waitForTimeout(250); await verify('pdf');

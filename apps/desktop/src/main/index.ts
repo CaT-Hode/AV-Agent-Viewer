@@ -20,6 +20,7 @@ import { recognizeImage } from '../../../../packages/ocr/src/index';
 import { ViewerError } from '../../../../packages/contracts/src/index';
 
 import { WebToolbarHost } from './web-toolbar';
+import { ReaderPanelHost } from './reader-panels';
 import { NativeOfficeHost } from './native-office';
 import { nativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
 let office: NativeOfficeHost | undefined;
@@ -28,6 +29,7 @@ const toolbarHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ??
 const selectionHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/selection-toolbar', 'agentviewer:selection-tool', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
 const agentHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/agent-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
 const aiResultHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/ai-result-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), nativeHost);
+const readerPanelHost = new ReaderPanelHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), viewId => office?.backdrop(viewId), (owner, viewId) => { const view = core?.views.get(viewId); return !!view && windows.get(view.windowId) === owner && ['web','docx','xlsx','pptx'].includes(core.getDocument(view.documentId).info.format); }, owner => { toolbarHost.raise(owner); agentHost.raise(owner); selectionHost.raise(owner); aiResultHost.raise(owner); }, () => settings.get('appearance.glass') !== 'off' && settings.get('appearance.reduceTransparency') !== true && settings.get('appearance.highContrast') !== true);
 const root = resolve(__dirname, '../..');
 app.setName('AgentViewer');
 const directory = dataDir(); app.setPath('userData', directory);
@@ -137,7 +139,7 @@ async function createWindow(id = 'main') {
     }
     core.event('window.closed', { windowId: id });
   });
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  readerPanelHost.install(win, id);
   win.webContents.setZoomMode('disabled');
   const rendererUrl = process.env.AGENTVIEWER_VITE_URL ?? endpoint;
   win.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== new URL(rendererUrl).origin) event.preventDefault(); });
@@ -164,7 +166,7 @@ void app.whenReady().then(async () => {
   await settings.load();
   await connections.load();
   core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); await core.initialize();
-  office = new NativeOfficeHost(core,root,directory,viewId=>windows.get(core.getView(viewId).windowId),(owner,viewId)=>{toolbarHost.sourceChanged(owner,viewId);selectionHost.sourceChanged(owner,viewId);agentHost.sourceChanged(owner,viewId);aiResultHost.sourceChanged(owner,viewId);},officeAppearance());
+  office = new NativeOfficeHost(core,root,directory,viewId=>windows.get(core.getView(viewId).windowId),(owner,viewId)=>{toolbarHost.sourceChanged(owner,viewId);selectionHost.sourceChanged(owner,viewId);agentHost.sourceChanged(owner,viewId);aiResultHost.sourceChanged(owner,viewId);readerPanelHost.sourceChanged(owner,viewId);},officeAppearance());
   office.runtime.on('application-action',(event:{action?:string;sessionId?:string;viewId?:string;paths?:unknown})=>{
     if(event.action!=='open-files'||!event.viewId)return;
     const source=office?.source(event.viewId);if(!source||source.entry.sessionId!==event.sessionId||source.layout.owner.isDestroyed())return;
@@ -173,7 +175,7 @@ void app.whenReady().then(async () => {
   });
   core.registerNativeOfficeDriver(office);
   core.browser = new ElectronBrowserRuntime(core, id => { const win = windows.get(id); if (!win) throw new Error('窗口不存在'); return win; }, () => [endpoint, process.env.AGENTVIEWER_VITE_URL].filter((value): value is string => !!value), () => settings.get('agent.pointer') === true, {
-    preload: join(__dirname, 'browser-preload.cjs'), onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); },
+    preload: join(__dirname, 'browser-preload.cjs'), onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); readerPanelHost.sourceChanged(owner, viewId); },
   });
   ipcMain.on('agentviewer:browser-surface', (event, value: Record<string, unknown>) => {
     if (event.senderFrame !== event.sender.mainFrame || !value || typeof value !== 'object') return;
@@ -284,6 +286,7 @@ void app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   ipcMain.handle('agentviewer:command', async (event, request: { method: string; args: Record<string, unknown> }) => {
     if (event.senderFrame !== event.sender.mainFrame) throw new Error('AUTH_SCOPE_DENIED');
+    if (readerPanelHost.owns(event.sender.id)) return readerPanelHost.request(event.sender.id, request.method);
     if (selectionHost.owns(event.sender.id)) { if (request.method === 'selection-action' && selectionHost.permitsSnapshot(event.sender.id, String(request.args.snapshotId))) return dispatch(core, request.method, request.args, 'human'); return selectionHost.request(event.sender.id, request.method, request.args); }
     if (toolbarHost.owns(event.sender.id)) return toolbarHost.request(event.sender.id, request.method, request.args);
     if (agentHost.owns(event.sender.id)) {
@@ -312,9 +315,10 @@ void app.whenReady().then(async () => {
     }
     const owner = BrowserWindow.fromWebContents(event.sender); if (!owner || ![...windows.values(), settingsWindow].includes(owner)) throw new Error('AUTH_SCOPE_DENIED');
     const { method, args } = request;
+    if (method === 'reader-panel-layout') { const viewId = typeof args.viewId === 'string' ? args.viewId : undefined; if (viewId && core.getView(viewId).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.update(owner, viewId, args.panels as never); return {}; }
     if (method === 'settings-read') return { definitions: settingsRegistry.map(definition => ({ ...definition, ...settingsAvailability(definition.id) })), snapshot: settings.snapshot() };
-    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground') syncOfficeAppearance(); return snapshot; }
-    if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); syncOfficeAppearance(); return snapshot; }
+    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (['appearance.glass','appearance.reduceTransparency','appearance.highContrast'].includes(String(args.id))) readerPanelHost.preferencesChanged(); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground') syncOfficeAppearance(); return snapshot; }
+    if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); readerPanelHost.preferencesChanged(); syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-open') { await openSettings(typeof args.category === 'string' ? args.category : undefined); return {}; }
     if (method === 'connections-read') return connections.snapshot();
     if (method === 'connections-upsert') return connections.upsert(args as never);

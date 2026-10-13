@@ -59,18 +59,18 @@ test('elegant press is softer/slower with restrained overshoot and interruptible
   const source = { ...KUBE_GLASS_SPRINGS.searchScale }, standard = glassSpringParameters(source,'standard'), elegant = glassSpringParameters(source,'elegant');
   assert.deepEqual(source,KUBE_GLASS_SPRINGS.searchScale,'the audited source parameters are immutable');
   const target=glassElasticTarget('button',true,{x:0,y:0},false,'elegant').scaleX;
-  assert.equal(target,.975);
+  assert.equal(target,.9,'the source Music button press is visible in both animated modes');
   assert.ok(elegant.stiffness<standard.stiffness);
   let axis={value:1,velocity:0},minimum=1,settledAt=0;
   for(let frame=1;frame<=120;frame++){
     axis=stepGlassSpring(axis,target,1/120,elegant);minimum=Math.min(minimum,axis.value);
     if(!settledAt&&Math.abs(axis.value-target)<.0004&&Math.abs(axis.velocity)<.003)settledAt=frame/120;
   }
-  assert.ok(minimum<target&&minimum>target-.001,'overshoot stays below 4% of this small press excursion');
+  assert.ok(minimum<target&&minimum>target-(1-target)*.04,'overshoot stays below 4% of the source press excursion');
   assert.ok(settledAt>=.35&&settledAt<=.8,'elegant shape has a slower finite settle');
   const moving=stepGlassSpring({value:.985,velocity:-.1},target,1/120,elegant);
   const released=stepGlassSpring(moving,1,1/120,elegant);
-  assert.ok(Math.abs(released.value-moving.value)<.002,'release starts from the presentation value');
+  assert.ok(Math.abs(released.value-moving.value)<Math.abs(moving.velocity)/120+.0001,'release displacement is bounded by the inherited incoming velocity while it decelerates');
   assert.ok(released.velocity<0,'the reversal inherits incoming velocity before returning');
 });
 
@@ -105,10 +105,14 @@ test('turning motion off during an elegant press stops RAF and releases will-cha
     const controller=createGlassElasticController(element as unknown as HTMLElement);
     controller.pointerDown({pointerId:1,clientX:0,clientY:0,timeStamp:now,isPrimary:true,button:0});
     assert.equal(element.dataset.glassElasticState,'press');assert.equal(properties.get('will-change'),'scale, translate');
-    for(let frame=0;frame<6;frame++)advance();
+    let preceding=Number(properties.get('--glass-elastic-scale-x'));
+    for(let frame=0;frame<6;frame++){preceding=Number(properties.get('--glass-elastic-scale-x'));advance();}
     assert.ok(Number(properties.get('--glass-elastic-scale-x'))<.99,'elegant actually animates instead of falling through to reduced');
-    const before=Number(properties.get('--glass-elastic-scale-x'));controller.pointerUp({pointerId:1});advance();
-    assert.ok(Math.abs(Number(properties.get('--glass-elastic-scale-x'))-before)<.006);
+    const before=Number(properties.get('--glass-elastic-scale-x'));controller.pointerUp({pointerId:1});
+    assert.equal(Number(properties.get('--glass-elastic-scale-x')),before,'release retargets without jumping at the input event');
+    advance();const released=Number(properties.get('--glass-elastic-scale-x'));
+    assert.ok(released<before,'release initially inherits the real incoming downwards velocity');
+    assert.ok(Math.abs(released-before)<Math.abs(before-preceding),'the first release frame decelerates instead of snapping to either endpoint');
     mode.motion='off';advance();
     assert.equal(frames.size,0);assert.equal(properties.get('will-change'),'color');assert.equal(properties.get('--glass-elastic-scale-x'),'1.00000');
     controller.pointerDown({pointerId:2,clientX:0,clientY:0,timeStamp:now});assert.equal(frames.size,0);

@@ -272,7 +272,7 @@ try {
   // Enumerate actual backend availability, rather than maintaining a shortlist
   // that silently misses controls when a new preference becomes available.
   const registry = await invoke<{ definitions: SettingDefinition[] }>(settings, 'settings-read');
-  const rangeIds = new Set(['appearance.leftWidth', 'appearance.rightWidth', 'appearance.toolbarDelayMs']);
+  const rangeIds = new Set(['appearance.toolbarDelayMs']);
   const audit: { theme: string; section: string; id: string; type: string }[] = [], darkSegments: unknown[] = [];
   for (const theme of ['light', 'dark']) {
     await invoke(settings, 'settings-set', { id: 'appearance.theme', value: theme }); await settings.locator(`html[data-theme="${theme}"]`).waitFor();
@@ -300,12 +300,13 @@ try {
 
   await settings.getByRole('button', { name: '翻译', exact: true }).click();
   const languages = settings.getByRole('radiogroup', { name: '目标语言', exact: true }); await languages.scrollIntoViewIfNeeded();
-  const overflow = await languages.evaluate(node => node.scrollWidth - node.clientWidth); assert.ok(overflow > 1, 'actual long language options overflow horizontally at the real settings size');
-  await languages.evaluate(node => { node.scrollLeft = node.scrollWidth - node.clientWidth; }); await frames(settings); await segmentedGeometry(languages);
+  const languageViewport = languages.locator('.glass-segmented-viewport');
+  const overflow = await languageViewport.evaluate(node => node.scrollWidth - node.clientWidth); assert.ok(overflow > 1, 'actual long language options overflow horizontally at the real settings size');
+  await languageViewport.evaluate(node => { node.scrollLeft = node.scrollWidth - node.clientWidth; }); await frames(settings); await segmentedGeometry(languages);
   const oldLanguage = (await settingsState(settings)).values['translation.targetLanguage'];
   const selectedLanguage = languages.locator('[role=radio][aria-checked=true]'); await selectedLanguage.focus(); const beforeEnum = await settingsState(settings); await selectedLanguage.press('End');
   await until(async () => await languages.locator('[role=radio][aria-checked=true]').getAttribute('data-value') === 'es', 'keyboard End selects final language'); assert.equal((await settingsState(settings)).revision, beforeEnum.revision + 1);
-  const languageGeometry = await segmentedGeometry(languages); const languageScroll = await languages.evaluate(node => ({ left: node.scrollLeft, maximum: node.scrollWidth - node.clientWidth }));
+  const languageGeometry = await segmentedGeometry(languages); const languageScroll = await languageViewport.evaluate(node => ({ left: node.scrollLeft, maximum: node.scrollWidth - node.clientWidth }));
   assert.ok(languageGeometry.thumb.x >= languageGeometry.track.x - .5 && languageGeometry.thumb.x + languageGeometry.thumb.width <= languageGeometry.track.x + languageGeometry.track.width + .5, 'keyboard selection scrolls the chosen pill into view');
   await settings.getByRole('button', { name: '撤销上一次设置更改', exact: true }).click(); await until(async () => (await settingsState(settings)).values['translation.targetLanguage'] === oldLanguage, 'global undo restores long enum');
   results.horizontalEnum = { overflow, languageScroll, oneTransaction: true, undo: true };
@@ -334,15 +335,27 @@ try {
   await settings.mouse.move(densityStart.x, densityStart.y); await settings.mouse.down();
   const intermediateDelta = Math.sign(pointerDelta) * 16; await settings.mouse.move(densityStart.x + intermediateDelta, densityStart.y, { steps: 3 }); await frames(settings);
   const intermediate = await geometry(density, '.glass-segmented-thumb'); fullThumbLayers(intermediate);
+  const fillOpacityIntermediate = await density.locator('.glass-segmented-fill').evaluate(node => Number(getComputedStyle(node).opacity));
+  assert.ok(fillOpacityIntermediate > 0 && fillOpacityIntermediate < 1, 'green selected fill continuously fades during early drag');
   closeEnough(centerX(intermediate.thumb) - intermediate.track.x - centerX(initialDensityGeometry.thumb) + initialDensityGeometry.track.x, intermediateDelta, 'upper lens follows actual pointer delta directly before the boundary', .8);
-  // Convex optics displace the curved rim, so sample mid-drag while its right
-  // edge crosses the next caption. An aligned caption sits on the flat center.
-  const opticalDelta = pointerDelta / 2; await settings.mouse.move(densityStart.x + opticalDelta, densityStart.y, { steps: 6 }); await frames(settings);
+  // Place the expanded convex rim across the real destination caption. Its
+  // enlargement is intentional; the old fixed half-option displacement can
+  // leave the caption in the flat center and cannot test edge refraction.
+  await until(async () => density.locator('.glass-segmented-thumb').evaluate(node => (node as HTMLElement).style.willChange === ''), 'raised material finishes its optical spring');
+  const raised = await geometry(density, '.glass-segmented-thumb');
+  assert.ok(raised.thumb.height > raised.track.height && raised.thumb.width > initialDensityGeometry.thumb.width * 1.25, 'pressed optical lens visibly exceeds the original capsule');
+  assert.equal(await density.evaluate(node => getComputedStyle(node).overflowY), 'visible', 'the outer capsule does not clip its raised glass');
+  const targetText = await destination.evaluate(node => { const range = document.createRange(); range.selectNodeContents(node); const bounds = range.getBoundingClientRect(); return { x: bounds.x, width: bounds.width }; });
+  const direction = Math.sign(pointerDelta), raisedBezel = 9.6 * raised.thumb.width / initialDensityGeometry.thumb.width;
+  const opticalDelta = targetText.x + targetText.width / 2 - direction * (raised.thumb.width / 2 - raisedBezel / 2) - densityStart.x;
+  await settings.mouse.move(densityStart.x + opticalDelta, densityStart.y, { steps: 6 }); await frames(settings);
   const dragged = await geometry(density, '.glass-segmented-thumb'), fillDuring = await density.locator('.glass-segmented-fill').boundingBox(); assert.ok(fillDuring); fullThumbLayers(dragged);
   closeEnough(centerY(dragged.thumb), centerY(dragged.track), 'dragged lens vertical center', .2);
   closeEnough(centerX(fillDuring) - dragged.track.x, centerX(fillBefore) - initialDensityGeometry.track.x, 'committed fill stays on original option while dragging', .2); assert.equal((await settingsState(settings)).revision, dragRevision, 'drag movement has no premature setting transaction');
+  const fillOpacityDuring = await density.locator('.glass-segmented-fill').evaluate(node => Number(getComputedStyle(node).opacity));
+  assert.ok(fillOpacityDuring < fillOpacityIntermediate, 'farther lens travel fades more of the fixed green fill');
   await until(async () => density.locator('.glass-segmented-thumb').evaluate(node => (node as HTMLElement).style.willChange === ''), 'held optical spring settles for reproducible actual pixel comparison');
-  results.segmentedDragGeometry = { initialDensityGeometry, intermediate, dragged, fillBefore, fillDuring, pointerDelta, opticalDelta };
+  results.segmentedDragGeometry = { initialDensityGeometry, intermediate, raised, dragged, fillBefore, fillDuring, fillOpacityIntermediate, fillOpacityDuring, pointerDelta, opticalDelta };
   const actualText = await textRefractionComparison(settings, density, destination, 'dark-segmented-drag-text');
   await settings.mouse.move(densityStart.x + pointerDelta, densityStart.y, { steps: 6 }); await settings.mouse.up(); await until(async () => (await settingsState(settings)).values['appearance.density'] === destinationValue, 'release commits target option'); assert.equal((await settingsState(settings)).revision, dragRevision + 1, 'one segmented drag commits exactly once');
   await invoke(settings, 'settings-set', { id: 'appearance.motion', value: 'off' }); await settings.locator('html[data-motion="off"]').waitFor(); await segmentedGeometry(density);
@@ -355,9 +368,9 @@ try {
   const beforeIdle = await settings.evaluate(() => window.__agentViewerRenderingDiagnostics!().glass); await settings.waitForTimeout(400); const afterIdle = await settings.evaluate(() => window.__agentViewerRenderingDiagnostics!().glass);
   assert.equal(afterIdle.builds, beforeIdle.builds, 'static switch, segmented and range controls create no new maps'); assert.equal(afterIdle.pngEncodes, beforeIdle.pngEncodes, 'static controls create no new optical PNGs'); assert.equal(await settings.locator('.glass-preview-lens').count(), 0); results.idleAssets = { beforeIdle, afterIdle };
 
-  const range = settings.getByRole('slider', { name: '左侧工具宽度滑块', exact: true }); await range.scrollIntoViewIfNeeded(); await rangeGeometry(settings.locator('[data-setting-id="appearance.leftWidth"] .glass-range-control'));
-  const rangeBefore = await settingsState(settings); await range.focus(); await range.press('ArrowRight'); await until(async () => Number((await settingsState(settings)).values['appearance.leftWidth']) === Number(rangeBefore.values['appearance.leftWidth']) + 1, 'native range keyboard increments'); assert.equal((await settingsState(settings)).revision, rangeBefore.revision + 1); await rangeGeometry(settings.locator('[data-setting-id="appearance.leftWidth"] .glass-range-control'));
-  await settings.getByRole('button', { name: '撤销上一次设置更改', exact: true }).click(); await until(async () => (await settingsState(settings)).values['appearance.leftWidth'] === rangeBefore.values['appearance.leftWidth'], 'global undo restores keyboard range'); results.rangeKeyboardUndo = true;
+  const range = settings.getByRole('slider', { name: '胶囊隐藏等待时间（毫秒）滑块', exact: true }); await range.scrollIntoViewIfNeeded(); await rangeGeometry(settings.locator('[data-setting-id="appearance.toolbarDelayMs"] .glass-range-control'));
+  const rangeBefore = await settingsState(settings); await range.focus(); await range.press('ArrowRight'); await until(async () => Number((await settingsState(settings)).values['appearance.toolbarDelayMs']) === Number(rangeBefore.values['appearance.toolbarDelayMs']) + 100, 'native range keyboard increments by the actual 100ms step'); assert.equal((await settingsState(settings)).revision, rangeBefore.revision + 1); await rangeGeometry(settings.locator('[data-setting-id="appearance.toolbarDelayMs"] .glass-range-control'));
+  await settings.getByRole('button', { name: '撤销上一次设置更改', exact: true }).click(); await until(async () => (await settingsState(settings)).values['appearance.toolbarDelayMs'] === rangeBefore.values['appearance.toolbarDelayMs'], 'global undo restores keyboard range'); results.rangeKeyboardUndo = true;
   await settings.getByRole('button', { name: '通用与多开', exact: true }).click();
   const additional = settings.locator('details.settings-unavailable'); if (await additional.count() && await additional.getAttribute('open') === null) await additional.locator(':scope > summary').click();
   const disabled = settings.locator('.setting-switch:disabled').first(); await disabled.waitFor(); await disabled.scrollIntoViewIfNeeded();

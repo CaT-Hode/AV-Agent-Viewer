@@ -1,6 +1,6 @@
-/** Parameters read from kube/kube.io @ bd091c537fd502f2d1d4d60817e6f05626508e6b.
+/** Parameters read from kube/kube.io @ 1df5ee3e528410c9eeef55bd08a90af9796c62dc.
  * These are data and independently implemented equations, not vendored code. */
-export const KUBE_SOURCE_SHA = 'bd091c537fd502f2d1d4d60817e6f05626508e6b';
+export const KUBE_SOURCE_SHA = '1df5ee3e528410c9eeef55bd08a90af9796c62dc';
 // Application policy requested after the source study: clear refractive glass
 // has no Gaussian blur. The source presets remain intact for future tuning.
 export const REFRACTIVE_BLUR_LIMIT_PX = 0;
@@ -22,6 +22,19 @@ export const KUBE_GLASS_SPRINGS = {
   lensScale: { stiffness: 340, damping: 20 },
   lensShape: { stiffness: 340, damping: 30 },
   lensShadow: { stiffness: 220, damping: 24 },
+} as const;
+/** Audited MagnifyingGlass / MixedUI interaction data. Large reading panels
+ * keep their layout at rest and use the source panel height to attenuate the
+ * lens's deformation; a sidebar is not a draggable 210px demonstration lens. */
+export const KUBE_GLASS_INTERACTION = {
+  buttonPressScale: .9,
+  panelPressScale: .99,
+  panelReferenceHeight: 63,
+  velocityDivisor: 5000,
+  minimumVelocityScale: .7,
+  insetBlur: 24,
+  shadowRest: { x: 0, y: 4, blur: 9, alpha: .16, inset: .2 },
+  shadowActive: { x: 4, y: 16, blur: 24, alpha: .22, inset: .27 },
 } as const;
 export const GLASS_CONTROL_METRICS = {
   switch: { trackWidth: 160, trackHeight: 67, thumbWidth: 146, thumbHeight: 92, thumbRadius: 46, travel: 160 - 67 - (146 - 92) * .65, thumbLeft: -(1 - .65) * 146 / 2 + (67 - 92 * .65) / 2 },

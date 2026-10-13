@@ -3,10 +3,10 @@ import { AGENT_OPERATION_METRICS, NAVIGATION_METRICS } from '../renderer/lib/nav
 import { NativeBackdropCache, backdropStatistics, type BackdropCacheStatistics, type BackdropPixels } from './backdrop-cache';
 import { AI_POPOVER_MOTION_BASE_MS, motionDurationForMode, resolveMotionMode } from '../renderer/lib/motion-policy';
 import { nativeTooltipLayout, type TooltipRect, type TooltipSize } from '../renderer/lib/tooltip-placement';
-import { NativeBackdropFrameHub } from './backdrop-frame-hub';
+import { nativeBackdropFrames } from './backdrop-frame-hub';
 import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
 import { navigationExitDuration, retainedSurfaceExit } from './toolbar-motion';
-const backdropFrames = new NativeBackdropFrameHub();
+const backdropFrames = nativeBackdropFrames;
 type Rect = { x: number; y: number; width: number; height: number };
 export type BackdropSource = { view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
 export type NativeBackdropSource = { bounds: Rect; navigationId: string; layoutRevision: number; revision: number; sourceId: number; capture(rect: Rect): Promise<{ image: NativeImage; rect: Rect }>; attach(window: BrowserWindow): Promise<void> };
@@ -28,8 +28,13 @@ export class WebToolbarHost {
       if(!entry.view.webContents.isDestroyed()&&!owner.isDestroyed()){if(bounds)entry.view.setBounds(bounds);owner.contentView.addChildView(entry.view);}
     }
     if(entry.view.webContents.isDestroyed()||owner.isDestroyed())return;
-    const source=this.nativeSource(entry);
-    if(!source){if(entry.overlay){const b=entry.rootBounds;entry.overlay.contentView.removeChildView(entry.view);entry.overlay.close();entry.overlay=undefined;entry.overlayViewId=undefined;entry.rootBounds=undefined;if(b)entry.view.setBounds(b);owner.contentView.addChildView(entry.view);}return;}
+    const source=this.nativeSource(entry),webSource=this.sourceFor?.(String(entry.state.viewId));
+    // Owned sidebars are above the parent's compositor. Trusted capsules must
+    // use the same window layer for both website and native Office sources.
+    const dropOverlay=()=>{if(entry.overlay){const b=entry.rootBounds;entry.overlay.contentView.removeChildView(entry.view);entry.overlay.close();entry.overlay=undefined;entry.overlayViewId=undefined;entry.rootBounds=undefined;if(b)entry.view.setBounds(b);owner.contentView.addChildView(entry.view);}};
+    if(!source&&!webSource){dropOverlay();return;}
+    // A former native owner must never retain a toolbar for a new webpage.
+    if(!source&&entry.overlayViewId)dropOverlay();
     if(!entry.overlay){
       const b=entry.view.getBounds(),p=owner.getContentBounds();entry.rootBounds=b;
       owner.contentView.removeChildView(entry.view);
@@ -42,8 +47,10 @@ export class WebToolbarHost {
       owner.on('move',follow);owner.on('resize',follow);owner.on('minimize',hide);owner.on('hide',hide);owner.on('restore',show);owner.on('show',show);
       overlay.once('closed',()=>{owner.removeListener('move',follow);owner.removeListener('resize',follow);owner.removeListener('minimize',hide);owner.removeListener('hide',hide);owner.removeListener('restore',show);owner.removeListener('show',show);});
     }
-    if(entry.overlayViewId!==source.navigationId){entry.overlayViewId=source.navigationId;const overlay=entry.overlay;void source.attach(overlay).then(()=>{if(entry.overlay===overlay&&!overlay.isDestroyed()&&this.nativeSource(entry)?.navigationId===source.navigationId&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized())overlay.showInactive();}).catch(()=>{if(!overlay.isDestroyed())overlay.hide();});}
+    if(source&&entry.overlayViewId!==source.navigationId){entry.overlayViewId=source.navigationId;const overlay=entry.overlay;void source.attach(overlay).then(()=>{if(entry.overlay===overlay&&!overlay.isDestroyed()&&this.nativeSource(entry)?.navigationId===source.navigationId&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized())overlay.showInactive();}).catch(()=>{if(!overlay.isDestroyed())overlay.hide();});}
+    if(!source&&webSource&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized()&&entry.overlay&&!entry.overlay.isDestroyed()&&!entry.overlay.isVisible())entry.overlay.showInactive();
   }
+  raise(owner:BrowserWindow){const entry=this.entries.get(owner);if(entry?.state.visible&&entry.overlay&&!entry.overlay.isDestroyed()&&entry.overlay.isVisible())entry.overlay.moveTop();}
   sourceChanged(owner: BrowserWindow, viewId: string) {
     const entry = this.entries.get(owner);
     if (!entry || entry.state.viewId !== viewId) return;

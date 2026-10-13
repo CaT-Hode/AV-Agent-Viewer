@@ -24,8 +24,6 @@ export const settingsRegistry: SettingDefinition[] = [
   b('appearance.highContrast','工作方式','外观与布局','增强对比度',false),
   b('appearance.autoHideToolbar','工作方式','外观与布局','导航栏自动隐藏',false,'默认保持显示；开启后根据滚动方向与距离收起。'),
   n('appearance.toolbarDelayMs','工作方式','外观与布局','胶囊隐藏等待时间（毫秒）',2500,500,10000),
-  n('appearance.leftWidth','工作方式','外观与布局','左侧工具宽度',248,180,420),
-  n('appearance.rightWidth','工作方式','外观与布局','右侧 AI 抽屉宽度',380,280,620),
   b('reading.restorePosition','工作方式','阅读与导航','恢复阅读位置',true),
   b('reading.followOutline','工作方式','阅读与导航','目录跟随当前位置',true),
   b('reading.linkTranslations','工作方式','阅读与导航','原译文并排时联动导航',true),
@@ -86,7 +84,7 @@ export const settingsRegistry: SettingDefinition[] = [
 ];
 const activeSettings = new Set([
   'general.startPage',
-  'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs','appearance.leftWidth','appearance.rightWidth',
+  'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs',
   'translation.selectionAuto','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
   'ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart',
 ]);

@@ -77,7 +77,40 @@
   opacity: var(--liquid-glass-opacity);
   transition: opacity var(--motion-duration, 180ms) linear;
 }
-.liquid-glass-surface:not(.navigation-glass) .liquid-glass-highlight { background-size: 100% 100%; }
+/* The frosted branch has no displacement field. The author's magnifier uses
+   opposing 24px inset shadows for its curved rim; reuse that broad light falloff
+   as a CSS-only approximation, not a 1px white wire around a flat panel. */
+.material-host > .liquid-glass-surface:not(.navigation-glass)[data-glass-effect="frosted"] > .liquid-glass-highlight {
+  inset:0;
+  width:100%;height:100%;
+  border-radius:inherit;
+  background:transparent;
+  box-shadow:
+    inset calc(var(--glass-material-shadow-x,0px) / 2) calc(var(--glass-material-shadow-y,4px) / 2) 24px rgb(0 0 0 / var(--glass-material-inset-alpha,.2)),
+    inset calc(var(--glass-material-shadow-x,0px) / -2) calc(var(--glass-material-shadow-y,4px) / -2) 24px rgb(255 255 255 / var(--glass-material-inset-alpha,.2));
+  opacity:var(--liquid-glass-opacity);
+}
+.material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"][data-glass-variant="panel"]) { border-color:transparent; }
+/* Legacy pane mixins also blurred and filled the host. Keep one material pass
+   in both the main document and the owned reader-panel portal. */
+:root[data-theme] .workbench .floating-side-panel.material-host,
+:root[data-theme] .workbench :is(.activity-rail,.ai-rail).material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]) {
+  background:transparent;
+  -webkit-backdrop-filter:none;
+  backdrop-filter:none;
+  border-color:transparent;
+  box-shadow:var(--glass-shadow);
+}
+/* On a sidebar the perceived interior edge fades over the source player's
+   29px bezel. It is decorative, clipped to the original rounded material and
+   does not overlap the separate pointer target used to resize the panel. */
+.floating-side-panel[data-side="left"] > .liquid-glass-surface[data-glass-effect="frosted"] > .liquid-glass-highlight::after,
+.floating-side-panel[data-side="right"] > .liquid-glass-surface[data-glass-effect="frosted"] > .liquid-glass-highlight::after {
+  content:"";position:absolute;top:0;bottom:0;width:29px;
+  background:linear-gradient(to left,rgb(255 255 255 / var(--glass-material-inset-alpha,.2)),transparent);
+}
+.floating-side-panel[data-side="left"] > .liquid-glass-surface[data-glass-effect="frosted"] > .liquid-glass-highlight::after { right:0; }
+.floating-side-panel[data-side="right"] > .liquid-glass-surface[data-glass-effect="frosted"] > .liquid-glass-highlight::after { left:0;transform:scaleX(-1); }
 .liquid-glass-surface:not(.navigation-glass)[data-glass-fallback="true"] :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
 .liquid-glass-surface:not(.navigation-glass)[data-glass-fallback="true"] .liquid-glass-tint { background: var(--liquid-glass-solid); opacity: 1; }
 :root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .material-host > .liquid-glass-surface:not(.navigation-glass) :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }

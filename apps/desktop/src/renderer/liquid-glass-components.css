@@ -81,7 +81,11 @@
 .glass-range input::-webkit-slider-thumb { appearance: none; width: 54px; height: 60px; background: transparent; border: 0; }
 .glass-range input::-webkit-slider-runnable-track { background: transparent; border: 0; height: 60px; }
 :root[data-theme] .settings-main .glass-range-control > input[type="number"] { width: 72px; min-width: 72px; font-variant-numeric: tabular-nums; }
-.glass-range:focus-within .glass-range-thumb { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* The convex optical rim is the active feedback. A restrained neutral key
+   focus cue belongs to the track and never adds a blue ring around the lens. */
+.glass-range:has(input[type="range"]:focus-visible) .glass-range-track { box-shadow: 0 0 0 1px color-mix(in srgb,var(--text) 40%,transparent); }
+.glass-range input[type="range"]:focus-visible { outline: none; }
+.glass-range-thumb { outline: none; }
 .glass-material-preview { margin: 0 0 26px; }
 .glass-preview-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .glass-preview-heading > span { font-size: 13px; font-weight: 600; }

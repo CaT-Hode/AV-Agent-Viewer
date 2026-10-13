@@ -1,0 +1,7 @@
+html.reader-panel-window,html.reader-panel-window body,html.reader-panel-window #root{background:transparent!important;overflow:hidden;width:100%;height:100%;margin:0;padding:0}
+.reader-panel-window .reader-panel-backdrop{position:absolute;inset:12px;border-radius:22px;background-repeat:no-repeat;pointer-events:none;overflow:hidden;opacity:0;transition:opacity var(--reader-panel-presence-duration,220ms) ease}
+.reader-panel-window #reader-panel-content:has(> .reader-panel-ported[data-motion-phase="open"]) > .reader-panel-backdrop{opacity:1}
+.reader-panel-window #reader-panel-content{position:absolute;inset:0;isolation:isolate;display:block;width:100%;height:100%;padding:0;margin:0;box-sizing:border-box;background:transparent!important}
+.reader-panel-window .reader-panel-ported{position:absolute!important;left:12px!important;top:12px!important;right:auto!important;bottom:auto!important;width:calc(100% - 24px)!important;height:calc(100% - 24px)!important;margin:0!important;box-sizing:border-box;overflow:visible!important}
+.reader-panel-window .reader-panel-ported .reader-panel-resize{z-index:12}
+.reader-panel-window .app-tooltip{z-index:10000}

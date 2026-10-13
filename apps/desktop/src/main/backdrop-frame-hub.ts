@@ -110,3 +110,6 @@ export class NativeBackdropFrameHub {
     try { if (entry.started && !entry.source.isDestroyed()) entry.source.endFrameSubscription(); } catch { this.counts.endErrors++; }
   }
 }
+
+/** All trusted overlays consume the same page compositor subscription. */
+export const nativeBackdropFrames = new NativeBackdropFrameHub();

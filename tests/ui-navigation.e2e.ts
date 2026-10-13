@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import type { WorkspaceState } from '../packages/contracts/src/index';
 import { NAVIGATION_METRICS } from '../apps/desktop/src/renderer/lib/navigation-optics';
+import { REFRACTIVE_BLUR_LIMIT_PX } from '../apps/desktop/src/renderer/lib/glass-presets';
 
 const require = createRequire(import.meta.url);
 const directory = await mkdtemp(join(tmpdir(), 'agentviewer-navigation-'));
@@ -80,7 +81,13 @@ const noOuterMask = async (target: Page, native = false) => {
     assert.ok(Math.abs(geometry.capsule.height - geometry.glass.height) <= 2, 'optical layer follows capsule height');
   }
 };
-const nativeGeometry = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.map((view: any) => ({ url: view.webContents?.getURL() as string | undefined, bounds: view.getBounds(), visible: view.getVisible() })));
+const nativeGeometry = () => app.evaluate(({ BrowserWindow }, rootUrl) => {
+  const windows = BrowserWindow.getAllWindows(), root = windows.find(window => window.webContents.getURL() === rootUrl)!; const origin = root.getContentBounds();
+  return windows.filter(window => window === root || window.getParentWindow() === root).flatMap(window => window.contentView.children.map((view: any) => {
+    const rect = view.getBounds(), position = window.getContentBounds();
+    return { url: view.webContents?.getURL() as string | undefined, bounds: { ...rect, x: rect.x + position.x - origin.x, y: rect.y + position.y - origin.y }, visible: view.getVisible() && window.isVisible(), host: window === root ? 'reader' : 'owned-overlay' };
+  }));
+}, page.url());
 const toolbarVisible = async () => !!(await nativeGeometry()).find(view => view.url?.includes('#/web-toolbar'))?.visible;
 const fixtureScript = <T = unknown>(script: string) => app.evaluate(async ({ webContents }, expression) => {
   const target = webContents.getAllWebContents().find(contents => contents.getURL().includes('/fixtures/interaction.html'));
@@ -111,7 +118,7 @@ try {
   const localStyle = await capsuleStyle(page);
   assert.equal(localStyle.blur, NAVIGATION_METRICS.blur + 'px'); assert.equal(localStyle.refractionWidth, NAVIGATION_METRICS.bezelWidth + 'px');
   assert.match(localStyle.opticalFilter, /url\(/, 'document glass uses the source SVG optical pipeline');
-  assert.equal(localStyle.gaussianBlur, NAVIGATION_METRICS.blur);
+  assert.equal(localStyle.gaussianBlur, Math.min(NAVIGATION_METRICS.blur, REFRACTIVE_BLUR_LIMIT_PX));
   assert.equal(localStyle.height, NAVIGATION_METRICS.height); assert.equal(localStyle.radius, NAVIGATION_METRICS.radius + 'px'); await noOuterMask(page);
   await page.screenshot({ path: join(qa, 'document-navigation.png'), scale: 'css' });
 
@@ -143,7 +150,7 @@ try {
   await toolbar.locator('.navigation-glass[data-source="sampled"]').waitFor();
   const nativeStyle = await capsuleStyle(toolbar);
   assert.match(nativeStyle.opticalFilter, /url\(/, 'sampled native glass uses the same source SVG pipeline');
-  assert.equal(nativeStyle.gaussianBlur, NAVIGATION_METRICS.blur);
+  assert.equal(nativeStyle.gaussianBlur, Math.min(NAVIGATION_METRICS.blur, REFRACTIVE_BLUR_LIMIT_PX));
   for (const key of ['height', 'border', 'borderStyle', 'radius', 'blur', 'refractionWidth', 'buttonWidth', 'buttonHeight', 'buttonRadius'] as const) {
     assert.equal(nativeStyle[key], localStyle[key], `local/native shared style: ${key}`);
   }

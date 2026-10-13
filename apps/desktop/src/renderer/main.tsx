@@ -9,6 +9,8 @@ import { glassOpticsCacheStats } from './lib/liquid-glass-optics';
 import { officeRenderStats } from './components/OfficeDocument';
 import { SettingsApp } from './SettingsApp';
 import { GlassInteractionHost } from './components/GlassInteractionHost';
+import { ReaderPanelWindow } from './ReaderPanelWindow';
+import './reader-panel-window.css';
 import './styles.css';
 import './new-ui.css';
 import './dark-theme.css';
@@ -26,4 +28,4 @@ import './settings-redesign.css';
 import './home-search.css';
 declare global { interface Window { __agentViewerRenderingDiagnostics?: () => { glass: ReturnType<typeof glassOpticsCacheStats>; office: ReturnType<typeof officeRenderStats>; poll: ReturnType<typeof rendererPollStats> } } }
 if (window.agentViewer?.testMode) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats(), office: officeRenderStats(), poll: rendererPollStats() }) });
-createRoot(document.getElementById('root')!).render(<>{location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/agent-toolbar') ? <AgentOperationToolbar /> : location.hash.startsWith('#/ai-result-toolbar') ? <AIResultToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}<TooltipHost /><GlassInteractionHost /></>);
+createRoot(document.getElementById('root')!).render(<>{location.hash.startsWith('#/reader-panel?') ? <ReaderPanelWindow /> : location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/agent-toolbar') ? <AgentOperationToolbar /> : location.hash.startsWith('#/ai-result-toolbar') ? <AIResultToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}<TooltipHost /><GlassInteractionHost /></>);

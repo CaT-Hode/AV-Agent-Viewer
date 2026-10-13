@@ -31,6 +31,8 @@ export type LiquidGlassSurfaceProps = {
   bounds?: SurfaceBounds;
   surfaceRef?: Ref<HTMLSpanElement>;
   className?: string;
+  /** Tooltip/explicit gesture hosts can keep passive material presentation. */
+  interaction?: 'auto' | 'none';
   /** Only NavigationGlass uses the historical names and navigation tokens. */
   navigation?: boolean;
 };
@@ -39,7 +41,7 @@ const finite = (value: number | undefined, fallback: number, minimum: number, ma
 
 /** Optical background only. Original controls, labels and inputs stay siblings;
  * neither their pixels nor an ancestor are filtered or faded by this surface. */
-export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect, profile: requestedProfile, bezelWidth, blur, strength, glassThickness, refractiveIndex, specularOpacity, specularSaturation, concave = false, lensZoom, fallback = false, backdropImage, backdropSample, bounds, surfaceRef, className, navigation = false }: LiquidGlassSurfaceProps) {
+export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect, profile: requestedProfile, bezelWidth, blur, strength, glassThickness, refractiveIndex, specularOpacity, specularSaturation, concave = false, lensZoom, fallback = false, backdropImage, backdropSample, bounds, surfaceRef, className, interaction = 'auto', navigation = false }: LiquidGlassSurfaceProps) {
   const effect = requestedEffect ?? (navigation ? 'refractive' : 'frosted'), refractive = effect === 'refractive';
   const preset = KUBE_GLASS_PRESETS[variant === 'capsule' || variant === 'button' || variant === 'tooltip' ? 'search' : variant];
   const opticalBlur = refractive ? Math.min(finite(blur, preset.blur, 0, 40), REFRACTIVE_BLUR_LIMIT_PX) : finite(blur, preset.blur, 0, 40);
@@ -147,6 +149,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     '--liquid-glass-bezel-width': `${bezelWidth ?? preset.bezelWidth}px`,
     '--liquid-glass-blur': `${opticalBlur}px`,
     '--liquid-glass-strength': strength ?? preset.refraction,
+    '--liquid-glass-specular-opacity': specularOpacity ?? preset.specularOpacity,
     ...(navigation ? { '--navigation-refraction-filter': activeOptics ? `url("#${id}-edge")` : 'none', '--liquid-glass-saturation': 'var(--navigation-saturation)', '--liquid-glass-tint': 'var(--navigation-tint)', '--liquid-glass-solid': 'var(--navigation-solid)' } : {}),
   };
   const names = (name: string) => `liquid-glass-${name}${navigation ? ` navigation-glass-${name}` : ''}`;
@@ -171,10 +174,11 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
   </filter>;
   const definitions = useMemo(() => activeOptics ? <svg className={names('definitions')} width="0" height="0" aria-hidden="true" focusable="false"><defs>{filter('edge', true)}{filter('center', false)}</defs></svg> : undefined, [activeOptics, id, opticalBlur, refraction, defaultMultiplier, specularSaturation, preset.specularSaturation, specularOpacity, preset.specularOpacity, navigation]);
 
-  return <span ref={assignRef} className={`liquid-glass-surface${navigation ? ' navigation-glass' : ''}${className ? ` ${className}` : ''}`} data-glass-effect={effect} data-glass-variant={variant} data-glass-profile={profile} data-glass-concave={concave || undefined} data-glass-fallback={fallback || undefined} data-source={sampled ? 'sampled' : 'live'} aria-hidden="true" style={style}>
+  return <span ref={assignRef} className={`liquid-glass-surface${navigation ? ' navigation-glass' : ''}${className ? ` ${className}` : ''}`} data-glass-effect={effect} data-glass-variant={variant} data-glass-interaction={variant === 'tooltip' ? 'none' : interaction} data-glass-profile={profile} data-glass-concave={concave || undefined} data-glass-fallback={fallback || undefined} data-source={sampled ? 'sampled' : 'live'} aria-hidden="true" style={style}>
     {definitions}
     <span className={`${names('center')}${navigation && sampled ? ' native-glass-backdrop' : ''}`} aria-hidden="true" style={refractive ? { ...sourceStyle, clipPath: activeOptics?.centerClip } : undefined} />
     {activeOptics && <span className={names('edge')} aria-hidden="true" style={{ ...sourceStyle, maskImage: activeOptics.ring, WebkitMaskImage: activeOptics.ring }} />}
     <span className={names('tint')} aria-hidden="true" />
+    {!refractive && variant !== 'tooltip' && <span className={names('highlight')} aria-hidden="true" />}
   </span>;
 }
