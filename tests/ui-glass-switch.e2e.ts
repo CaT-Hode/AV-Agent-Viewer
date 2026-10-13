@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import type { SettingDefinition, SettingsSnapshot } from '../packages/settings/src/index';
+import { verifyRangeReferenceOptics } from './range-optics.e2e-helper';
 
 // Actual settings DOM and pixels, never a standalone imitation of the switch.
 // Run serially after the coordinated build freeze. AGENTVIEWER_QA_SCALE=1/1.5/2.
@@ -69,7 +70,7 @@ async function opticalAssets(control: Locator, selector = '.glass-switch-thumb',
   const variant = await surface.getAttribute('data-glass-variant');
   assert.equal(variant, profile === 'lip' ? 'switch' : 'slider');
   const reference = await surface.evaluate(node => ({ blur: Number.parseFloat(getComputedStyle(node).getPropertyValue('--liquid-glass-blur')), bezel: Number.parseFloat(getComputedStyle(node).getPropertyValue('--liquid-glass-bezel-width')) }));
-  closeEnough(reference.blur, 0, 'clear refractive controls have no Gaussian blur', .001); closeEnough(reference.bezel, profile === 'lip' ? 8.075 : 9.6, 'scaled reference bezel', .001);
+  closeEnough(reference.blur, 0, 'clear refractive controls have no Gaussian blur', .001); closeEnough(reference.bezel, profile === 'lip' ? 8.075 : selector === '.glass-range-thumb' ? 16 : 9.6, 'reference bezel follows each control optical geometry', .001);
   assert.ok((await surface.locator('feGaussianBlur').evaluateAll(nodes => nodes.map(node => Number(node.getAttribute('stdDeviation'))))).every(value => value === 0), 'every optical Gaussian stage is an identity operation');
   const segmented = selector === '.glass-segmented-thumb';
   assert.equal(await surface.locator('feColorMatrix').getAttribute('values'), profile === 'lip' ? '6' : segmented ? '1' : '7');
@@ -106,8 +107,8 @@ async function rangeGeometry(control: Locator) {
   const track = control.locator('.glass-range'), value = await geometry(track, '.glass-range-thumb'); fullThumbLayers(value);
   const input = await track.locator('input[type=range]').evaluate(node => { const input = node as HTMLInputElement; return { value: Number(input.value), min: Number(input.min), max: Number(input.max) }; });
   const progress = (input.value - input.min) / (input.max - input.min);
-  closeEnough(value.track.height, 40, 'range input hit area height'); closeEnough(value.thumb.width, 32.4, 'visible resting range pill width'); closeEnough(value.thumb.height, 21.6, 'visible resting range pill height');
-  closeEnough(centerY(value.thumb), centerY(value.track), 'range track and thumb centers'); closeEnough(centerX(value.thumb), value.track.x + (value.track.width - 32.4) * progress + 16.2, 'range visual center matches native input value');
+  closeEnough(value.track.height, 40, 'range input hit area height'); closeEnough(value.thumb.width, 54, 'source resting range pill width'); closeEnough(value.thumb.height, 36, 'source resting range pill height');
+  closeEnough(centerY(value.thumb), centerY(value.track), 'range track and thumb centers'); closeEnough(centerX(value.thumb), value.track.x + (value.track.width - 54) * progress + 27, 'range visual center matches native input value');
   await opticalAssets(track, '.glass-range-thumb', 'convex'); return value;
 }
 async function paintedPill(page: Page, value: Geometry, on: boolean, label: string) {
@@ -371,6 +372,26 @@ try {
   const range = settings.getByRole('slider', { name: '胶囊隐藏等待时间（毫秒）滑块', exact: true }); await range.scrollIntoViewIfNeeded(); await rangeGeometry(settings.locator('[data-setting-id="appearance.toolbarDelayMs"] .glass-range-control'));
   const rangeBefore = await settingsState(settings); await range.focus(); await range.press('ArrowRight'); await until(async () => Number((await settingsState(settings)).values['appearance.toolbarDelayMs']) === Number(rangeBefore.values['appearance.toolbarDelayMs']) + 100, 'native range keyboard increments by the actual 100ms step'); assert.equal((await settingsState(settings)).revision, rangeBefore.revision + 1); await rangeGeometry(settings.locator('[data-setting-id="appearance.toolbarDelayMs"] .glass-range-control'));
   await settings.getByRole('button', { name: '撤销上一次设置更改', exact: true }).click(); await until(async () => (await settingsState(settings)).values['appearance.toolbarDelayMs'] === rangeBefore.values['appearance.toolbarDelayMs'], 'global undo restores keyboard range'); results.rangeKeyboardUndo = true;
+  const rangeControl = settings.locator('[data-setting-id="appearance.toolbarDelayMs"] .glass-range-control');
+  const savedDelay = (await settingsState(settings)).values['appearance.toolbarDelayMs'];
+  await invoke(settings, 'settings-set', { id:'appearance.toolbarDelayMs', value:5000 });
+  await invoke(settings, 'settings-set', { id:'appearance.motion', value:'standard' });
+  await settings.locator('html[data-motion="standard"]').waitFor();
+  const comparisonRevision = (await settingsState(settings)).revision;
+  results.rangeOptics = await verifyRangeReferenceOptics(settings,app,rangeControl,evidence);
+  assert.equal((await settingsState(settings)).revision,comparisonRevision,'held optical comparison and cancellation never commit a setting');
+  await invoke(settings,'settings-set',{id:'appearance.motion',value:'off'}); await settings.locator('html[data-motion="off"]').waitFor();
+  const endpointGeometry: Record<string,unknown> = {};
+  for (const endpoint of ['Home','End'] as const) {
+    await range.focus(); await range.press(endpoint);
+    const expectedValue = await range.evaluate((node,endpoint) => Number(endpoint === 'Home' ? (node as HTMLInputElement).min : (node as HTMLInputElement).max),endpoint);
+    await until(async() => Number((await settingsState(settings)).values['appearance.toolbarDelayMs']) === expectedValue,'native input reaches '+endpoint);
+    await rangeGeometry(rangeControl); const endpointBox = await geometry(rangeControl.locator('.glass-range'),'.glass-range-thumb');
+    closeEnough(endpoint === 'Home' ? endpointBox.thumb.x : endpointBox.thumb.x + endpointBox.thumb.width,endpoint === 'Home' ? endpointBox.track.x : endpointBox.track.x + endpointBox.track.width,'source resting pill aligns with '+endpoint+' native boundary',.4);
+    endpointGeometry[endpoint] = endpointBox;
+  }
+  await invoke(settings,'settings-set',{id:'appearance.toolbarDelayMs',value:savedDelay});
+  results.rangeEndpoints = endpointGeometry;
   await settings.getByRole('button', { name: '通用与多开', exact: true }).click();
   const additional = settings.locator('details.settings-unavailable'); if (await additional.count() && await additional.getAttribute('open') === null) await additional.locator(':scope > summary').click();
   const disabled = settings.locator('.setting-switch:disabled').first(); await disabled.waitFor(); await disabled.scrollIntoViewIfNeeded();

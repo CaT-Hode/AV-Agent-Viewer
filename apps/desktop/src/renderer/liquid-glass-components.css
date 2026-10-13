@@ -76,9 +76,9 @@
 .glass-range-control { display: flex; align-items: center; gap: 12px; width: 414px; }
 .glass-range { flex: 0 0 330px; position: relative; height: 60px; min-width: 330px; }
 .glass-range-track { position: absolute; top: 23px; left: 0; right: 0; height: 14px; border-radius: 7px; background: linear-gradient(to right,#0377f7 calc(var(--range-progress) * 100%),#89898f66 0); }
-.glass-range-thumb { position: absolute; top: 0; left: calc((100% - 54px) * var(--range-progress) - 18px); width: 90px; height: 60px; border-radius: 30px; pointer-events: none; box-shadow: 0 3px 14px rgb(0 0 0 / .1); --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,1)); }
+.glass-range-thumb { position: absolute; top: calc((var(--range-hit-height,60px) - var(--range-thumb-height,60px)) / 2); left: calc((100% - var(--range-resting-width,54px)) * var(--range-progress) - var(--range-thumb-inset,18px)); width: var(--range-thumb-width,90px); height: var(--range-thumb-height,60px); border-radius: var(--range-thumb-radius,30px); pointer-events: none; box-shadow: 0 3px 14px rgb(0 0 0 / .1); --liquid-glass-tint: rgb(255 255 255 / var(--glass-material-fill,1)); }
 :root[data-theme] .settings-main .glass-range input[type="range"] { position: absolute; inset: 0; width: 100%; min-width: 0; padding: 0; margin: 0; height: 60px; border: 0; background: transparent; appearance: none; cursor: pointer; z-index: 2; box-shadow: none; }
-.glass-range input::-webkit-slider-thumb { appearance: none; width: 54px; height: 60px; background: transparent; border: 0; }
+.glass-range input::-webkit-slider-thumb { appearance: none; width: var(--range-resting-width,54px); height: 60px; background: transparent; border: 0; }
 .glass-range input::-webkit-slider-runnable-track { background: transparent; border: 0; height: 60px; }
 :root[data-theme] .settings-main .glass-range-control > input[type="number"] { width: 72px; min-width: 72px; font-variant-numeric: tabular-nums; }
 /* The convex optical rim is the active feedback. A restrained neutral key

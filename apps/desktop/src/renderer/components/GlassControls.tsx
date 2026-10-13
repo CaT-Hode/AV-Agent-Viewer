@@ -3,6 +3,7 @@ import { GlassControlIndicator } from './GlassControlIndicator';
 import { useGlassElasticity, useGlassSpringValue } from '../lib/glass-elasticity';
 import { GLASS_CONTROL_METRICS, KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
 import { clampGlassControl, createGlassControlDrag, glassPointerCoordinate, rubberBandGlassControl } from '../lib/glass-control-drag';
+import { GLASS_RANGE_REFERENCE } from '../lib/glass-range-reference';
 export { GLASS_CONTROL_METRICS } from '../lib/glass-presets';
 export const SETTINGS_CONTROL_SCALE = .6;
 // Preserve the reference proportions, but lay out the compact control in real
@@ -75,10 +76,10 @@ export function GlassRangeControl({ label, value, min, max, step = 1, onChange, 
     committed.current = next; onChange(next);
   };
   const progress = max > min ? Math.max(0, Math.min(1, (draft - min) / (max - min))) : 0;
-  return <div className="glass-range-control" data-glass-control-owner="range">
+  return <div className="glass-range-control" data-glass-control-owner="range" style={{ '--range-thumb-width': `${GLASS_RANGE_REFERENCE.width}px`, '--range-thumb-height': `${GLASS_RANGE_REFERENCE.height}px`, '--range-thumb-radius': `${GLASS_RANGE_REFERENCE.radius}px`, '--range-resting-width': `${GLASS_RANGE_REFERENCE.restingWidth}px`, '--range-thumb-inset': `${GLASS_RANGE_REFERENCE.inset}px` } as CSSProperties}>
     <div className="glass-range" style={{ '--range-progress': progress } as CSSProperties}>
       <div className="glass-range-track" aria-hidden="true" />
-      <GlassControlIndicator materialRef={elastic.ref} className="glass-range-thumb" variant="slider" opticalScale={SETTINGS_CONTROL_SCALE} />
+      <GlassControlIndicator materialRef={elastic.ref} className="glass-range-thumb" variant="slider" opticalScale={GLASS_RANGE_REFERENCE.opticalScale} />
       <input aria-label={label + '滑块'} type="range" min={min} max={max} step={step} value={draft} disabled={disabled}
         onPointerDown={event => { elastic.bindings.onPointerDown(event); if (!disabled && event.isPrimary !== false && event.button === 0) pointerId.current = event.pointerId; }}
         onPointerMove={elastic.bindings.onPointerMove}

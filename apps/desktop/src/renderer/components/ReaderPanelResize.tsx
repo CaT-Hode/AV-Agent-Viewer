@@ -60,7 +60,10 @@ export function ReaderPanelResizeHandle({ side, width, workbench, onCommit }: { 
       if (event.button !== 0 || gesture.current) return;
       event.preventDefault(); event.stopPropagation(); event.currentTarget.focus({ preventScroll: true });
       try { event.currentTarget.setPointerCapture(event.pointerId); } catch { return; }
-      gesture.current = { side, pointerId: event.pointerId, startX: event.screenX, startWidth: event.currentTarget.closest('.floating-side-panel')?.getBoundingClientRect().width ?? width };
+      // Native owned windows can quantize their painted bounds by one DIP.
+      // Keep the canonical logical width as the gesture origin so clicking or
+      // repeating a drag cannot feed that rounding back into saved layout.
+      gesture.current = { side, pointerId: event.pointerId, startX: event.screenX, startWidth: clampReaderPanelWidth(side, latest.current.width, measure()) };
       previewWidth.current = gesture.current.startWidth;
       event.currentTarget.dataset.dragging = 'true'; if (workbench.current) workbench.current.dataset.panelResizing = side;
     }}

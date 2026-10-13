@@ -43,12 +43,11 @@
 .settings-shell .setting-metadata small { display: block; margin: 5px 0; font-size: 10px; }
 .settings-shell .setting-control { max-width: min(360px,100%); min-width: 0; justify-self: end; justify-content: flex-end; }
 :root[data-theme] .settings-shell .glass-switch { zoom: 1; }
-.settings-shell .glass-range-control { width: 270px; gap: 12px; }
-.settings-shell .glass-range { flex: 1 1 180px; min-width: 0; height: 40px; }
+.settings-shell .glass-range-control { width: 270px; gap: 12px; overflow: visible; }
+.settings-shell .glass-range { flex: 1 1 180px; min-width: 0; height: 40px; --range-hit-height:40px; overflow: visible; }
 .settings-shell .glass-range-track { top: 16px; height: 8px; border-radius: 4px; }
-.settings-shell .glass-range-thumb { width: 54px; height: 36px; top: 2px; left: calc((100% - 32.4px) * var(--range-progress) - 10.8px); border-radius: 18px; }
 :root[data-theme] .settings-shell .glass-range input[type=range] { height: 40px; }
-.settings-shell .glass-range input::-webkit-slider-thumb { width: 32.4px; height: 40px; }
+.settings-shell .glass-range input::-webkit-slider-thumb { width: var(--range-resting-width,54px); height: 40px; }
 .settings-shell .setting-control > input { width: 200px; height: 38px; border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; color: var(--text); background: #869bb309; }
 .settings-shell .setting-control > input[type=number] { width: 100px; }
 .settings-shell .setting-row.unavailable { opacity: 1; }
