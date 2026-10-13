@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowLeft, ArrowRight, Copy, Languages, Minus, Plus, RotateCw, Save, Undo2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Copy, Languages, Minus, Plus, RotateCw, Save, Undo2, X } from 'lucide-react';
 import { NavigationGlass } from './NavigationGlass';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
+import { useMotionSnapshot } from '../lib/motion';
 
 export type NavigationAction =
-  | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' }
+  | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' | 'dismiss' }
   | { type: 'navigate'; url: string }
   | { type: 'zoom'; factor: number }
   | { type: 'mode'; mode: 'read' | 'source' | 'split' };
@@ -72,13 +73,26 @@ const contributions = {
   document: { identity: DocumentModule, tools: [EditModule] },
 };
 
-export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 650, backdropImage, backdropSample, onGeometry, onHover, onLeave, onFocus, onBlur }: ModuleProps & {
-  progress?: number; durationMs?: number; backdropImage?: string; backdropSample?: NavigationBackdropSample;
+export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 650, manualHidden = false, instant = false, backdropImage, backdropSample, onGeometry, onHover, onLeave, onFocus, onBlur }: ModuleProps & {
+  progress?: number; durationMs?: number; manualHidden?: boolean; instant?: boolean; backdropImage?: string; backdropSample?: NavigationBackdropSample;
   onGeometry?(bounds: NavigationBounds): void;
   onHover?(): void; onLeave?(): void; onFocus?(): void; onBlur?(): void;
 }) {
   const contribution = contributions[state.format as keyof typeof contributions] ?? contributions.document;
   const Identity = contribution.identity, hidden = progress >= 1;
+  const motion = useMotionSnapshot();
+  const immediate = instant || motion.split(':')[0] === 'off';
+  const [entered, setEntered] = useState(immediate);
+  // Native navigation unmounts after closing. Establish a painted collapsed
+  // frame on its next mount so it opens with the same transition as documents.
+  useLayoutEffect(() => {
+    if (entered) return;
+    if (immediate) { setEntered(true); return; }
+    let second = 0;
+    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => setEntered(true)); });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [entered, immediate]);
+  const visualProgress = !entered && !immediate ? 1 : progress;
   const capsule = useRef<HTMLDivElement>(null);
   const [capsuleBounds, setCapsuleBounds] = useState<NavigationBounds>();
   const [surface, setSurface] = useState<'light' | 'dark'>();
@@ -102,9 +116,10 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     const observer = new ResizeObserver(measure); observer.observe(capsule.current);
     measure();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [!!onGeometry, progress, durationMs, state.format]);
-  const style = { '--navigation-hide-progress': Math.max(0, Math.min(1, progress)), '--navigation-hide-duration': durationMs + 'ms', '--navigation-height': NAVIGATION_METRICS.height + 'px', '--navigation-radius': NAVIGATION_METRICS.radius + 'px', '--navigation-button-size': NAVIGATION_METRICS.buttonSize + 'px' } as CSSProperties;
-  return <nav className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} style={style}
+  }, [!!onGeometry, visualProgress, durationMs, state.format]);
+  const style = { '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': NAVIGATION_METRICS.height + 'px', '--navigation-radius': NAVIGATION_METRICS.radius + 'px', '--navigation-button-size': NAVIGATION_METRICS.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
+  return <nav className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} data-navigation-manual-hidden={manualHidden || undefined} style={style}
+    data-navigation-entering={!entered && !immediate || undefined}
     onMouseEnter={onHover} onMouseLeave={onLeave} onFocusCapture={onFocus} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) onBlur?.(); }}>
     <div ref={capsule} className="floating-capsule navigation-capsule" data-navigation-surface={surface}>
       <NavigationGlass backdropImage={backdropImage} backdropSample={backdropSample} capsuleBounds={capsuleBounds} onSurface={setSurface} />
@@ -112,6 +127,7 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
       <Identity state={state} dispatch={dispatch} /><Divider />
       <ZoomModule state={state} dispatch={dispatch} /><Divider />
       {contribution.tools.map((Module, index) => <Module key={index} state={state} dispatch={dispatch} />)}
+      <div className="navigation-module navigation-dismiss"><button className="icon-button" aria-label="关闭导航栏" title="关闭导航栏 · 鼠标移至阅读区顶部可重新显示" onClick={() => dispatch({ type: 'dismiss' })}><X size={16} /></button></div>
     </div>
   </nav>;
 }

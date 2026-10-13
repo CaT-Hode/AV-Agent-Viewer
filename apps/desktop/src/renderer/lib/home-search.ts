@@ -1,4 +1,5 @@
 import type { DocumentInfo } from '../../../../../packages/contracts/src/index';
+import { normalizeWebAddress, documentSuffixes } from '../../../../../packages/contracts/src/web-address';
 import type { TranslationArtifact } from '../../../../../packages/translation/src/index';
 
 export type HomeQueryResult =
@@ -21,11 +22,6 @@ export type HomeSearchSources = {
 };
 export type RankedHomeSearchCandidate = HomeSearchCandidate & { score: number };
 
-// Conservative address inference is a product policy, not a public-suffix
-// database. Unknown suffixes require an explicit http(s) URL. Document suffixes
-// win over country/domain inference, e.g. notes.md is a filename search.
-const bareDomainSuffixes = new Set(('com org net edu gov mil int io dev app ai cn co me info biz xyz online tech site cloud tools work page link wiki blog live store shop cc tv us uk de fr jp ca au nz in sg hk tw ch se no nl it es ru br za kr mx eu id fi dk be at pl pt ie il ae sa tr ua local localhost xn--fiqs8s xn--fiqz9s').split(' '));
-const documentSuffixes = new Set(('md markdown pdf doc docx ppt pptx xls xlsx xlsm xlsb xltx xltm epub html htm txt rtf odt ods odp csv tsv json yaml yml xml toml ini log png jpg jpeg gif svg webp bmp ico zip').split(' '));
 const blockedSchemes = /^(?:javascript|data|file|vbscript|mailto|tel|ftp|about|chrome|edge|view-source):/i;
 const controls = /[\u0000-\u001f\u007f]/;
 const fold = (value: string) => value.normalize('NFKC').toLowerCase();
@@ -38,27 +34,6 @@ function localPath(value: string): boolean {
     || (value.includes('\\') && !/^[a-z][\w+.-]*:/i.test(value))
     || (/^[^/:?#]+\/.+/.test(value) && !value.split('/')[0].includes('.') && documentSuffixes.has(suffix(filename(value))));
 }
-function parsedAddress(value: string, explicit: boolean): string | undefined {
-  if (/\s|\\/.test(value)) return;
-  let url: URL;
-  try { url = new URL(explicit ? value : 'https:' + (value.startsWith('//') ? value : '//' + value)); } catch { return; }
-  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) return;
-  const host = url.hostname.toLowerCase().replace(/\.$/, '');
-  const ipv6 = host.startsWith('[') && host.endsWith(']');
-  const ipv4 = /^\d+\.\d+\.\d+\.\d+$/.test(host);
-  const local = host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local');
-  if (!ipv6 && !ipv4 && (!host.split('.').every(label => /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/i.test(label)) || host.length > 253)) return;
-  if (!explicit) {
-    // Do not let URL's permissive numeric-host normalization turn 127.1 or a
-    // hex integer into an inferred address. Bracketed IPv6 is unambiguous.
-    const writtenHost = value.replace(/^\/\//, '').split(/[/?#]/)[0].split(':')[0].replace(/\.$/, '');
-    if (ipv4 && !/^\d+\.\d+\.\d+\.\d+$/.test(writtenHost)) return;
-    if (!ipv6 && !ipv4 && !local && (host.split('.').length < 2 || documentSuffixes.has(suffix(host)) || !bareDomainSuffixes.has(suffix(host)))) return;
-    if (ipv6 || ipv4 || local) url.protocol = 'http:';
-  }
-  return url.href;
-}
-
 export function classifyHomeQuery(input: string): HomeQueryResult {
   const text = input.trim();
   if (!text) return { kind: 'empty', text };
@@ -66,15 +41,10 @@ export function classifyHomeQuery(input: string): HomeQueryResult {
   const value = unquote(text);
   if (blockedSchemes.test(value)) return { kind: 'invalid', text, reason: '这里只支持 http、https 网页或明确的本地文件路径。' };
   if (/^https?:/i.test(value)) {
-    const url = /^https?:\/\//i.test(value) ? parsedAddress(value, true) : undefined;
+    const url = normalizeWebAddress(value, 'omnibox');
     return url ? { kind: 'url', text, url } : { kind: 'invalid', text, reason: '网页地址无效，或包含凭据、反斜线、未转义空白。' };
   }
-  // A bare IPv6 literal without a port may be pasted as ::1 or 2001:db8::1.
-  if (/^[a-f\d:]+$/i.test(value) && value.includes('::')) {
-    const url = parsedAddress('[' + value + ']', false);
-    if (url) return { kind: 'url', text, url };
-  }
-  const address = parsedAddress(value, false);
+  const address = normalizeWebAddress(value, 'omnibox');
   if (address) return { kind: 'url', text, url: address };
   if (localPath(value) || value.startsWith('//')) return { kind: 'file', text, path: value };
   if (/^[a-z][\w+.-]*:\/\//i.test(value)) return { kind: 'invalid', text, reason: '网页导航只支持 http 和 https。' };

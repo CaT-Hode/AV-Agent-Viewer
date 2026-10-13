@@ -2,6 +2,8 @@
 :root[data-theme] .workbench .reader-toolbar.navigation-toolbar {
   --navigation-hide-progress: 0;
   --navigation-hide-duration: 650ms;
+  --navigation-offset-x: -50%;
+  --navigation-motion-easing: cubic-bezier(.18, 1.12, .3, 1);
   position: absolute;
   z-index: 6;
   top: 12px;
@@ -22,8 +24,10 @@
   /* Ancestor opacity creates a BackdropRoot and disconnects real document
      pixels. Fade the actual optical surfaces and controls individually. */
   opacity: 1;
-  transform: translate(-50%, calc(var(--navigation-hide-progress) * -20px));
-  transition: transform var(--navigation-hide-duration) linear;
+  visibility: visible;
+  transform-origin: 50% 0;
+  transform: translate(var(--navigation-offset-x), calc(var(--navigation-hide-progress) * -1 * var(--navigation-hide-shift, 20px))) scale(calc(1 - var(--navigation-hide-progress) * .035));
+  transition: transform var(--navigation-hide-duration) var(--navigation-motion-easing), visibility 0s;
   pointer-events: none;
 }
 :root[data-theme] .workbench .reader-toolbar.navigation-toolbar .navigation-capsule {
@@ -47,10 +51,14 @@
   isolation: auto;
 }
 :root[data-theme] .workbench .navigation-toolbar.is-hidden .navigation-capsule { pointer-events: none; }
+/* Remove residual capsule shadows/solid fallback paint after its leaf fade.
+   Parent opacity remains one, so the optical backdrop stays correct mid-hide. */
+:root[data-theme] .workbench .reader-toolbar.navigation-toolbar.is-hidden { --navigation-motion-easing: cubic-bezier(.4, 0, .25, 1); visibility: hidden; transition-delay: 0s, var(--navigation-hide-duration); }
 .navigation-toolbar .navigation-module,
-.navigation-toolbar .capsule-divider { opacity: calc(1 - var(--navigation-hide-progress)); transition: opacity var(--navigation-hide-duration) linear; }
+.navigation-toolbar .capsule-divider { opacity: calc(1 - var(--navigation-hide-progress)); transition: opacity var(--navigation-hide-duration) var(--navigation-motion-easing); }
 :root[data-theme] .workbench .reader-format-web > .navigation-toolbar { display: flex; }
 .navigation-module { position: relative; z-index: 1; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.navigation-dismiss { margin-left: 2px; }
 .navigation-toolbar .capsule-divider { position: relative; z-index: 1; flex-shrink: 0; height: 18px; width: 1px; margin: 0 4px; background: var(--glass-inset-hairline); }
 :root[data-theme] .navigation-capsule .icon-button { width: var(--navigation-button-size, 34px); height: var(--navigation-button-size, 34px); border-radius: calc(var(--navigation-button-size, 34px) / 2); flex-shrink: 0; }
 .navigation-capsule .view-modes { gap: 2px; }
@@ -63,12 +71,15 @@
 
 /* A transparent source-derived optical gutter; no rectangular blur surface. */
 html.native-toolbar-root .workbench.native-toolbar { position: relative; display: block; height: 100vh; padding: 16px; background: transparent !important; clip-path: none; }
-html.native-toolbar-root[data-theme] .native-toolbar .reader-toolbar.navigation-toolbar { position: relative; top: auto; left: auto; width: 100%; max-width: none; transform: translateY(calc(var(--navigation-hide-progress) * -20px)); }
+html.native-toolbar-root[data-theme] .native-toolbar .reader-toolbar.navigation-toolbar { --navigation-offset-x: 0%; position: relative; top: auto; left: auto; width: 100%; max-width: none; }
 html.native-toolbar-root[data-theme] .native-toolbar .navigation-capsule { width: 100%; max-width: none; }
-:root[data-motion="reduced"] .navigation-toolbar { transition-duration: 80ms !important; }
+:root[data-motion="reduced"] .navigation-toolbar { transition-duration: 80ms, 0s !important; }
+:root[data-motion="reduced"] .workbench .reader-toolbar.navigation-toolbar.is-hidden { transition-delay: 0s, 80ms; }
+:root[data-motion="off"] .workbench .reader-toolbar.navigation-toolbar { transition: none !important; }
 :root[data-motion="reduced"] .workbench .reader-toolbar.navigation-toolbar { transform: translateX(-50%); }
 html.native-toolbar-root[data-motion="reduced"] .native-toolbar .reader-toolbar.navigation-toolbar { transform: none; }
 @media (prefers-reduced-motion: reduce) {
-  :root .workbench .reader-toolbar.navigation-toolbar { transition-duration: 80ms; transform: translateX(-50%); }
+  :root[data-theme] .workbench .reader-toolbar.navigation-toolbar { transition-duration: 80ms, 0s !important; transform: translateX(-50%); }
   html.native-toolbar-root .native-toolbar .reader-toolbar.navigation-toolbar { transform: none; }
+  :root[data-theme] .workbench .reader-toolbar.navigation-toolbar.is-hidden { transition-delay: 0s, 80ms; }
 }

@@ -1,6 +1,6 @@
 import { actionsFor, selectionAction } from '../../selection-tools/src/index';
 import type { Actor, EditOperation, ReadingContext, Rect, ViewInfo } from '../../contracts/src/index';
-import { browserRequestSchema, ViewerError } from '../../contracts/src/index';
+import { browserRequestSchema, normalizeWebAddress, ViewerError } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 import { aiReadingTools, runAIReading } from './ai-reading';
 
@@ -19,7 +19,15 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     case 'events': return core.eventLog.filter(event => event.seq > Number(args.after ?? 0)).slice(-100);
     case 'agent-control': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '仅用户可暂停或停止 Agent。'); if (!['running','paused','stopped'].includes(String(args.status))) throw new ViewerError('INVALID_ARGUMENT', '未知 Agent 状态。'); core.setAgentControl(str('viewId'), args.status as 'running' | 'paused' | 'stopped'); return {};
     case 'capabilities': return args.documentId ? core.getDocument(str('documentId')).info.capabilities : core.registry.describe();
-    case 'open': { const activate=args.activate!==false; const view = /^https?:/.test(str('uri')) ? await core.openWeb(str('uri'), args.windowId as string | undefined, activate) : await core.openFile(str('uri'), args.windowId as string | undefined, activate); if (actor === 'human' && activate) core.activate(view.id, actor); return view; }
+    case 'open': {
+      const activate = args.activate !== false, uri = str('uri'), url = normalizeWebAddress(uri, 'omnibox');
+      // Windows also supports drive-relative paths such as D:notes.md. Keep
+      // x:// as an unknown URL scheme, rather than interpreting it as a drive.
+      const localDrivePath = /^[a-z]:(?!\/\/)/i.test(uri.trim()) && (process.platform === 'win32' || /^[a-z]:[\\/]/i.test(uri.trim()));
+      if (!url && /^[a-z][\w+.-]*:/i.test(uri.trim()) && !localDrivePath) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网址或本地文件路径。');
+      const view = url ? await core.openWeb(url, args.windowId as string | undefined, activate) : await core.openFile(uri, args.windowId as string | undefined, activate);
+      if (actor === 'human' && activate) core.activate(view.id, actor); return view;
+    }
     case 'create-text': { const format = args.format === 'html' ? 'html' : 'markdown'; const view = await core.openBytes(String(args.title ?? (format === 'html' ? '未命名.html' : '未命名.md')), new TextEncoder().encode(String(args.text ?? '')), format, undefined, args.windowId as string | undefined); if (actor === 'human') core.activate(view.id, actor); return view; }
     case 'activate': { const view = core.getView(str('viewId')), document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(view.id, document.model.url); core.activate(view.id, actor); return {}; }
     case 'mode': { const mode = str('mode'); if (!['read', 'source', 'split'].includes(mode)) throw new ViewerError('INVALID_ARGUMENT', '未知视图模式。'); core.setMode(str('viewId'), mode as ViewInfo['mode']); return {}; }
@@ -40,7 +48,14 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     case 'save': return core.save(str('documentId'), args.path as string | undefined, actor === 'human' && !!args.allowOverwrite);
     case 'browser-input': return core.browserInput(browserRequestSchema.parse(args));
     case 'browser-capture': if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。'); return core.browser.capture(str('viewId'));
-    case 'browser-navigate': if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。'); await core.browser.navigate(str('viewId'), str('action') as 'back' | 'forward' | 'reload' | 'url', args.url as string | undefined); return {};
+    case 'browser-navigate': {
+      if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。');
+      const action = str('action');
+      if (!['back', 'forward', 'reload', 'url'].includes(action)) throw new ViewerError('INVALID_ARGUMENT', '未知网页导航操作。');
+      const url = action === 'url' ? normalizeWebAddress(str('url')) : undefined;
+      if (action === 'url' && !url) throw new ViewerError('INVALID_URL', '请输入有效的网址，例如 example.com 或 https://example.com。');
+      await core.browser.navigate(str('viewId'), action as 'back' | 'forward' | 'reload' | 'url', url); return {};
+    }
     case 'browser-copy': return core.browserCopy(str('viewId'));
     case 'browser-layout': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '布局由桌面工作台管理。'); core.browser?.layout(String(args.windowId ?? 'main'), args.views as { viewId: string; bounds: Rect }[]); return {};
     case 'harness-submit': {

@@ -20,6 +20,7 @@ import { OfficeTools, type OfficeTarget } from './components/OfficeTools';
 import type { OfficeDraftController } from './components/OfficeDocument';
 import { call, desktop, samples, state, windowId } from './lib/transport';
 import type { DocumentInfo, EditOperation, HarnessTask, PreparedPatch, ReadingSnapshot, Receipt, ViewInfo, WorkspaceState } from '../../../../packages/contracts/src/index';
+import { normalizeWebAddress } from '../../../../packages/contracts/src/index';
 import type { SettingsSnapshot, SettingValue } from '../../../../packages/settings/src/index';
 import type { TranslationArtifact, TranslationJob } from '../../../../packages/translation/src/index';
 import { applyAppearance } from './lib/appearance';
@@ -189,21 +190,23 @@ export function App() {
     else if (event.action === 'blur') navigation.onBlur();
     else if (event.action === 'hover') navigation.onHover();
     else if (event.action === 'leave') navigation.onLeave();
-    else if (event.action === 'reveal') navigation.reveal();
+    else if (event.action === 'reveal') navigation.revealFromEdge(Number(event.distanceToTop));
+    else if (event.action === 'dismiss') navigation.dismiss();
+    else if (event.action === 'focus-address-request') { navigation.reveal(); void call('toolbar-focus').catch(alert); }
     else if (event.action === 'scroll' && Number.isFinite(event.scrollY)) navigation.onScroll(Number(event.scrollY));
     else if (event.action === 'navigate') void navigationAction({ type: 'navigate', url: String(event.url ?? '') });
     else if (event.action === 'zoom') void navigationAction({ type: 'zoom', factor: Number(event.factor) });
     else if (event.action === 'zoom-updated') void refresh();
     else if (['back', 'forward', 'reload', 'copy', 'translate'].includes(String(event.action))) void navigationAction({ type: event.action as 'back' | 'forward' | 'reload' | 'copy' | 'translate' });
-  }), [view?.id, view?.zoom, document?.format, home, homeTabId, webTranslated, webBusy, navigation.onFocus, navigation.onBlur, navigation.onHover, navigation.onLeave, navigation.reveal, navigation.onScroll]);
+  }), [view?.id, view?.zoom, document?.format, home, homeTabId, webTranslated, webBusy, navigation.onFocus, navigation.onBlur, navigation.onHover, navigation.onLeave, navigation.reveal, navigation.revealFromEdge, navigation.dismiss, navigation.onScroll]);
   useEffect(() => {
     if (!desktop) return;
     if (home || modalMotion.present || document?.format !== 'web' || !view) { void call('toolbar-layout', { visible: false }); return; }
     const reader = window.document.querySelector('.reader-panel'); if (!reader) return;
-    const update = () => { const box = reader.getBoundingClientRect(), width = Math.min(780, box.width - 28); void call('toolbar-layout', { viewId: view.id, visible: navigation.visible, hideProgress: navigation.progress, hideDurationMs: navigation.durationMs, address: document.model.url, translated: webTranslated[view.id], busy: webBusy, settings, zoom: view.zoom ?? 1, bounds: { x: box.x + (box.width - width) / 2, y: box.y + NAVIGATION_METRICS.top - NAVIGATION_METRICS.shadowGutter, width, height: NAVIGATION_METRICS.height + 2 * NAVIGATION_METRICS.shadowGutter } }).catch(alert); };
+    const update = () => { const box = reader.getBoundingClientRect(), width = Math.min(780, box.width - 28); void call('toolbar-layout', { viewId: view.id, visible: navigation.visible, manualHidden: navigation.manualHidden, hideProgress: navigation.progress, hideDurationMs: navigation.durationMs, address: document.model.url, translated: webTranslated[view.id], busy: webBusy, settings, zoom: view.zoom ?? 1, bounds: { x: box.x + (box.width - width) / 2, y: box.y + NAVIGATION_METRICS.top - NAVIGATION_METRICS.shadowGutter, width, height: NAVIGATION_METRICS.height + 2 * NAVIGATION_METRICS.shadowGutter } }).catch(alert); };
     const observer = new ResizeObserver(update); observer.observe(reader); update();
     return () => observer.disconnect();
-  }, [home, modalMotion.present, view?.id, view?.zoom, document?.model.url, navigation.visible, navigation.progress, navigation.durationMs, settings, webBusy, webTranslated, leftOpen, drawer]);
+  }, [home, modalMotion.present, view?.id, view?.zoom, document?.model.url, navigation.visible, navigation.manualHidden, navigation.progress, navigation.durationMs, settings, webBusy, webTranslated, leftOpen, drawer]);
   useEffect(() => {
     if (!desktop) return;
     const visible = !home && !modalMotion.present && document?.format === 'web' && !!view && !!agentEvent && (agentEvent.data.viewId === view.id || agentEvent.data.documentId === document.id);
@@ -257,9 +260,15 @@ export function App() {
   async function navigationAction(action: NavigationAction) {
     try {
       if (!document || !view) return;
-      if (action.type === 'back' || action.type === 'forward') await navigate(action.type);
+      if (action.type === 'dismiss') navigation.dismiss();
+      else if (action.type === 'back' || action.type === 'forward') await navigate(action.type);
       else if (action.type === 'reload') { if(document.format === 'web' && desktop) await call('browser-navigate', { viewId: view.id, action: 'reload' }); else await refresh(); }
-      else if (action.type === 'navigate') { if(desktop && /^https?:/.test(action.url)) await call('browser-navigate', { viewId: view.id, action: 'url', url: action.url }); else await openUri(action.url); }
+      else if (action.type === 'navigate') {
+        const url = normalizeWebAddress(action.url);
+        if (!url) throw new Error('请输入有效的网址，例如 example.com 或 https://example.com。');
+        if (desktop && document.format === 'web') await call('browser-navigate', { viewId: view.id, action: 'url', url });
+        else await openUri(url);
+      }
       else if (action.type === 'mode') { await call('mode', { viewId: view.id, mode: action.mode }); await refresh(); }
       else if (action.type === 'zoom') { await call('zoom', { viewId: view.id, factor: action.factor }); await refresh(); }
       else if (action.type === 'undo') {
@@ -405,10 +414,10 @@ export function App() {
       {document?.format !== 'web' && <nav className="activity-rail material-host" aria-label="文档工具"><LiquidGlassSurface variant="panel" /><button className={leftSection === 'outline' && leftOpen ? 'selected' : ''} aria-label="目录与结构" aria-pressed={leftSection === 'outline' && leftOpen} title="目录与结构" onClick={() => { setLeftOpen(leftSection === 'outline' ? !leftOpen : true); setLeftSection('outline'); }}><ListTree size={21} /></button><button className={leftSection === 'search' && leftOpen ? 'selected' : ''} aria-label="查找" aria-pressed={leftSection === 'search' && leftOpen} title="查找" onClick={() => { setLeftOpen(leftSection === 'search' ? !leftOpen : true); setLeftSection('search'); }}><Search size={20} /></button><button className={leftSection === 'tools' && leftOpen ? 'selected' : ''} aria-label={tone(document?.format) + '工具'} aria-pressed={leftSection === 'tools' && leftOpen} title={tone(document?.format) + '工具'} onClick={() => { setLeftOpen(leftSection === 'tools' ? !leftOpen : true); setLeftSection('tools'); }}><FormatToolIcon format={document?.format} /></button></nav>}
       <MotionPresence show={!home && leftOpen && document?.format !== 'web'} surface="left" duration={220} identity={motionIdentity}>{leftOpen && document?.format !== 'web' && <aside className="format-sidebar material-host" id="format-tools"><LiquidGlassSurface variant="panel" /><div className="format-heading"><span>{tone(document?.format)}工具</span></div>
       {leftSection === 'outline' ? <div className="format-scroll motion-swap" key={leftSection}><div className="side-label">当前位置</div><div className="location-chip"><span className="connection-dot ready" />{locationText}</div><div className="side-label">结构导航</div>{outline.map((item, index) => <button className="outline-item" key={index} onClick={() => { if (document?.format === 'markdown') scrollReadingTarget(window.document.querySelectorAll<HTMLElement>('.document-content h1,.document-content h2,.document-content h3,.document-content h4')[index]); else if (document?.format === 'pdf') scrollReadingTarget(window.document.querySelectorAll<HTMLElement>('.pdf-page')[index]); else window.dispatchEvent(new CustomEvent('agentviewer:navigate-structure', { detail: { index } })); }}>{item}</button>)}{!outline.length && <p className="side-hint">当前文档暂无可用大纲。</p>}</div> : leftSection === 'search' ? <div className="format-scroll motion-swap" key={leftSection}><label className="search-field material-host"><LiquidGlassSurface variant="search" /><Search size={16} /><input placeholder="查找当前文档" onKeyDown={e => { if (e.key === 'Enter' && document) void call<{ results: unknown[] }>('search', { documentId: document.id, query: e.currentTarget.value }).then(result => setToast('找到 ' + result.results.length + ' 处；当前引擎提供文本定位结果。')).catch(alert); }} /></label><p className="side-hint">按 Enter 搜索。源文件中的查找范围由格式引擎决定。</p></div> : <div className="format-scroll motion-swap" key={leftSection}><div className="side-label">阅读与编辑</div>{['markdown','html'].includes(document?.format ?? '') && <p className="side-hint">源码与分栏模式可在顶部操作胶囊中切换。</p>}{document?.format === 'pdf' && <div className="pdf-side-tools"><p className="side-hint">选中文字后，在浮窗中高亮、标记或添加批注。</p><button className="tool-row" onClick={() => pdfCommand('rotate')}>旋转当前页</button><button className="tool-row" onClick={() => pdfCommand('add-page')}>增加页面</button><div className="side-label">扫描文字</div><button className="tool-row" disabled={pdfTools.ocrBusy} onClick={() => pdfCommand('ocr')}>{pdfTools.ocrBusy ? '识别中…' : '识别本页'}</button>{pdfTools.ocrResult && <section className="pdf-side-result" aria-live="polite"><div><strong>第 {pdfTools.ocrResult.pageIndex + 1} 页 · {pdfTools.ocrResult.confidence}%</strong><button onClick={() => pdfCommand('clear-ocr')}>关闭</button></div><p>{pdfTools.ocrResult.text || '未识别出文字。'}</p></section>}<p className="side-hint">扫描文字仅显示在工具栏，不写入原 PDF。</p></div>}{document && view && ['docx','pptx','xlsx'].includes(document.format) && <OfficeTools document={document} viewId={view.id} target={officeTarget} edit={edit} openFullEditor={openFullOfficeEditor} reload={reloadOffice} fullEditorAvailable={desktop && fullOfficeAvailable} />}<div className="side-label">视图</div><button className="tool-row" disabled={!view} onClick={() => { if (view) void call<ViewInfo>('duplicate-view', { viewId: view.id }).then(activate).catch(alert); }}><Copy size={15} /> 复制视图</button><button className="tool-row" disabled={!desktop || !view} onClick={() => void call('new-window', { viewId: view?.id }).catch(alert)}><ExternalLink size={15} /> 新窗口</button></div>}</aside>}</MotionPresence>
-      <main className={"reader-panel reader-format-" + (document?.format ?? "none")} onMouseMove={event => { if (event.clientY - event.currentTarget.getBoundingClientRect().top < 72) revealToolbar(); }}>
+      <main className={"reader-panel reader-format-" + (document?.format ?? "none")} onMouseMove={event => navigation.revealFromEdge(event.clientY - event.currentTarget.getBoundingClientRect().top)}>
         {document && (document.format !== 'web' || !desktop) && <NavigationToolbar key={'navigation:' + view?.id}
           state={{ format: document.format, zoom: view?.zoom ?? 1, title: document.title, titleIcon: <FileIcon format={document.format} />, address: document.model.url, mode: view?.mode, canUndo: lastTransactions.current.has(document.id), busy: webBusy, translated: view ? webTranslated[view.id] : false }}
-          dispatch={action => void navigationAction(action)} progress={navigation.progress} durationMs={navigation.durationMs}
+          dispatch={action => void navigationAction(action)} progress={navigation.progress} durationMs={navigation.durationMs} manualHidden={navigation.manualHidden}
           onHover={navigation.onHover} onLeave={navigation.onLeave} onFocus={navigation.onFocus} onBlur={navigation.onBlur} />}
       {document && view ? <DocumentPane key={view.id} document={document} view={view} edit={edit} onTextChange={editText} reportError={alert} onPdfToolsChange={setPdfTools} onOfficeTargetChange={setOfficeTarget} onOfficeDraftController={onOfficeDraftController} onOfficeDraftChange={onOfficeDraftChange} onReaderScroll={onReaderScroll} onZoomChange={factor => void navigationAction({ type: 'zoom', factor })} obscured={modalMotion.present} annotations={annotations} /> : <div className="empty-workspace"><BookOpen size={40} /><h1>打开文档，开始阅读</h1><button className="button primary" onClick={() => void openFile()}>打开文件</button></div>}
       <MotionPresence show={!!agentEvent && (agentEvent.data.viewId === view?.id || agentEvent.data.documentId === document?.id) && document?.format !== 'web'} surface="agent" duration={200} identity={view?.id} keyboardImmediate={false}>{agentEvent && <AgentOperationCapsule kind={agentEvent.data.kind} status={agentStatuses[view!.id] ?? 'running'} target={val('agent.capsuleDetail', 'minimal') === 'target' ? document?.title : undefined} onControl={status => void controlAgent(status)} />}</MotionPresence>

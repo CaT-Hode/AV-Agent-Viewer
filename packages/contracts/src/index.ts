@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 export const PROTOCOL_VERSION = '1.0';
+/** Reading-area edge, in CSS pixels/DIP; shared by DOM and native web views. */
+export const NAVIGATION_EDGE_REVEAL_PX = 6;
 export type Format = 'markdown' | 'html' | 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'web';
 export type Actor = 'human' | 'agent' | 'engine';
 export type Rect = { x: number; y: number; width: number; height: number };
@@ -136,3 +138,6 @@ export interface HarnessDriver {
 export class ViewerError extends Error {
   constructor(public code: string, message: string, public details?: unknown) { super(message); }
 }
+
+export { normalizeWebAddress, documentSuffixes } from './web-address';
+export type { WebAddressInference } from './web-address';

@@ -3,7 +3,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { readFile, writeFile, rename, mkdir, unlink } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 import type { Actor, BrowserRequest, BrowserRuntime, DocumentInfo, EditOperation, Format, HarnessDriver, HarnessTask, PreparedPatch, ReadingContext, ReadingSnapshot, Receipt, ViewInfo, WorkspaceState } from '../../contracts/src/index';
-import { PROTOCOL_VERSION, ViewerError, editOperationSchema, browserRequestSchema } from '../../contracts/src/index';
+import { PROTOCOL_VERSION, ViewerError, editOperationSchema, browserRequestSchema, normalizeWebAddress } from '../../contracts/src/index';
 import { AdapterRegistry, createRegistry } from '../../format-adapters/src/index';
 import type { WorkspaceRepository } from '../../persistence/src/index';
 import { convertLegacy } from '../../../apps/office-gateway/src/conversion';
@@ -109,7 +109,10 @@ export class ViewerCore extends EventEmitter {
     this.views.set(view.id, view); if (activate) this.activeViewId = view.id; this.event('view.opened', view); return clone(view);
   }
   async openWeb(url: string, windowId = 'main', activate = true) {
-    const parsed = new URL(url); if (!['http:', 'https:'].includes(parsed.protocol)) throw new ViewerError('INVALID_URL', '网页只允许 HTTP(S) 地址。');
+    const normalized = normalizeWebAddress(url);
+    if (!normalized) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。');
+    url = normalized;
+    const parsed = new URL(url);
     const id = randomUUID();
     this.documents.set(id, { bytes: new Uint8Array(), info: { id, title: parsed.hostname, format: 'web', revision: 0, diskRevision: 0, dirty: false, model: { format: 'web', url }, warnings: [], capabilities: { engine: this.browser ? 'electron-chromium' : 'preview-iframe', protocolVersion: PROTOCOL_VERSION, readText: !!this.browser, readSelection: !!this.browser, readViewport: !!this.browser, editKinds: [], saveFormats: ['html'], browserInput: !!this.browser, limitations: this.browser ? ['实时网页操作影响当前站点；持久编辑请建立阅读副本。', '正文提取当前仅顶层 frame。'] : ['原生网页输入与跨站上下文需在桌面应用使用。'] } } });
     const view = this.addView(id, windowId, activate); if (this.browser) await this.browser.open(view.id, url); return view;

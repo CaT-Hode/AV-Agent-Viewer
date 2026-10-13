@@ -1,6 +1,6 @@
 import { BrowserWindow, WebContentsView } from 'electron';
 import type { Actor, BrowserRequest, BrowserRuntime, ReadingContext, Rect } from '../../contracts/src/index';
-import { ViewerError } from '../../contracts/src/index';
+import { normalizeWebAddress, NAVIGATION_EDGE_REVEAL_PX, ViewerError } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 import { randomUUID } from 'node:crypto';
 
@@ -72,6 +72,9 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     overlay.timer = setTimeout(() => { if (!overlay!.window.isDestroyed()) overlay!.window.close(); }, 1600);
   }
   async open(viewId: string, url: string) {
+    const normalized = normalizeWebAddress(url);
+    if (!normalized) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。');
+    url = normalized;
     if (this.entries.has(viewId)) return;
     const metadata = this.core.getView(viewId), owner = this.windowFor(metadata.windowId);
     const view = new WebContentsView({ webPreferences: { preload: this.surfaceOptions.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'persist:agentviewer-web' } });
@@ -98,14 +101,24 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     wc.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => { if (isMainFrame) { entry.navigationId = randomUUID(); entry.layoutRevision = 0; entry.sourceReady = false; entry.sourceRevision++; if (!inPlace) { entry.sourceSequence = 0; entry.sourceClock = undefined; } this.core.event('browser.navigation', { viewId, navigationId: entry.navigationId }); this.surfaceOptions.onSourceChanged?.(entry.owner, viewId); } });
     const readySource = () => { entry.sourceRevision++; entry.sourcePending = { reason: 'ready' }; if (!entry.sourceReading) void this.readSource(viewId, entry); };
     wc.on('did-finish-load', readySource);
-    wc.on('did-navigate-in-page', readySource);
+    wc.on('did-navigate-in-page', (_event, currentUrl, isMainFrame) => {
+      if (!isMainFrame) return;
+      this.core.getDocument(metadata.documentId).info.model.url = currentUrl;
+      readySource();
+    });
     wc.on('page-title-updated', (_e, title) => { const doc = this.core.getDocument(metadata.documentId); doc.info.title = title; this.core.event('browser.title', { viewId }); });
     wc.on('did-navigate', (_e, currentUrl) => { this.core.getDocument(metadata.documentId).info.model.url = currentUrl; });
-    wc.on('before-input-event', () => { if (entry.visible && !entry.injecting) { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
+    wc.on('before-input-event', (event, input) => {
+      if (!entry.visible || entry.injecting) return;
+      entry.actor = 'human'; this.core.activate(viewId, 'human');
+      if (input.type === 'keyDown' && (input.control || input.meta) && input.key.toLowerCase() === 'l') {
+        event.preventDefault(); entry.owner.webContents.send('agentviewer:toolbar', { action: 'focus-address-request', viewId });
+      }
+    });
     wc.on('before-mouse-event', (_event, mouse) => {
       if (!entry.injecting && mouse.type === 'mouseMove') {
-        const top = mouse.y < 65;
-        if (top && !entry.topHover) entry.owner.webContents.send('agentviewer:toolbar', { action: 'reveal', viewId });
+        const top = mouse.y >= 0 && mouse.y <= NAVIGATION_EDGE_REVEAL_PX;
+        if (top && !entry.topHover) entry.owner.webContents.send('agentviewer:toolbar', { action: 'reveal', viewId, distanceToTop: mouse.y });
         if (!top && entry.topHover) entry.owner.webContents.send('agentviewer:toolbar', { action: 'leave', viewId });
         entry.topHover = top;
       }
@@ -195,7 +208,7 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     if (action === 'reload') wc.reload();
     else if (action === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     else if (action === 'forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
-    else if (action === 'url') { if (!url || !/^https?:/.test(url)) throw new ViewerError('INVALID_URL', '只允许 HTTP(S)。'); await wc.loadURL(url); }
+    else if (action === 'url') { const normalized = url && normalizeWebAddress(url); if (!normalized) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。'); await wc.loadURL(normalized); }
   }
   async capture(viewId: string) {
     const entry = this.entry(viewId), context = await this.context(viewId), navigationId = entry.navigationId;

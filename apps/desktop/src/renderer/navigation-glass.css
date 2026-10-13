@@ -63,7 +63,7 @@
   background-repeat: no-repeat;
   opacity: calc(1 - var(--navigation-hide-progress));
   transform: none;
-  transition: opacity var(--navigation-hide-duration) linear;
+  transition: opacity var(--navigation-hide-duration) var(--navigation-motion-easing, linear);
 }
 .floating-capsule.navigation-capsule .navigation-glass-center {
   -webkit-backdrop-filter: var(--liquid-glass-center-filter);
@@ -95,7 +95,7 @@
   border-radius: inherit;
   background: var(--navigation-tint);
   opacity: calc(1 - var(--navigation-hide-progress));
-  transition: opacity var(--navigation-hide-duration) linear;
+  transition: opacity var(--navigation-hide-duration) var(--navigation-motion-easing, linear);
 }
 .floating-capsule.navigation-capsule .navigation-glass-highlight {
   position: absolute;
@@ -107,7 +107,7 @@
   background-size: 100% 100%;
   background-repeat: no-repeat;
   opacity: calc(1 - var(--navigation-hide-progress));
-  transition: opacity var(--navigation-hide-duration) linear;
+  transition: opacity var(--navigation-hide-duration) var(--navigation-motion-easing, linear);
 }
 /* An iframe's viewport must extend behind the navigation. Its own content
    scrolls independently, so outer top padding cannot act as scroll clearance. */
