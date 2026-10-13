@@ -7,7 +7,7 @@ import { PROTOCOL_VERSION, ViewerError, editOperationSchema, browserRequestSchem
 import { AdapterRegistry, createRegistry } from '../../format-adapters/src/index';
 import type { WorkspaceRepository } from '../../persistence/src/index';
 import { convertLegacy } from '../../../apps/office-gateway/src/conversion';
-import { scopedReadingSnapshot } from '../../ai-reading-tools/src/index';
+import { scopedReadingSnapshot, type ScopedReadingSnapshot } from '../../ai-reading-tools/src/index';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const clone = <T>(value: T): T => structuredClone(value);
@@ -248,12 +248,44 @@ export class ViewerCore extends EventEmitter {
   async browserCopy(viewId: string) { if (!this.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请在桌面应用创建网页副本。'); const view = this.getView(viewId); const source = this.getDocument(view.documentId).info; const html = await this.browser.html(viewId); const copy = await this.openBytes(source.title + '.html', new TextEncoder().encode(html), 'html', undefined, view.windowId); this.getDocument(copy.documentId).info.warnings.push('来源：' + source.model.url, '这是本地阅读副本，未修改远程站点。外部资源未归档，相对链接可能失效。', '副本移除脚本、嵌入 frame、事件属性与已知敏感表单值。'); return copy; }
   async submitTask(driverId: string, prompt: string, viewId?: string, snapshotId?: string, sourceScope?: 'selection' | 'visible') {
     const driver = this.drivers.get(driverId); if (!driver) throw new ViewerError('HARNESS_UNAVAILABLE', '尚未配置该 harness 驱动。');
-    const original = snapshotId ? this.readSnapshot(snapshotId) : await this.snapshot(viewId), controller = new AbortController();
+    const original = snapshotId ? this.readSnapshot(snapshotId) : await this.snapshot(viewId);
     const snapshot = sourceScope ? scopedReadingSnapshot(original, sourceScope) : original;
     if (viewId && snapshot.context.viewId !== viewId) throw new ViewerError('SNAPSHOT_TARGET_MISMATCH', '固定快照属于其他阅读视图。');
+    return this.startTask(driver, prompt, snapshot, sourceScope);
+  }
+  /** Trusted SDK path for retrying a bounded source after the ordinary snapshot
+   * cache expires. The public dispatcher never accepts a caller-supplied source. */
+  async submitFrozenReadingTask(driver: HarnessDriver, prompt: string, frozen: ScopedReadingSnapshot, timeoutMs = 180000) {
+    const snapshot = scopedReadingSnapshot(frozen, frozen.sourceScope);
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 900000) throw new ViewerError('INVALID_ARGUMENT', '阅读任务超时必须在 1–900000 毫秒内。');
+    return this.startTask(driver, prompt, snapshot, snapshot.sourceScope, timeoutMs);
+  }
+  private startTask(driver: HarnessDriver, prompt: string, snapshot: ReadingSnapshot, sourceScope?: 'selection' | 'visible', timeoutMs = sourceScope ? 180000 : 0) {
+    const controller = new AbortController();
     const task: HarnessTask = { id: randomUUID(), snapshotId: snapshot.id, viewId: snapshot.context.viewId, sourceScope, prompt, text: '', status: 'running' }; this.tasks.set(task.id, task); this.taskControllers.set(task.id, controller); this.event('harness.started', { taskId: task.id });
-    void driver.submit(prompt, snapshot, delta => { task.text += delta; this.event('harness.delta', { taskId: task.id, text: delta }); }, controller.signal).then(() => { task.status = controller.signal.aborted ? 'cancelled' : 'completed'; }).catch(e => { task.status = controller.signal.aborted ? 'cancelled' : 'failed'; task.error = String(e); }).finally(() => { this.taskControllers.delete(task.id); this.event('harness.completed', { taskId: task.id, status: task.status }); });
+    let ended = false, timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (status: HarnessTask['status'], error?: unknown) => {
+      if (ended) return;
+      ended = true; clearTimeout(timer); controller.signal.removeEventListener('abort', cancelled);
+      task.status = status; if (error !== undefined) task.error = String(error);
+      this.taskControllers.delete(task.id); this.event('harness.completed', { taskId: task.id, status: task.status });
+    };
+    const cancelled = () => finish('cancelled'); controller.signal.addEventListener('abort', cancelled, { once: true });
+    if (timeoutMs) { timer = setTimeout(() => { finish('failed', '阅读分析超过 ' + Math.round(timeoutMs / 1000) + ' 秒，已停止等待；可基于同一冻结来源重试。'); controller.abort(); }, timeoutMs); timer.unref(); }
+    void Promise.resolve().then(() => {
+      if (ended || controller.signal.aborted) return;
+      return driver.submit(prompt, clone(snapshot), delta => {
+      // A provider may ignore cancellation or emit after its promise settles.
+      // Terminal tasks must not grow or change status when that happens.
+      if (ended || controller.signal.aborted) return;
+      if (typeof delta !== 'string') { finish('failed', 'Harness 返回了非文本内容。'); controller.abort(); return; }
+      if (sourceScope && task.text.length + delta.length > 160000) { finish('failed', '模型输出超过 160000 字符，已停止接收；未静默截断为完整结果。'); controller.abort(); return; }
+      task.text += delta; if (delta) this.event('harness.delta', { taskId: task.id, text: delta });
+      }, controller.signal);
+    }).then(() => {
+      if (sourceScope && !task.text.trim()) finish('failed', '模型未返回可读结果。'); else finish('completed');
+    }).catch(error => finish(controller.signal.aborted ? 'cancelled' : 'failed', error));
     return clone(task);
   }
-  cancelTask(taskId: string) { const controller = this.taskControllers.get(taskId); if (!controller) throw new ViewerError('TARGET_NOT_FOUND', '任务已结束或不存在。'); controller.abort(); }
+  cancelTask(taskId: string) { const controller = this.taskControllers.get(taskId); if (!controller) { if (this.tasks.get(taskId)?.status === 'cancelled') return; throw new ViewerError('TARGET_NOT_FOUND', '任务已结束或不存在。'); } controller.abort(); }
 }

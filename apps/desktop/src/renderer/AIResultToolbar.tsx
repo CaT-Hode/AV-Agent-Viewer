@@ -6,8 +6,9 @@ import { usePresence } from './components/MotionPresence';
 import type { NavigationBackdropSample, NavigationBounds } from './lib/navigation-optics';
 import { call } from './lib/transport';
 import { applyAppearance } from './lib/appearance';
+import { AI_POPOVER_MOTION_BASE_MS } from './lib/motion-policy';
 
-type AIResultState = { visible?: boolean; viewId?: string; taskId?: string; label?: string; source?: string; task?: HarnessTask; settings?: SettingsSnapshot; backdropImage?: string; backdropSample?: NavigationBackdropSample };
+type AIResultState = { visible?: boolean; viewId?: string; taskId?: string; label?: string; source?: string; sourceText?: string; sourceUpdated?: boolean; retryable?: boolean; task?: HarnessTask; settings?: SettingsSnapshot; backdropImage?: string; backdropSample?: NavigationBackdropSample };
 /** A trusted readout for one validated task/source. It has no generic task API. */
 export function AIResultToolbar() {
   const [state, setState] = useState<AIResultState>({}), geometry = useRef<NavigationBounds | undefined>(undefined), [bounds, setBounds] = useState<NavigationBounds>();
@@ -25,8 +26,9 @@ export function AIResultToolbar() {
     geometry.current = next; setBounds(next); void call('toolbar-action', { action: 'geometry', viewId: state.viewId, capsuleBounds: next }).catch(() => {});
   }, [state.viewId]);
   useEffect(() => { geometry.current = undefined; setBounds(undefined); }, [state.viewId]);
-  const presence = usePresence(!!state.visible && !!state.task, { duration: 200, identity: state.viewId, keyboardImmediate: false });
-  const action = (action: 'close' | 'save' | 'cancel') => void call('ai-result-action', { action, viewId: state.viewId, taskId: state.taskId }).catch(error => setState(previous => previous.task ? { ...previous, task: { ...previous.task, error: String(error) } } : previous));
+  const identity = `${state.viewId ?? ''}:${state.taskId ?? ''}`;
+  const presence = usePresence(!!state.visible && !!state.task, { duration: AI_POPOVER_MOTION_BASE_MS, identity, keyboardImmediate: false });
+  const action = (action: 'close' | 'save' | 'cancel' | 'retry') => void call('ai-result-action', { action, viewId: state.viewId, taskId: state.taskId }).catch(error => setState(previous => previous.task ? { ...previous, task: { ...previous.task, error: String(error) } } : previous));
   if (!presence.present || !state.task) return null;
-  return <div className="native-ai-result-slot"><AIResultPopover {...presence.props} data-motion-surface="right" native task={state.task} label={state.label ?? 'AI 分析'} source={state.source ?? ''} backdropImage={state.backdropImage} backdropSample={state.backdropSample} bounds={bounds} onGeometry={onGeometry} onClose={() => action('close')} onSave={() => action('save')} onCancel={() => action('cancel')} /></div>;
+  return <div className="native-ai-result-slot"><AIResultPopover key={identity} {...presence.props} data-motion-surface="ai-popover" native task={state.task} label={state.label ?? 'AI 分析'} source={state.source ?? ''} sourceText={state.sourceText} sourceUpdated={state.sourceUpdated} backdropImage={state.backdropImage} backdropSample={state.backdropSample} bounds={bounds} onGeometry={onGeometry} onClose={() => action('close')} onSave={() => action('save')} onCancel={() => action('cancel')} onRetry={state.retryable ? () => action('retry') : undefined} /></div>;
 }

@@ -30,6 +30,18 @@ export function WebToolbar() {
   }, []);
   useEffect(() => { applyAppearance(state.settings); }, [state.settings?.revision]);
   const action = (name: string, extra = {}) => void call('toolbar-action', { action: name, viewId: state.viewId, ...extra });
+  useEffect(() => {
+    // Moving between independent native WebContents does not necessarily blur
+    // the address element: it can remain document.activeElement while this
+    // entire window loses focus. Release both editing and pointer holds so the
+    // real webpage scroll can drive hiding again.
+    const blur = () => { if (state.viewId && state.visible !== false) { action('blur'); action('leave'); } };
+    const focus = () => {
+      if (state.viewId && state.visible !== false && document.activeElement?.closest('.navigation-toolbar:not(.is-hidden)')) action('focus');
+    };
+    window.addEventListener('blur', blur); window.addEventListener('focus', focus);
+    return () => { window.removeEventListener('blur', blur); window.removeEventListener('focus', focus); };
+  }, [state.viewId, state.visible]);
   const geometry = useRef<NavigationBounds | undefined>(undefined);
   const onGeometry = useCallback((bounds: NavigationBounds) => {
     if (geometry.current && ['x', 'y', 'width', 'height'].every(key => Math.abs(geometry.current![key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) < .125)) return;
@@ -37,7 +49,7 @@ export function WebToolbar() {
     void call('toolbar-action', { action: 'geometry', viewId: state.viewId, capsuleBounds: bounds }).catch(() => {});
   }, [state.viewId]);
   useEffect(() => { geometry.current = undefined; }, [state.viewId]);
-  const presence = usePresence(!!state.viewId && state.visible !== false, { duration: state.instant ? 0 : state.hideDurationMs ?? 650 });
+  const presence = usePresence(!!state.viewId && state.visible !== false, { duration: state.instant ? 0 : state.hideDurationMs ?? 650, keyboardImmediate: false });
   useEffect(() => {
     if (!presence.present || state.visible === false || !pendingAddressFocus.current) return;
     const frame = requestAnimationFrame(() => {

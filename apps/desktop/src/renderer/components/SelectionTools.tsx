@@ -30,7 +30,9 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   const run=async(tool:Tool,submit=false)=>{
     if(!state||busy)return;if(tool.input&&!submit){setError('');setInput(input?.id===tool.id?undefined:tool);setValue(tool.id==='replace'?state.snapshot.context.selection.text:'');return;}
     setBusy(true);setError('');try{
-      const result=await call<any>('selection-action',{snapshotId:state.snapshot.id,action:tool.id,value:tool.input?value:undefined,idempotencyKey:crypto.randomUUID()});
+      const requestId = crypto.randomUUID();
+      if (!native) window.dispatchEvent(new CustomEvent('agentviewer:selection-start', { detail: { action: tool.id, requestId, snapshot: state.snapshot } }));
+      const result=await call<any>('selection-action',{snapshotId:state.snapshot.id,action:tool.id,value:tool.input?value:undefined,idempotencyKey:requestId});
       if(result.text&&(tool.id==='copy'||tool.id==='citation'))await navigator.clipboard.writeText(result.text);
       const detail={action:tool.id,result,snapshot:state.snapshot};if(native)await call('toolbar-action',{action:'result',detail});else window.dispatchEvent(new CustomEvent('agentviewer:selection-result',{detail}));
       clear();

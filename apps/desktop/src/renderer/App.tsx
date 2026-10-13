@@ -5,13 +5,14 @@ import { replaceHomeTabSlot } from './lib/home-tabs';
 import { AgentOperationCapsule } from './components/AgentOperationCapsule';
 import { AIReadingTools } from './components/AIReadingTools';
 import { AIResultPopover } from './components/AIResultPopover';
+import { TranslationCard, type TranslationCardState as Card } from './components/TranslationCard';
 import type { AIReadingToolDefinition, AIReadingScope } from './lib/ai-reading-tools';
 import { FileDropHost } from './components/FileDropHost';
 import { AGENT_OPERATION_METRICS, NAVIGATION_METRICS } from './lib/navigation-optics';
-import { AnimatedDisclosure, MotionPresence, usePresence } from './components/MotionPresence';
+import { MotionPresence, usePresence } from './components/MotionPresence';
 import { NavigationToolbar, type NavigationAction } from './components/NavigationToolbar';
 import { useNavigationVisibility } from './lib/navigation-visibility';
-import { motionDuration } from './lib/motion';
+import { motionDuration, navigationMotionDuration, useMotionSnapshot } from './lib/motion';
 import { scrollReadingTarget } from './lib/reading-scroll';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquare, BookOpen, Braces, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, ExternalLink, FileCode2, FilePlus2, FileText, FolderOpen, Globe, Highlighter, Languages, ListTree, ListTodo, Minus, Pause, Pilcrow, Pin, Plus, Presentation, RotateCw, Search, Send, Settings2, Sparkles, Square, StopCircle, Table2, X } from 'lucide-react';
@@ -34,7 +35,6 @@ export function rendererPollStats() { return { ...pollStats }; }
 const emptyPdfTools: PdfToolsState = { note: '', highlight: false, ocrBusy: false };
 const formats = [{ id: 'markdown', title: 'Markdown', extension: 'md' }, { id: 'docx', title: 'Word', extension: 'docx' }, { id: 'pptx', title: 'PowerPoint', extension: 'pptx' }, { id: 'xlsx', title: 'Excel', extension: 'xlsx' }, { id: 'pdf', title: 'PDF', extension: 'pdf' }, { id: 'html', title: 'HTML', extension: 'html' }];
 const formatName: Record<string, string> = { markdown: 'Markdown', html: 'HTML', docx: 'Word', pptx: 'PowerPoint', xlsx: 'Excel', pdf: 'PDF', web: '网页' };
-type Card = { id: string; viewId: string; source: string; result: string; sourceRevision: number; locator?: { quote?: string; pageIndex?: number; slideId?: string; sheetId?: string; cell?: string }; pinned: boolean; status: 'loading' | 'ready' | 'error'; error?: string };
 type EventItem = { seq: number; type: string; data: { viewId?: string; documentId?: string; kind?: string; point?: { x: number; y: number }; actor?: string; target?: { kind: string; blockId?: string; shapeId?: string; address?: string; pageIndex?: number } }; time: string };
 function FileIcon({ format }: { format: string }) { return format === 'web' ? <Globe size={17} /> : ['docx', 'pptx', 'xlsx'].includes(format) ? <span className={'office-icon ' + format}>{({ docx: 'W', pptx: 'P', xlsx: 'X' } as Record<string, string>)[format]}</span> : <FileText size={17} className={format === 'pdf' ? 'pdf-icon' : ''} />; }
 function FormatToolIcon({ format }: { format?: string }) {
@@ -50,13 +50,13 @@ function FormatToolIcon({ format }: { format?: string }) {
   }
 }
 function tone(format?: string) { return format === 'web' ? '网页' : formatName[format ?? ''] ?? '文档'; }
-function sourceName(card: Card) { if (card.locator?.pageIndex !== undefined) return '第 ' + (card.locator.pageIndex + 1) + ' 页'; if (card.locator?.cell) return card.locator.cell; if (card.locator?.slideId) return '幻灯片'; return card.locator?.quote?.slice(0, 36) || '当前选区'; }
-function alreadyTarget(text: string, target: string) { const letters = [...text].filter(char => /[\p{L}]/u.test(char)); if (letters.length < 5) return false; if (target === 'zh-CN') return letters.filter(char => /\p{Script=Han}/u.test(char)).length / letters.length > .72; if (target === 'en') return letters.filter(char => /[A-Za-z]/.test(char)).length / letters.length > .92; if (target === 'ja') return letters.some(char => /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char)); return false; }
+function alreadyTarget(text: string, target: string) { const letters = [...text].filter(char => /[\p{L}]/u.test(char)); if (letters.length < 5) return false; const kana = letters.some(char => /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char)); if (target === 'zh-CN') return !kana && letters.filter(char => /\p{Script=Han}/u.test(char)).length / letters.length > .72; if (target === 'ja') return kana; return false; }
 
 export function App() {
   const [workspace, setWorkspace] = useState(emptyState), stateRef = useRef(workspace);
   const [settings, setSettings] = useState<SettingsSnapshot>(), [sampleFiles, setSampleFiles] = useState<{ name: string; format: string; path: string }[]>([]);
   const [selectionProfile, setSelectionProfile] = useState(''), [chatProfile, setChatProfile] = useState('');
+  const [connectionProfiles, setConnectionProfiles] = useState<{ id: string; name: string; modelId: string; enabled: boolean }[]>([]);
   const [pdfEngineAvailable, setPdfEngineAvailable] = useState(false);
   const [fullOfficeAvailable, setFullOfficeAvailable] = useState(false);
   const [pdfTools, setPdfTools] = useState<PdfToolsState>(emptyPdfTools);
@@ -77,9 +77,16 @@ export function App() {
   const [leftOpen, setLeftOpen] = useState(true), [leftSection, setLeftSection] = useState('outline');
   const leftPanelViews = useRef(new Map<string, { section: string; open: boolean }>());
   const leftPanelView = useRef<string | undefined>(undefined);
-  const [aiResult, setAIResult] = useState<{ taskId: string; label: string; source: string; viewId: string }>();
+  type ResultIdentity = { taskId: string; label: string; source: string; viewId: string; snapshotId: string; sourceText: string; sourceRevision: number; retryable: boolean };
+  const [aiResult, setAIResult] = useState<ResultIdentity>();
+  const [aiHistory, setAIHistory] = useState<ResultIdentity[]>([]);
   const [aiPending, setAIPending] = useState(false);
   const [fixed, setFixed] = useState<ReadingSnapshot>(), [drafts, setDrafts] = useState<Record<string, string>>({}), [cards, setCards] = useState<Card[]>([]);
+  const cardsRef = useRef<Card[]>([]);
+  const latestTranslationRequest = useRef(new Map<string, string>());
+  const updateCards = (change: (previous: Card[]) => Card[]) => { const next = change(cardsRef.current); cardsRef.current = next; setCards(next); };
+  const [selectionInteracting, setSelectionInteracting] = useState(false);
+  const autoTranslationSources = useRef(new Map<string, string>());
   const [translationJobs, setTranslationJobs] = useState<TranslationJob[]>([]), [artifacts, setArtifacts] = useState<TranslationArtifact[]>([]);
   const homeCandidates = useMemo(() => buildHomeSearchCandidates({ documents: workspace.documents, samples: sampleFiles, artifacts }), [workspace.documents, sampleFiles, artifacts]);
   const [webTranslated, setWebTranslated] = useState<Record<string, boolean>>({}), [webBusy, setWebBusy] = useState(false);
@@ -128,6 +135,9 @@ export function App() {
   const context = fixed && fixed.context.viewId === view?.id ? fixed.context : view?.context;
   const val = (id: string, fallback: SettingValue) => settings?.values[id] ?? fallback;
   const navigation = useNavigationVisibility({ enabled: !!val('appearance.autoHideToolbar', true), delayMs: Number(val('appearance.toolbarDelayMs', 2500)), identity: motionIdentity });
+  const motionSnapshot = useMotionSnapshot();
+  const navigationDuration = navigationMotionDuration(navigation.durationMs, motionSnapshot);
+  const aiPopoverDuration = motionDuration(300, motionSnapshot, false);
   const onReaderScroll = navigation.onScroll;
   const alert = (error: unknown) => setToast(error instanceof Error ? error.message : String(error));
   useEffect(() => window.agentViewer?.onBeforeClose(async options => {
@@ -144,9 +154,9 @@ export function App() {
   useEffect(() => {
     mounted.current = true;
     void refresh().catch(alert); void samples().then(setSampleFiles).catch(alert); void call<{ id: string }[]>('harness-list').then(setDrivers).catch(alert);
-    if (desktop) { void call<{ snapshot: SettingsSnapshot }>('settings-read').then(data => setSettings(data.snapshot)).catch(alert); void call<{ routes: { selection: string; chat: string } }>('connections-read').then(data => { setSelectionProfile(data.routes.selection); setChatProfile(data.routes.chat); }).catch(() => {}); void call<{ babeldoc: { available: boolean }; libreoffice: { available: boolean } }>('engine-status').then(data => { setPdfEngineAvailable(data.babeldoc.available); setFullOfficeAvailable(data.libreoffice.available); }).catch(() => {}); void refreshTranslations().catch(alert); }
+    if (desktop) { void call<{ snapshot: SettingsSnapshot }>('settings-read').then(data => setSettings(data.snapshot)).catch(alert); void call<{ routes: { selection: string; chat: string }; profiles: { id: string; name: string; modelId: string; enabled: boolean }[] }>('connections-read').then(data => { setSelectionProfile(data.profiles.some(profile => profile.id === data.routes.selection && profile.enabled) ? data.routes.selection : ''); setChatProfile(data.profiles.some(profile => profile.id === data.routes.chat && profile.enabled) ? data.routes.chat : ''); setConnectionProfiles(previous => sharePolledValue(previous, data.profiles.filter(profile => profile.enabled))); }).catch(() => {}); void call<{ babeldoc: { available: boolean }; libreoffice: { available: boolean } }>('engine-status').then(data => { setPdfEngineAvailable(data.babeldoc.available); setFullOfficeAvailable(data.libreoffice.available); }).catch(() => {}); void refreshTranslations().catch(alert); }
     const off = window.agentViewer?.onSettingsChanged(value => setSettings(value as SettingsSnapshot));
-    const timer = setInterval(() => { void refresh().catch(() => {}); void refreshTranslations().catch(() => {}); if (desktop) void call<{ routes: { selection: string; chat: string } }>('connections-read').then(data => { setSelectionProfile(data.routes.selection); setChatProfile(data.routes.chat); }).catch(() => {}); }, 650);
+    const timer = setInterval(() => { void refresh().catch(() => {}); void refreshTranslations().catch(() => {}); if (desktop) void call<{ routes: { selection: string; chat: string }; profiles: { id: string; name: string; modelId: string; enabled: boolean }[] }>('connections-read').then(data => { setSelectionProfile(data.profiles.some(profile => profile.id === data.routes.selection && profile.enabled) ? data.routes.selection : ''); setChatProfile(data.profiles.some(profile => profile.id === data.routes.chat && profile.enabled) ? data.routes.chat : ''); setConnectionProfiles(previous => sharePolledValue(previous, data.profiles.filter(profile => profile.enabled))); }).catch(() => {}); }, 650);
     return () => { mounted.current = false; clearInterval(timer); off?.(); };
   }, []);
   useEffect(() => { const id = setInterval(() => { if (!desktop) return; void call<EventItem[]>('events', { after: eventSeq.current }).then(events => {
@@ -169,11 +179,22 @@ export function App() {
     else if (event.key === ',') { event.preventDefault(); void openSettings(); }
   }; window.addEventListener('keydown', shortcut); return () => window.removeEventListener('keydown', shortcut); }, [document, view, home, homeTabId]);
   useEffect(() => {
-    if (!view || document?.format === 'web' || !context?.selection.text || context.selection.kind !== 'text' || context.actor !== 'human' || !val('translation.selectionAuto', true) || alreadyTarget(context.selection.text, String(val('translation.targetLanguage', 'zh-CN'))) || (val('ai.defaultDriver', 'none') === 'none' && !selectionProfile)) return;
+    let dragging = false, composing = false;
+    const publish = () => setSelectionInteracting(dragging || composing);
+    const start = (event: Event) => { if ((event.target as HTMLElement)?.closest?.('.document-content')) { if (event.type === 'compositionstart') composing = true; else dragging = true; publish(); } };
+    const end = (event: Event) => { if (event.type === 'compositionend') composing = false; else if (event.type === 'blur') { dragging = false; composing = false; } else dragging = false; publish(); };
+    window.addEventListener('pointerdown', start); window.addEventListener('pointerup', end); window.addEventListener('pointercancel', end); window.addEventListener('compositionstart', start); window.addEventListener('compositionend', end); window.addEventListener('blur', end);
+    return () => { window.removeEventListener('pointerdown', start); window.removeEventListener('pointerup', end); window.removeEventListener('pointercancel', end); window.removeEventListener('compositionstart', start); window.removeEventListener('compositionend', end); window.removeEventListener('blur', end); };
+  }, []);
+  useEffect(() => {
+    if (selectionInteracting || !view || document?.format === 'web' || !context?.selection.text || context.selection.kind === 'none' || context.actor !== 'human' || !val('translation.selectionAuto', true) || alreadyTarget(context.selection.text, String(val('translation.targetLanguage', 'zh-CN'))) || (val('ai.defaultDriver', 'none') === 'none' && !selectionProfile)) return;
     const text = context.selection.text, viewId = view.id, revision = context.contentRevision, sequence = ++selectionSeq.current;
-    const timer = setTimeout(() => { if (selectionSeq.current === sequence) void translateSelection(viewId, text, revision, context.selection.locator); }, Number(val('translation.selectionDelayMs', 500)));
+    const signature = JSON.stringify([text, revision, val('translation.targetLanguage', 'zh-CN'), context.selection.locator]);
+    if (autoTranslationSources.current.get(viewId) === signature) return;
+    if (cardsRef.current.some(card => card.viewId === viewId && card.source === text && card.sourceRevision === revision && card.targetLanguage === val('translation.targetLanguage', 'zh-CN'))) return;
+    const timer = setTimeout(() => { if (selectionSeq.current === sequence) { autoTranslationSources.current.set(viewId, signature); void translateSelection(viewId, text, revision, context.selection.locator); } }, Number(val('translation.selectionDelayMs', 500)));
     return () => clearTimeout(timer);
-  }, [view?.id, context?.selection.text, context?.contentRevision, context?.actor, settings?.revision, selectionProfile]);
+  }, [view?.id, context?.selection.text, context?.contentRevision, context?.actor, settings?.revision, selectionProfile, selectionInteracting]);
   useEffect(() => {
     // Seed the restored location once; real native source scroll events drive
     // the velocity/threshold reducer, never the workspace's 650ms polling.
@@ -203,10 +224,10 @@ export function App() {
     if (!desktop) return;
     if (home || modalMotion.present || document?.format !== 'web' || !view) { void call('toolbar-layout', { visible: false }); return; }
     const reader = window.document.querySelector('.reader-panel'); if (!reader) return;
-    const update = () => { const box = reader.getBoundingClientRect(), width = Math.min(780, box.width - 28); void call('toolbar-layout', { viewId: view.id, visible: navigation.visible, manualHidden: navigation.manualHidden, hideProgress: navigation.progress, hideDurationMs: navigation.durationMs, address: document.model.url, translated: webTranslated[view.id], busy: webBusy, settings, zoom: view.zoom ?? 1, bounds: { x: box.x + (box.width - width) / 2, y: box.y + NAVIGATION_METRICS.top - NAVIGATION_METRICS.shadowGutter, width, height: NAVIGATION_METRICS.height + 2 * NAVIGATION_METRICS.shadowGutter } }).catch(alert); };
+    const update = () => { const box = reader.getBoundingClientRect(), width = Math.min(780, box.width - 28); void call('toolbar-layout', { viewId: view.id, visible: navigation.visible, manualHidden: navigation.manualHidden, hideProgress: navigation.progress, hideDurationMs: navigationDuration, address: document.model.url, translated: webTranslated[view.id], busy: webBusy, settings, zoom: view.zoom ?? 1, bounds: { x: box.x + (box.width - width) / 2, y: box.y + NAVIGATION_METRICS.top - NAVIGATION_METRICS.shadowGutter, width, height: NAVIGATION_METRICS.height + 2 * NAVIGATION_METRICS.shadowGutter } }).catch(alert); };
     const observer = new ResizeObserver(update); observer.observe(reader); update();
     return () => observer.disconnect();
-  }, [home, modalMotion.present, view?.id, view?.zoom, document?.model.url, navigation.visible, navigation.manualHidden, navigation.progress, navigation.durationMs, settings, webBusy, webTranslated, leftOpen, drawer]);
+  }, [home, modalMotion.present, view?.id, view?.zoom, document?.model.url, navigation.visible, navigation.manualHidden, navigation.progress, navigationDuration, settings, webBusy, webTranslated, leftOpen, drawer]);
   useEffect(() => {
     if (!desktop) return;
     const visible = !home && !modalMotion.present && document?.format === 'web' && !!view && !!agentEvent && (agentEvent.data.viewId === view.id || agentEvent.data.documentId === document.id);
@@ -235,11 +256,14 @@ export function App() {
       if(result.receipt) { lastTransactions.current.set(result.receipt.documentId, result.receipt.transactionId);void refresh(); }
       if(result.view) void activate(result.view);
       if(result.annotation){refreshAnnotations();setToast(action==='note'?'批注已独立保存。':'高亮已保存在阅读器中。');}
-      if(action==='translate' && snapshot.document.format!=='web') {setCards(old=>[...old.filter(c=>c.pinned||c.viewId!==snapshot.context.viewId),{id:crypto.randomUUID(),viewId:snapshot.context.viewId,source:snapshot.context.selection.text,result:result.text,sourceRevision:snapshot.document.revision,locator:snapshot.context.selection.locator,pinned:false,status:'ready'}]);setDrawer('translation');}
+      if(action==='translate' && snapshot.document.format!=='web') { if (result.requestId !== latestTranslationRequest.current.get(snapshot.context.viewId)) return; for(const card of cardsRef.current) if(card.viewId===snapshot.context.viewId && !card.pinned && card.status==='loading') void cancelTranslation(card); updateCards(old=>[...old.filter(c=>c.pinned||c.viewId!==snapshot.context.viewId),{id:crypto.randomUUID(),requestId:result.requestId,viewId:snapshot.context.viewId,source:snapshot.context.selection.text,result:result.text,sourceRevision:snapshot.document.revision,locator:snapshot.context.selection.locator,pinned:false,status:'ready',targetLanguage:result.targetLanguage,model:result.model}]); if(val('translation.selectionPresentation','popover')==='drawer' && foreground.current.viewId===snapshot.context.viewId && !foreground.current.homeId)setDrawer('translation');}
       if(action==='translate'&&snapshot.document.format==='web')setWebTranslated(old=>({...old,[snapshot.context.viewId]:true}));
       if(result.task)setDrawer('tasks');
       if(action==='copy'||action==='citation')setToast('已复制。');
-    };window.addEventListener('agentviewer:selection-result',result);return()=>window.removeEventListener('agentviewer:selection-result',result);
+    };
+    const started = (event: Event) => { const { action, requestId, snapshot } = (event as CustomEvent<any>).detail; if (action === 'translate' && snapshot.document.format !== 'web') latestTranslationRequest.current.set(snapshot.context.viewId, requestId); };
+    window.addEventListener('agentviewer:selection-start', started); window.addEventListener('agentviewer:selection-result', result);
+    return () => { window.removeEventListener('agentviewer:selection-start', started); window.removeEventListener('agentviewer:selection-result', result); };
   },[view?.id,document?.id,home,homeTabId]);
   useEffect(()=>window.agentViewer?.onSelectionTool(event=>{if(event.action==='result')window.dispatchEvent(new CustomEvent('agentviewer:selection-result',{detail:event.detail}));if(event.action==='dismiss')void call('selection-layout',{visible:false,animate:true});}),[]);
   const webSelection=view?.context?.selection;
@@ -345,7 +369,25 @@ export function App() {
   async function closeTab(target: ViewInfo) { try { await flushDrafts(target.id); const d = stateRef.current.documents.find(item => item.id === target.documentId); if(d?.dirty) setClosing(target); else await performClose(target); } catch (error) { alert(error); } }
   async function saveAndClose() { if(!closing)return;setClosingBusy(true);try{await flushDrafts(closing.id); const doc=stateRef.current.documents.find(d=>d.id===closing.documentId)!;if(desktop){if(!await call('choose-save',{documentId:doc.id}))return;}else{if(!doc.path)throw new Error('请先另存文档。');await call('save',{documentId:doc.id});}await performClose(closing);}catch(e){alert(e);}finally{setClosingBusy(false);} }
   async function navigate(direction: 'back' | 'forward') { if (document?.format === 'web' && desktop) { await call('browser-navigate', { viewId: view!.id, action: direction }); return; } const source = direction === 'back' ? history : future, dest = direction === 'back' ? future : history; const id = source.current.pop(); const next = workspace.views.find(v => v.id === id); if (next) { if (view) dest.current.push(view.id); await activate(next, false); } }
-  async function send(message = prompt) { if (!message.trim() || !view) return; try { await flushDrafts(view.id); if (!driver) { setToast('请先在设置中选择 Harness。'); void openSettings('模型与连接'); return; } await call('harness-submit', { driverId: driver, prompt: message.trim(), viewId: view.id, snapshotId: fixed?.context.viewId === view.id ? fixed.id : undefined, sourceScope: context?.selection.text ? 'selection' : 'visible' }); setPrompt(''); setDrawer('tasks'); await refresh(); } catch (e) { alert(e); } }
+  function presentAIResult(result: ResultIdentity) {
+    setAIHistory(previous => [result, ...previous.filter(item => item.taskId !== result.taskId)].slice(0, 50));
+    if (foreground.current.viewId === result.viewId && !foreground.current.homeId) { setAIResult(result); setDrawer(null); }
+  }
+  async function send(message = prompt) {
+    if (!message.trim() || !view || aiPending) return;
+    const targetView = view.id;
+    if (!driver) { setToast('请先通过“连接模型”配置问答模型。'); return; }
+    setAIPending(true);
+    try {
+      await flushDrafts(targetView);
+      const source = fixed?.context.viewId === targetView ? fixed : await call<ReadingSnapshot>('snapshot', { viewId: targetView });
+      const scope = source.context.selection.text ? 'selection' : 'visible';
+      const task = await call<HarnessTask>('harness-submit', { driverId: driver, prompt: message.trim(), viewId: targetView, snapshotId: source.id, sourceScope: scope });
+      presentAIResult({ taskId: task.id, label: '阅读问答', viewId: targetView, snapshotId: source.id, sourceText: scope === 'selection' ? source.context.selection.text : source.context.visibleText, sourceRevision: source.document.revision, source: source.document.title + ' · ' + (scope === 'selection' ? '选中内容' : '当前可见') + ' · 版本 ' + source.document.revision, retryable: false });
+      if (foreground.current.viewId === targetView && !foreground.current.homeId) setPrompt(current => current === message ? '' : current);
+      await refresh();
+    } catch (error) { alert(error); } finally { setAIPending(false); }
+  }
   async function runAIReadingTool(tool: AIReadingToolDefinition, scope: AIReadingScope) {
     if (!view || aiPending || scope === 'document') return;
     const targetView = view.id, sourceTitle = document?.title ?? '当前文档';
@@ -354,51 +396,81 @@ export function App() {
       await flushDrafts(targetView);
       const source = fixed?.context.viewId === targetView ? fixed : await call<ReadingSnapshot>('snapshot', { viewId: targetView });
       const result = await call<{ task: HarnessTask }>('ai-reading-run', { viewId: targetView, snapshotId: source.id, toolId: tool.id, scope, idempotencyKey: crypto.randomUUID() });
-      setAIResult({ taskId: result.task.id, label: tool.label, source: sourceTitle + ' · ' + (scope === 'selection' ? '选中内容' : '当前可见') + ' · 版本 ' + source.document.revision, viewId: targetView });
-      setDrawer(null); await refresh();
+      presentAIResult({ taskId: result.task.id, label: tool.label, source: sourceTitle + ' · ' + (scope === 'selection' ? '选中内容' : '当前可见') + ' · 版本 ' + source.document.revision, viewId: targetView, snapshotId: source.id, sourceText: scope === 'selection' ? source.context.selection.text : source.context.visibleText, sourceRevision: source.document.revision, retryable: true });
+      await refresh();
     } catch (error) { throw error; }
     finally { setAIPending(false); }
   }
   async function saveAIResult(task: HarnessTask) {
-    try { const next = await call<ViewInfo>('create-text', { title: (aiResult?.label ?? 'AI 分析') + '.md', text: task.text, windowId }); await activate(next, true); setAIResult(undefined); }
+    try {
+      const identity = aiHistory.find(item => item.taskId === task.id) ?? aiResult;
+      const text = identity?.retryable ? (await call<{ markdown: string }>('ai-reading-result', { taskId: task.id })).markdown : task.text;
+      const next = await call<ViewInfo>('create-text', { title: (identity?.label ?? 'AI 分析') + '.md', text, windowId }); await activate(next, true); setAIResult(undefined);
+    }
     catch (error) { alert(error); }
   }
+  async function retryAIResult() {
+    if (!aiResult?.retryable || aiPending) return;
+    const previous = aiResult; setAIPending(true);
+    try { const result = await call<{ task: HarnessTask }>('ai-reading-retry', { taskId: previous.taskId, idempotencyKey: crypto.randomUUID() }); presentAIResult({ ...previous, taskId: result.task.id }); await refresh(); }
+    catch (error) { alert(error); } finally { setAIPending(false); }
+  }
   async function fixContext() { if (!view) return; try { await flushDrafts(view.id); setFixed(await call<ReadingSnapshot>('snapshot', { viewId: view.id })); } catch (error) { alert(error); } }
-  async function translateSelection(viewId: string, text: string, sourceRevision: number, locator?: Card['locator']) {
-    const card: Card = { id: crypto.randomUUID(), viewId, source: text, result: '', sourceRevision, locator, pinned: false, status: 'loading' };
-    setCards(old => [...old.filter(item => item.pinned || item.viewId !== viewId), card]); if (val('translation.selectionPresentation', 'popover') === 'drawer') setDrawer('translation');
-    try { const result = await call<{ text: string }>('translation-selection', { viewId, text, sourceRevision, targetLanguage: val('translation.targetLanguage', 'zh-CN') }); setCards(old => old.map(item => item.id === card.id ? { ...item, result: result.text, status: 'ready' } : item)); }
-    catch (e) { setCards(old => old.map(item => item.id === card.id ? { ...item, error: String(e), status: 'error' } : item)); }
+  async function translateSelection(viewId: string, text: string, sourceRevision: number, locator?: Card['locator'], retry?: Card, language = String(val('translation.targetLanguage', 'zh-CN')), connectionId = retry?.connectionId ?? selectionProfile) {
+    if (!text.trim()) return;
+    const card: Card = { id: retry?.id ?? crypto.randomUUID(), requestId: crypto.randomUUID(), viewId, source: text, result: '', sourceRevision, locator, pinned: retry?.pinned ?? false, status: 'loading', targetLanguage: language, connectionId };
+    if (!retry?.pinned) latestTranslationRequest.current.set(viewId, card.requestId!);
+    for (const previous of cardsRef.current) if (previous.status === 'loading' && previous.viewId === viewId && (previous.id === card.id || (!retry && !previous.pinned))) void cancelTranslation(previous);
+    updateCards(old => retry ? old.map(item => item.id === retry.id ? card : item) : [...old.filter(item => item.pinned || item.viewId !== viewId), card]);
+    if (val('translation.selectionPresentation', 'popover') === 'drawer' && foreground.current.viewId === viewId) setDrawer('translation');
+    try {
+      const result = await call<{ text: string; model?: string }>('translation-selection', { viewId, text, sourceRevision, requestId: card.requestId, retryOf: retry?.requestId, targetLanguage: language, connectionId: connectionId || undefined });
+      updateCards(old => old.map(item => item.requestId === card.requestId && item.status === 'loading' ? { ...item, result: result.text, model: result.model, status: 'ready' } : item));
+    } catch (error) { updateCards(old => old.map(item => item.requestId === card.requestId && item.status === 'loading' ? { ...item, error: String(error), status: 'error' } : item)); }
+  }
+  async function cancelTranslation(card: Card) {
+    updateCards(old => old.map(item => item.id === card.id ? { ...item, status: 'cancelled' } : item));
+    if (card.requestId) await call('translation-selection-cancel', { requestId: card.requestId, viewId: card.viewId }).catch(() => {});
+  }
+  function closeTranslation(card: Card) { if (card.status === 'loading') void cancelTranslation(card); updateCards(old => old.filter(item => item.id !== card.id)); }
+  async function saveTranslation(card: Card) {
+    try { const text = `# 选区译文\n\n${card.result}\n\n---\n\n目标语言：${card.targetLanguage ?? 'zh-CN'} · 来源版本：${card.sourceRevision}\n\n## 原文\n\n${card.source}`; const next = await call<ViewInfo>('create-text', { title: '选区译文.md', text, windowId }); await activate(next, true); }
+    catch (error) { alert(error); }
+  }
+  function translationCard(card: Card) {
+    const sourceView = workspace.views.find(item => item.id === card.viewId), sourceDocument = workspace.documents.find(item => item.id === sourceView?.documentId);
+    return <TranslationCard key={card.id} card={card} models={connectionProfiles} onModel={connectionId => void translateSelection(card.viewId, card.source, card.sourceRevision, card.locator, card, card.targetLanguage, connectionId)} sourceUpdated={sourceDocument?.revision !== card.sourceRevision} onPin={() => updateCards(old => old.map(item => item.id === card.id ? { ...item, pinned: !item.pinned } : item))} onRetry={language => void translateSelection(card.viewId, card.source, card.sourceRevision, card.locator, card, language)} onCancel={() => void cancelTranslation(card)} onClose={() => closeTranslation(card)} onSave={() => void saveTranslation(card)} />;
   }
   async function fullTranslation() { if (!document) return; try { await flushDrafts(view?.id); const job = await call<TranslationJob>('translation-start', { documentId: document.id, windowId }); setTranslationJobs(old => [...old.filter(item => item.id !== job.id), job]); setDrawer('tasks'); setToast('已在后台生成独立译文。'); } catch (e) { alert(e); } }
   async function webTranslate(scope: 'page' | 'selection') { if (!view) return; setWebBusy(true); try { const result = await call<{ translated: number; skipped: number }>('web-translation-apply', { viewId: view.id, scope }); setWebTranslated(old => ({ ...old, [view.id]: true })); setToast('已在当前网页替换 ' + result.translated + ' 处文字；跳过 ' + result.skipped + ' 处。'); } catch (e) { alert(e); } finally { setWebBusy(false); } }
   async function webRestore() { if (!view) return; try { const result = await call<{ restored: number; skipped: number }>('web-translation-restore', { viewId: view.id }); setWebTranslated(old => ({ ...old, [view.id]: false })); setToast('恢复 ' + result.restored + ' 处原文；' + result.skipped + ' 处因页面更新而保留。'); } catch (e) { alert(e); } }
   async function controlAgent(status: 'running' | 'paused' | 'stopped') { if (!view) return; try { await call('agent-control', { viewId: view.id, status }); setAgentStatuses(old => ({ ...old, [view.id]: status })); if (status === 'stopped') setToast('已停止此页面的 Agent 操作。'); } catch (e) { alert(e); } }
   const outline = document?.format === 'markdown' ? (document.model.text ?? '').split('\n').filter(t => /^#{1,6} /.test(t)).map(t => t.replace(/^#+ /, '')) : document?.format === 'docx' ? document.model.blocks?.filter(b => b.style?.startsWith('Heading')).map(b => b.text) ?? [] : document?.model.slides?.map((slide, index) => '第 ' + (index + 1) + ' 页 · ' + (slide.blocks[0]?.text ?? '')) ?? document?.model.sheets?.map(sheet => sheet.name) ?? document?.format === 'pdf' ? Array.from({ length: document.model.pageCount ?? 0 }, (_, index) => '第 ' + (index + 1) + ' 页') : [];
-  const task = workspace.tasks.at(-1), currentCards = cards.filter(card => card.viewId === view?.id), newestCard = currentCards.at(-1), activeJob = translationJobs.find(job => job.status === 'running');
+  const currentCards = cards.filter(card => card.viewId === view?.id), newestCard = currentCards.at(-1), activeJob = translationJobs.find(job => job.status === 'running');
   const readingTask = aiResult ? workspace.tasks.find(item => item.id === aiResult.taskId) : undefined;
   const showingAIResult = !!readingTask && aiResult?.viewId === view?.id;
   useEffect(() => window.agentViewer?.onToolbar(event => {
     if (event.action === 'ai-result-dismiss') setAIResult(previous => previous?.taskId === event.taskId ? undefined : previous);
+    if (event.action === 'ai-result-retry' && aiResult?.taskId === event.taskId) void retryAIResult();
     if (event.action === 'ai-result-save' && aiResult?.taskId === event.taskId) {
       const result = workspace.tasks.find(item => item.id === event.taskId); if (result) void saveAIResult(result);
     }
-  }), [aiResult, workspace.tasks]);
+  }), [aiResult, workspace.tasks, aiPending]);
   useEffect(() => {
     if (!desktop) return;
     if (home || modalMotion.present || drawer || document?.format !== 'web' || !view || !readingTask || aiResult?.viewId !== view.id) {
       const animate = !home && !modalMotion.present && document?.format === 'web' && !!view;
-      void call('ai-result-layout', { visible: false, animate, viewId: animate ? view.id : undefined }).catch(alert); return;
+      void call('ai-result-layout', { visible: false, animate, hideDurationMs: aiPopoverDuration, viewId: animate ? view.id : undefined }).catch(alert); return;
     }
     const reader = window.document.querySelector('.reader-panel'); if (!reader) return;
     const update = () => {
       const box = reader.getBoundingClientRect(), width = Math.min(402, box.width - 24), height = Math.min(362, box.height - 24);
-      void call('ai-result-layout', { viewId: view.id, taskId: readingTask.id, visible: true, label: aiResult.label, source: aiResult.source, settings,
+      void call('ai-result-layout', { viewId: view.id, taskId: readingTask.id, visible: true, label: aiResult.label, source: aiResult.source, retryable: aiResult.retryable && !aiPending, settings,
         bounds: { x: Math.max(box.x + 12, box.right - width - 12), y: Math.min(box.y + 78, box.bottom - height - 12), width, height } }).catch(alert);
     };
     const observer = new ResizeObserver(update); observer.observe(reader); window.addEventListener('resize', update); update();
     return () => { observer.disconnect(); window.removeEventListener('resize', update); };
-  }, [home, modalMotion.present, drawer, document?.format, view?.id, readingTask?.id, readingTask?.text, readingTask?.status, aiResult, settings?.revision, leftOpen]);
+  }, [home, modalMotion.present, drawer, document?.format, document?.revision, view?.id, readingTask?.id, readingTask?.text, readingTask?.status, aiResult, aiPending, aiPopoverDuration, settings?.revision, leftOpen]);
   const openSample = (path: string) => { void openHomeUri(path).catch(alert); };
   const openWebFixture = () => { const existing = viewList.find(v => workspace.documents.find(d => d.id === v.documentId)?.format === 'web'); void (existing ? openHomeDocument(existing.documentId) : openHomeUri(new URL('/fixtures/interaction.html', window.location.href).href)).catch(alert); };
   const locationText = context?.locator.pageIndex !== undefined ? '第 ' + (context.locator.pageIndex + 1) + ' 页' : context?.locator.cell ?? context?.locator.quote?.slice(0, 52) ?? '正在确认阅读位置';
@@ -417,15 +489,15 @@ export function App() {
       <main className={"reader-panel reader-format-" + (document?.format ?? "none")} onMouseMove={event => navigation.revealFromEdge(event.clientY - event.currentTarget.getBoundingClientRect().top)}>
         {document && (document.format !== 'web' || !desktop) && <NavigationToolbar key={'navigation:' + view?.id}
           state={{ format: document.format, zoom: view?.zoom ?? 1, title: document.title, titleIcon: <FileIcon format={document.format} />, address: document.model.url, mode: view?.mode, canUndo: lastTransactions.current.has(document.id), busy: webBusy, translated: view ? webTranslated[view.id] : false }}
-          dispatch={action => void navigationAction(action)} progress={navigation.progress} durationMs={navigation.durationMs} manualHidden={navigation.manualHidden}
+          dispatch={action => void navigationAction(action)} progress={navigation.progress} durationMs={navigationDuration} manualHidden={navigation.manualHidden}
           onHover={navigation.onHover} onLeave={navigation.onLeave} onFocus={navigation.onFocus} onBlur={navigation.onBlur} />}
       {document && view ? <DocumentPane key={view.id} document={document} view={view} edit={edit} onTextChange={editText} reportError={alert} onPdfToolsChange={setPdfTools} onOfficeTargetChange={setOfficeTarget} onOfficeDraftController={onOfficeDraftController} onOfficeDraftChange={onOfficeDraftChange} onReaderScroll={onReaderScroll} onZoomChange={factor => void navigationAction({ type: 'zoom', factor })} obscured={modalMotion.present} annotations={annotations} /> : <div className="empty-workspace"><BookOpen size={40} /><h1>打开文档，开始阅读</h1><button className="button primary" onClick={() => void openFile()}>打开文件</button></div>}
       <MotionPresence show={!!agentEvent && (agentEvent.data.viewId === view?.id || agentEvent.data.documentId === document?.id) && document?.format !== 'web'} surface="agent" duration={200} identity={view?.id} keyboardImmediate={false}>{agentEvent && <AgentOperationCapsule kind={agentEvent.data.kind} status={agentStatuses[view!.id] ?? 'running'} target={val('agent.capsuleDetail', 'minimal') === 'target' ? document?.title : undefined} onControl={status => void controlAgent(status)} />}</MotionPresence>
       {agentEvent && (agentEvent.data.viewId === view?.id || agentEvent.data.documentId === document?.id) && <>{val('agent.pointer', true) && agentEvent.data.point && document?.format !== 'web' && <div className="agent-pointer" style={{ left: agentEvent.data.point.x, top: agentEvent.data.point.y + 72 }}><Sparkles size={18} /></div>}{agentEvent.data.target && <AgentTargetHighlight event={agentEvent} />}</>}
       {document && document.warnings.length > 0 && <div className="engine-notice" title={[...document.warnings, ...document.capabilities.limitations].join('\n')}>{document.warnings[0]}</div>}</main>
-      <MotionPresence show={!!drawer} surface="right" duration={220} identity={motionIdentity}>{drawer && <aside className="ai-drawer material-host" id="ai-tools"><LiquidGlassSurface variant="panel" /><div className="drawer-heading"><div><span className="eyebrow">ASSISTANT</span><h2>{drawer === 'annotations' ? '批注与高亮' : drawer === 'translation' ? '选区译文' : drawer === 'tasks' ? '后台任务' : 'AI 工具'}</h2></div><button className="icon-button" aria-label="关闭 AI 抽屉" onClick={() => setDrawer(null)}><X size={17} /></button></div><div className="drawer-content motion-swap" key={drawer}>{drawer === 'annotations' ? <>{annotations.length===0&&<p className="side-hint">选中文字后添加批注或高亮。</p>}{annotations.map(note=><div className="job-card" key={note.id}><strong>{note.kind==='note'?'批注':'高亮'}{note.sourceRevision!==document?.revision?' · 来源已更新':''}</strong><blockquote>{note.selection.text}</blockquote>{note.text&&<p>{note.text}</p>}<button onClick={()=>void call('annotation-remove',{id:note.id}).then(refreshAnnotations).catch(alert)}>删除</button></div>)}</> : drawer === 'translation' ? currentCards.map(card => <TranslationCard key={card.id} card={card} onPin={() => setCards(old => old.map(item => item.id === card.id ? { ...item, pinned: !item.pinned } : item))} onRetry={() => void translateSelection(card.viewId, card.source, card.sourceRevision, card.locator)} />) : drawer === 'tasks' ? <><div className="side-label">文档译文</div>{translationJobs.slice().reverse().map(job => <div className="job-card" key={job.id}><strong>{job.stage}</strong><span>{job.status === 'running' ? (job.total ? job.completed + ' / ' + job.total : '准备中') : job.status}</span>{job.error && <p>{job.error}</p>}{job.artifact && <button onClick={() => void openUri(job.artifact!.path)}>打开译文 <ExternalLink size={13} /></button>}{job.status === 'running' && <button onClick={() => void call('translation-cancel', { jobId: job.id }).catch(alert)}>取消</button>}{['paused','failed','cancelled'].includes(job.status) && <button onClick={() => void call('translation-resume', { jobId: job.id }).then(refreshTranslations).catch(alert)}>继续</button>}</div>)}<div className="side-label">Harness</div>{task ? <div className="job-card"><strong>{task.prompt}</strong><span>{task.status}</span><pre>{task.text || task.error || '等待回复…'}</pre>{task.status === 'running' && <button onClick={() => void call('harness-cancel', { taskId: task.id }).catch(alert)}>停止</button>}</div> : <p className="side-hint">暂无任务。</p>}</> : <><div className="tool-grid"><button onClick={() => { if (document?.format === 'web') void webTranslate('selection'); else if (view && context?.selection.text) void translateSelection(view.id, context.selection.text, context.contentRevision, context.selection.locator); else setToast('请先选择文档文字。'); }}><Languages size={19} />翻译选区</button><button title={document?.format === 'pdf' && !pdfEngineAvailable ? '需要 BabelDOC 引擎' : undefined} onClick={() => void fullTranslation()} disabled={!document || document.format === 'web' || (document.format === 'pdf' && !pdfEngineAvailable)}><FilePlus2 size={19} />生成全文译文</button><button onClick={() => void fixContext()}><Pin size={19} />固定上下文</button></div><AIReadingTools context={context} snapshot={fixed?.context.viewId === view?.id ? fixed : undefined} format={document?.format} busy={aiPending} onRun={runAIReadingTool} /><div className="side-label">当前阅读位置</div><div className="context-summary"><Check size={15} /> {locationText}</div>{context?.selection.text && <><div className="side-label">已选中</div><blockquote className="selection-preview">{context.selection.text}</blockquote></>}<div className="side-label">Harness</div><div className="harness-line"><span className={'connection-dot ' + (driver ? 'ready' : '')} />{driver ? driver + ' · 已连接' : <button className="ai-connect-entry" onClick={() => void openSettings('模型与连接')}>连接模型</button>}</div></>}</div>{drawer === 'ai' && <form className="prompt-box" onSubmit={e => { e.preventDefault(); void send(); }}><textarea placeholder="基于当前选区或阅读位置提问…" value={prompt} onChange={e => setPrompt(e.target.value)} /><button className="button primary" disabled={!prompt.trim()}><Send size={15} />发送</button></form>}</aside>}</MotionPresence>
+      <MotionPresence show={!!drawer} surface="right" duration={220} identity={motionIdentity}>{drawer && <aside className="ai-drawer material-host" id="ai-tools"><LiquidGlassSurface variant="panel" /><div className="drawer-heading"><div><span className="eyebrow">ASSISTANT</span><h2>{drawer === 'annotations' ? '批注与高亮' : drawer === 'translation' ? '选区译文' : drawer === 'tasks' ? '后台任务' : 'AI 工具'}</h2></div><button className="icon-button" aria-label="关闭 AI 抽屉" onClick={() => setDrawer(null)}><X size={17} /></button></div><div className="drawer-content motion-swap" key={drawer}>{drawer === 'annotations' ? <>{annotations.length===0&&<p className="side-hint">选中文字后添加批注或高亮。</p>}{annotations.map(note=><div className="job-card" key={note.id}><strong>{note.kind==='note'?'批注':'高亮'}{note.sourceRevision!==document?.revision?' · 来源已更新':''}</strong><blockquote>{note.selection.text}</blockquote>{note.text&&<p>{note.text}</p>}<button onClick={()=>void call('annotation-remove',{id:note.id}).then(refreshAnnotations).catch(alert)}>删除</button></div>)}</> : drawer === 'translation' ? currentCards.length ? currentCards.map(translationCard) : <p className="side-hint">选择文档中的文字，即可在这里阅读独立译文。</p> : drawer === 'tasks' ? <><div className="side-label">文档译文</div>{translationJobs.slice().reverse().map(job => <div className="job-card" key={job.id}><strong>{job.stage}</strong><span>{job.status === 'running' ? (job.total ? job.completed + ' / ' + job.total : '准备中') : job.status}</span>{job.error && <p>{job.error}</p>}{job.artifact && <button onClick={() => void openUri(job.artifact!.path)}>打开译文 <ExternalLink size={13} /></button>}{job.status === 'running' && <button onClick={() => void call('translation-cancel', { jobId: job.id }).catch(alert)}>取消</button>}{['paused','failed','cancelled'].includes(job.status) && <button onClick={() => void call('translation-resume', { jobId: job.id }).then(refreshTranslations).catch(alert)}>继续</button>}</div>)}<div className="side-label">Harness</div>{workspace.tasks.length ? workspace.tasks.slice().reverse().map(task => <div className="job-card" key={task.id}><strong>{aiHistory.find(item => item.taskId === task.id)?.label ?? task.prompt}</strong><span>{({ running: "进行中", completed: "已完成", failed: "失败", cancelled: "已停止" })[task.status]}</span><pre>{task.text || task.error || "等待回复…"}</pre>{aiHistory.some(item => item.taskId === task.id && item.viewId === view?.id) && <button onClick={() => { setAIResult(aiHistory.find(item => item.taskId === task.id)); setDrawer(null); }}>查看结果</button>}{task.status === "running" && <button onClick={() => void call("harness-cancel", { taskId: task.id }).catch(alert)}>停止</button>}</div>) : <p className="side-hint">暂无任务。</p>}</> : <><div className="tool-grid"><button onClick={() => { if (document?.format === 'web') void webTranslate('selection'); else if (view && context?.selection.text) void translateSelection(view.id, context.selection.text, context.contentRevision, context.selection.locator); else setToast('请先选择文档文字。'); }}><Languages size={19} />翻译选区</button><button title={document?.format === 'pdf' && !pdfEngineAvailable ? '需要 BabelDOC 引擎' : undefined} onClick={() => void fullTranslation()} disabled={!document || document.format === 'web' || (document.format === 'pdf' && !pdfEngineAvailable)}><FilePlus2 size={19} />生成全文译文</button><button aria-pressed={fixed?.context.viewId === view?.id} onClick={() => { if (fixed?.context.viewId === view?.id) setFixed(undefined); else void fixContext(); }}><Pin size={19} />{fixed?.context.viewId === view?.id ? '解除固定来源' : '固定上下文'}</button></div><AIReadingTools context={context} snapshot={fixed?.context.viewId === view?.id ? fixed : undefined} format={document?.format} busy={aiPending} onRun={runAIReadingTool} />{aiHistory.some(item => item.viewId === view?.id) && <><div className="side-label">本页最近结果</div>{aiHistory.filter(item => item.viewId === view?.id).slice(0, 8).map(item => <button key={item.taskId} className="ai-history-item" onClick={() => { setAIResult(item); setDrawer(null); }}><strong>{item.label}</strong><small>{({ running: "进行中", completed: "已完成", failed: "失败，可重试", cancelled: "已停止" })[workspace.tasks.find(task => task.id === item.taskId)?.status ?? "running"]} · {item.source}</small></button>)}</>}<div className="side-label">当前阅读位置</div><div className="context-summary"><Check size={15} /> {locationText}</div>{context?.selection.text && <><div className="side-label">已选中</div><blockquote className="selection-preview">{context.selection.text}</blockquote></>}<div className="side-label">Harness</div><div className="harness-line"><span className={'connection-dot ' + (driver ? 'ready' : '')} />{driver ? driver + ' · 已配置' : <button className="ai-connect-entry" onClick={() => void openSettings('模型与连接')}>连接模型</button>}</div></>}</div>{drawer === 'ai' && <form className="prompt-box" onSubmit={e => { e.preventDefault(); void send(); }}><textarea placeholder="基于当前选区或阅读位置提问…" value={prompt} onChange={e => setPrompt(e.target.value)} /><button className="button primary" disabled={!prompt.trim() || aiPending}><Send size={15} />发送</button></form>}</aside>}</MotionPresence>
       <nav className="ai-rail material-host"><LiquidGlassSurface variant="panel" /><button onMouseDown={event => event.preventDefault()} aria-expanded={drawer === 'annotations'} aria-controls="ai-tools" className={drawer === 'annotations' ? 'selected' : ''} title="批注与高亮" aria-label="批注与高亮" onClick={() => setDrawer(drawer === 'annotations' ? null : 'annotations')}><MessageSquare size={20}/></button><button onMouseDown={event => event.preventDefault()} aria-expanded={drawer === 'ai'} aria-controls="ai-tools" className={drawer === 'ai' ? 'selected' : ''} title="AI 工具" onClick={() => setDrawer(drawer === 'ai' ? null : 'ai')}><Sparkles size={20} /></button><button onMouseDown={event => event.preventDefault()} aria-expanded={drawer === 'translation'} aria-controls="ai-tools" className={drawer === 'translation' ? 'selected' : ''} title="选区译文" onClick={() => setDrawer(drawer === 'translation' ? null : 'translation')}><Languages size={20} />{newestCard && <span className="rail-dot" />}</button><button onMouseDown={event => event.preventDefault()} aria-expanded={drawer === 'tasks'} aria-controls="ai-tools" className={drawer === 'tasks' ? 'selected' : ''} title="任务" onClick={() => setDrawer(drawer === 'tasks' ? null : 'tasks')}><ListTodo size={20} />{activeJob && <span className="rail-dot" />}</button><div className="rail-spacer" /><button title="帮助" onClick={() => setToast('阅读位置、选区和视图身份会随任务固定；Ctrl+, 打开设置。')}><CircleHelp size={20} /></button></nav>
-      <MotionPresence show={!drawer && !showingAIResult && !!newestCard && val('translation.selectionPresentation', 'popover') === 'popover'} surface="right" duration={180} identity={motionIdentity}>{!drawer && !showingAIResult && newestCard && val('translation.selectionPresentation', 'popover') === 'popover' && <div className="translation-popover material-host"><LiquidGlassSurface variant="panel" effect="refractive" strength={.82} specularOpacity={.24} /><TranslationCard card={newestCard} onPin={() => setCards(old => old.map(item => item.id === newestCard.id ? { ...item, pinned: !item.pinned } : item))} onRetry={() => void translateSelection(newestCard.viewId, newestCard.source, newestCard.sourceRevision, newestCard.locator)} /><button className="popover-expand" onClick={() => setDrawer('translation')}>展开译文 <ChevronRight size={14} /></button></div>}</MotionPresence><MotionPresence show={!drawer && document?.format !== 'web' && !!readingTask && aiResult?.viewId === view?.id} surface="right" duration={200} identity={motionIdentity}>{readingTask && aiResult && <AIResultPopover task={readingTask} label={aiResult.label} source={aiResult.source} onClose={() => setAIResult(undefined)} onCancel={() => void call('harness-cancel', { taskId: readingTask.id }).catch(alert)} onSave={() => void saveAIResult(readingTask)} />}</MotionPresence></div>}
+      <MotionPresence show={!drawer && !showingAIResult && !!newestCard && val('translation.selectionPresentation', 'popover') === 'popover'} surface="ai-popover" duration={300} keyboardImmediate={false} identity={motionIdentity}>{!drawer && !showingAIResult && newestCard && val('translation.selectionPresentation', 'popover') === 'popover' && <div className="translation-popover material-host"><LiquidGlassSurface variant="panel" effect="refractive" strength={.82} specularOpacity={.24} />{translationCard(newestCard)}<button className="popover-expand" onClick={() => setDrawer('translation')}>展开译文 <ChevronRight size={14} /></button></div>}</MotionPresence><MotionPresence show={!drawer && document?.format !== 'web' && !!readingTask && aiResult?.viewId === view?.id} surface="ai-popover" duration={300} keyboardImmediate={false} identity={motionIdentity}>{readingTask && aiResult && <AIResultPopover task={readingTask} label={aiResult.label} source={aiResult.source} sourceText={aiResult.sourceText} sourceUpdated={document?.revision !== aiResult.sourceRevision} onRetry={aiResult.retryable && !aiPending ? () => void retryAIResult() : undefined} onClose={() => setAIResult(undefined)} onCancel={() => void call('harness-cancel', { taskId: readingTask.id }).catch(alert)} onSave={() => void saveAIResult(readingTask)} />}</MotionPresence></div>}
     <FileDropHost beforeOpen={() => flushDrafts()} onOpened={result => void handleFilesOpened(result)} reportError={alert} />
     <MotionPresence show={!!toast} surface="toast" duration={180} keyboardImmediate={false}>{toast && <div role="status" className="toast material-host" onClick={() => setToast('')}><LiquidGlassSurface variant="capsule" /><span className="motion-swap" key={toast}>{toast}</span></div>}</MotionPresence>
     <MotionPresence show={!!closing} surface="modal" duration={200}>{closing && <div className="modal-backdrop"><div className="modal confirm-dialog material-host" role="dialog" aria-modal="true" aria-labelledby="close-title"><LiquidGlassSurface variant="panel" /><div className="modal-heading"><h2 id="close-title">保存文档更改？</h2><button className="icon-button" aria-label="取消关闭" disabled={closingBusy} onClick={()=>setClosing(undefined)}><X size={18}/></button></div><p>“{workspace.documents.find(d=>d.id===closing.documentId)?.title}”有尚未保存的更改。</p><p className="dialog-hint">保留草稿会保存恢复点，原文件保持原样。</p><div className="dialog-actions"><button className="button" disabled={closingBusy} onClick={()=>setClosing(undefined)}>取消</button><button className="button" disabled={closingBusy} onClick={()=>void performClose(closing)}>保留草稿并关闭</button><button className="button primary" disabled={closingBusy} onClick={()=>void saveAndClose()}>{closingBusy?'保存中…':'保存并关闭'}</button></div></div></div>}</MotionPresence>
@@ -433,9 +505,7 @@ export function App() {
   </div>;
 }
 
-function TranslationCard({ card, onPin, onRetry }: { card: Card; onPin(): void; onRetry(): void }) {
-  return <div className="translation-card"><div className="translation-card-top"><span><Languages size={15} /> 翻译 · {sourceName(card)}</span><button title={card.pinned ? '取消固定' : '固定'} onClick={onPin}><Pin size={15} fill={card.pinned ? 'currentColor' : 'none'} /></button></div>{card.status === 'loading' ? <p className="translation-loading">正在翻译选中内容…</p> : card.status === 'error' ? <p className="translation-error">{card.error}</p> : <div className="translation-result">{card.result}</div>}<AnimatedDisclosure label="查看原文"><p>{card.source}</p></AnimatedDisclosure><div className="translation-actions"><button disabled={card.status !== 'ready'} onClick={() => void navigator.clipboard.writeText(card.result)}>复制译文</button><button disabled={card.status !== 'ready'} onClick={() => void navigator.clipboard.writeText(card.source + '\n\n' + card.result)}>复制双语</button><button onClick={onRetry}>重译</button></div></div>;
-}
+
 
 function AgentTargetHighlight({ event }: { event: EventItem }) {
   const [rect, setRect] = useState<{ left: number; top: number; width: number; height: number }>();

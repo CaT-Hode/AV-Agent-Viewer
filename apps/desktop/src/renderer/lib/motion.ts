@@ -23,3 +23,9 @@ export function motionDuration(base: number, snapshot = motionSnapshot(), keyboa
   const [mode, source] = snapshot.split(':');
   return keyboardImmediate && source === 'keyboard' ? 0 : motionDurationForMode(base, resolveMotionMode(mode));
 }
+
+/** Navigation already derives its timing from scroll speed; only accessibility limits it. */
+export function navigationMotionDuration(base: number, snapshot = motionSnapshot()) {
+  const mode = resolveMotionMode(snapshot.split(':')[0]);
+  return mode === 'off' ? 0 : mode === 'reduced' ? Math.min(80, base) : base;
+}

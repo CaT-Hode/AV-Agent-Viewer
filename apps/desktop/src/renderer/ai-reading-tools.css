@@ -19,7 +19,7 @@
 html.native-ai-result-root,html.native-ai-result-root body,html.native-ai-result-root #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent !important; }
 html.native-ai-result-root .native-ai-result-slot { padding: 16px; height: 100%; background: transparent; }
 html.native-ai-result-root .ai-result-popover.native-ai-result-popover { position: relative; top: auto; right: auto; width: 100%; height: calc(100vh - 32px); max-height: 620px; }
-html.native-ai-result-root .ai-result-popover[data-motion-phase] { opacity: 1; translate: none; scale: 1; transform: none; }
+html.native-ai-result-root .ai-result-popover[data-motion-phase] { transform: none; }
 .native-ai-result-popover[data-native-waiting] :is(.liquid-glass-center,.liquid-glass-edge) { visibility: hidden; }
 :root[data-theme] .native-ai-result-popover[data-surface="light"] { color: #253440; --muted: #576b7c; --liquid-glass-tint: rgb(255 255 255 / .24); }
 :root[data-theme] .native-ai-result-popover[data-surface="dark"] { color: #edf4fa; --muted: #a2b3bf; --liquid-glass-tint: rgb(21 33 44 / .28); }
@@ -27,3 +27,76 @@ html.native-ai-result-root .ai-result-popover[data-motion-phase] { opacity: 1; t
 .translation-popover.material-host { display: flex; flex-direction: column; overflow: hidden; }
 .translation-popover.material-host .translation-card { min-height: 0; overflow: auto; }
 .translation-popover.material-host .popover-expand { flex-shrink: 0; }
+
+/* AI and translation are one non-modal motion vocabulary. The sampling host
+   never changes opacity: doing so would cut off its real document backdrop. */
+:root {
+  --ai-popover-travel: 12px;
+  --ai-popover-scale: .975;
+  --ai-popover-spring: cubic-bezier(.2,1.08,.3,1);
+  --ai-popover-fade: cubic-bezier(.22,.75,.2,1);
+}
+:root[data-motion="elegant"] {
+  --ai-popover-travel: 16px;
+  --ai-popover-scale: .965;
+  --ai-popover-spring: cubic-bezier(.2,1.13,.3,1);
+}
+:root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"][data-motion-phase] {
+  opacity: 1;
+  translate: none;
+  scale: 1;
+  transform-origin: calc(100% - 24px) 24px;
+  animation: none !important;
+  transition: translate var(--motion-duration) var(--ai-popover-spring),
+    scale var(--motion-duration) var(--ai-popover-spring),
+    border-color var(--motion-duration) var(--ai-popover-fade),
+    box-shadow var(--motion-duration) var(--ai-popover-fade);
+}
+:root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"]:is([data-motion-phase="enter"],[data-motion-phase="exit"]) {
+  translate: var(--ai-popover-travel) 3px;
+  scale: var(--ai-popover-scale);
+  border-color: transparent;
+  box-shadow: none;
+}
+:root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"][data-motion-phase] > :not(.liquid-glass-surface),
+:root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"][data-motion-phase] > .liquid-glass-surface :is(.liquid-glass-center,.liquid-glass-edge,.liquid-glass-tint,.liquid-glass-highlight) {
+  opacity: 1;
+  transition: opacity var(--motion-duration) var(--ai-popover-fade);
+}
+:root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"]:is([data-motion-phase="enter"],[data-motion-phase="exit"]) > :not(.liquid-glass-surface),
+:root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"]:is([data-motion-phase="enter"],[data-motion-phase="exit"]) > .liquid-glass-surface :is(.liquid-glass-center,.liquid-glass-edge,.liquid-glass-tint,.liquid-glass-highlight) {
+  opacity: 0;
+}
+/* The native slot is a fixed source-coordinate viewport. Scaling the sampling
+   section would stretch the webpage PNG and make the material drift. Its
+   foreground alone has a small elastic arrival, while optical leaves fade. */
+:root .native-ai-result-popover[data-motion-surface="ai-popover"][data-motion-phase] {
+  translate: none;
+  scale: 1;
+}
+:root .native-ai-result-popover[data-motion-surface="ai-popover"][data-motion-phase] > :not(.liquid-glass-surface) {
+  translate: none;
+  scale: 1;
+  transform-origin: 100% 0;
+  transition: opacity var(--motion-duration) var(--ai-popover-fade),
+    translate var(--motion-duration) var(--ai-popover-spring),
+    scale var(--motion-duration) var(--ai-popover-spring);
+}
+:root .native-ai-result-popover[data-motion-surface="ai-popover"]:is([data-motion-phase="enter"],[data-motion-phase="exit"]) > :not(.liquid-glass-surface) {
+  translate: 6px 0;
+  scale: .99;
+}
+:root[data-motion="reduced"] :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"][data-motion-phase],
+:root[data-motion="off"] :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"][data-motion-phase],
+:root[data-motion="reduced"] .native-ai-result-popover[data-motion-surface="ai-popover"][data-motion-phase] > :not(.liquid-glass-surface),
+:root[data-motion="off"] .native-ai-result-popover[data-motion-surface="ai-popover"][data-motion-phase] > :not(.liquid-glass-surface) {
+  translate: none;
+  scale: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root :is(.ai-result-popover,.translation-popover)[data-motion-surface="ai-popover"][data-motion-phase],
+  :root .native-ai-result-popover[data-motion-surface="ai-popover"][data-motion-phase] > :not(.liquid-glass-surface) {
+    translate: none;
+    scale: 1;
+  }
+}

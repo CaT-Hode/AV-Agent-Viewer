@@ -9,7 +9,7 @@ export type AIReadingToolsProps = {
   onRun(tool: AIReadingToolDefinition, scope: AIReadingScope): void | Promise<void>;
 };
 const icons: Record<AIReadingIcon, typeof FileText> = { summary: FileText, explain: Lightbulb, terms: BookOpen, 'key-points': ListChecks, questions: CircleHelp, evidence: Quote, outline: ListTree, review: ShieldCheck, formula: Sigma, table: Table2, flashcards: Layers };
-const groups: AIReadingToolDefinition['group'][] = ['理解', '分析', '学习'];
+const groups: AIReadingToolDefinition['group'][] = ['理解', '分析', '学习', '写作'];
 
 /** UI only. The owner freezes the source, selects the model and runs the tool. */
 export function AIReadingTools({ context, snapshot, format, busy = false, allowDocumentScope = false, onRun }: AIReadingToolsProps) {

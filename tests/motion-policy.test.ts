@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { animatedMotion, motionDurationForMode, resolveMotionMode } from '../apps/desktop/src/renderer/lib/motion-policy';
-import { motionDuration } from '../apps/desktop/src/renderer/lib/motion';
+import { motionDuration, navigationMotionDuration } from '../apps/desktop/src/renderer/lib/motion';
 
 test('elegant is an animated mode; system reduction and explicit off retain precedence', () => {
   assert.equal(resolveMotionMode('elegant'), 'elegant');
@@ -23,4 +23,11 @@ test('keyboard actions are immediate and accessibility settings never inherit el
   assert.equal(motionDuration(200,'elegant:keyboard',false),520);
   assert.equal(motionDurationForMode(220,'reduced'),80);
   assert.equal(motionDurationForMode(220,'off'),0);
+});
+
+test('navigation keeps scroll-derived timing after keyboard input and shares accessibility limits', () => {
+  assert.equal(navigationMotionDuration(650, 'standard:keyboard'), 650);
+  assert.equal(navigationMotionDuration(380, 'elegant:pointer'), 380);
+  assert.equal(navigationMotionDuration(650, 'reduced:keyboard'), 80);
+  assert.equal(navigationMotionDuration(650, 'off:pointer'), 0);
 });

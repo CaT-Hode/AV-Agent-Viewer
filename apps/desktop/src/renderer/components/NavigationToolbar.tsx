@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { ArrowLeft, ArrowRight, Copy, Languages, Minus, Plus, RotateCw, Save, Undo2, X } from 'lucide-react';
 import { NavigationGlass } from './NavigationGlass';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
-import { useMotionSnapshot } from '../lib/motion';
+import { navigationMotionDuration, useMotionSnapshot } from '../lib/motion';
 
 export type NavigationAction =
   | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' | 'dismiss' }
@@ -81,6 +81,7 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   const contribution = contributions[state.format as keyof typeof contributions] ?? contributions.document;
   const Identity = contribution.identity, hidden = progress >= 1;
   const motion = useMotionSnapshot();
+  durationMs = navigationMotionDuration(durationMs, motion);
   const immediate = instant || motion.split(':')[0] === 'off';
   const [entered, setEntered] = useState(immediate);
   // Native navigation unmounts after closing. Establish a painted collapsed

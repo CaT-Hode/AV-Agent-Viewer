@@ -11,19 +11,22 @@ import type { HarnessTask, ReadingContext, ReadingSnapshot, ViewInfo, WorkspaceS
 
 const require = createRequire(import.meta.url), directory = await mkdtemp(join(tmpdir(), 'agentviewer-ai-reading-ui-'));
 const evidence = join(directory, 'evidence'); await mkdir(evidence);
-const requests: { prompt: string; response: string }[] = [];
+const requests: { prompt: string; response: string; model?: string }[] = [];
+let nextAnswer: string | undefined, nextDelay: number | undefined; let imageRequests = 0;
 const modelServer = createHttpServer(async (request, response) => {
   try {
+    if (request.url === '/image-probe') { imageRequests++; response.end('image'); return; }
     const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
     response.setHeader('Content-Type', 'application/json');
     if (request.url?.endsWith('/models')) { response.end(JSON.stringify({ data: [{ id: 'isolated-reading-model' }] })); return; }
     if (!request.url?.endsWith('/chat/completions')) { response.writeHead(404); response.end('{}'); return; }
-    const input = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: string }[] };
-    const result = { prompt: input.messages.map(message => message.content).join('\n'), response: 'ANALYSIS_RESPONSE_' + (requests.length + 1) + '\n依据本次冻结来源的模拟阅读结果。' };
-    requests.push(result);
+    const input = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model?: string; messages: { content: string }[] };
+    const result = { model: input.model, prompt: input.messages.map(message => message.content).join('\n'), response: nextAnswer ?? ('ANALYSIS_RESPONSE_' + (requests.length + 1) + '\n依据本次冻结来源的模拟阅读结果。') };
+    nextAnswer = undefined; requests.push(result);
     // The first real provider call remains pending long enough to inspect card
     // dimensions before/after completion; later calls keep this suite short.
-    await new Promise(done => setTimeout(done, requests.length === 1 ? 1200 : 40));
+    const delay = nextDelay ?? (requests.length === 1 ? 1200 : 40); nextDelay = undefined;
+    await new Promise(done => setTimeout(done, delay));
     response.end(JSON.stringify({ choices: [{ message: { content: result.response } }] }));
   } catch (error) { response.writeHead(500); response.end(JSON.stringify({ error: String(error) })); }
 });
@@ -35,7 +38,8 @@ delete env.ELECTRON_RUN_AS_NODE;
 const sourcePath = join(directory, 'reading-source.md'), selected = 'ALPHA_SELECTED_SOURCE';
 const source = '# AI 阅读验收\n\n' + selected + ' 是选中的独立片段。\n\nVISIBLE_SECONDARY_SOURCE 是当前视口的第二段，用于检查范围切换。\n\n' + Array.from({ length: 90 }, (_, index) => `阅读占位段落 ${index + 1}，只用于将后续内容放到视口之外。\n\n`).join('') + 'SECRET_UNREAD_DOCUMENT_TAIL\n';
 await writeFile(sourcePath, source);
-const app = await electron.launch({ executablePath: require('electron'), args: ['.'], cwd: resolve('.'), env, timeout: 45000 });
+const runtime = process.env.AGENTVIEWER_QA_EXE;
+const app = await electron.launch({ executablePath: runtime ?? require('electron'), args: runtime ? [] : ['.'], cwd: resolve('.'), env, timeout: 45000 });
 const page = await app.firstWindow(), errors: string[] = [], checks: string[] = [];
 const watch = (target: Page) => { target.on('pageerror', error => errors.push(error.message)); target.on('console', message => { if (/Encountered two children with the same key/.test(message.text())) errors.push(message.text()); }); };
 app.context().pages().forEach(watch); app.context().on('page', watch);
@@ -77,7 +81,7 @@ try {
   const catalog = await invoke<{ tools: typeof AI_READING_TOOLS; scopes: string[] }>('ai-reading-tools', { viewId });
   assert.deepEqual(catalog.tools, AI_READING_TOOLS); assert.deepEqual(catalog.scopes, ['selection', 'visible']);
   assert.equal(await page.locator('.ai-reading-scopes').getByRole('radio', { name: '整篇文档', exact: true }).count(), 0);
-  checks.push('GUI and real command catalog expose the same 11 bounded reading actions');
+  checks.push('GUI and real command catalog expose the same catalog of bounded reading actions');
   await page.locator('[data-ai-tool="summary"]').hover(); await assertFrostedTooltip(page); await page.mouse.move(800, 900);
   // Copy is verified through the real click handler, with only this isolated
   // renderer's Clipboard API stubbed so the user's OS clipboard is preserved.
@@ -93,14 +97,14 @@ try {
     await until(async () => await card.locator('feDisplacementMap[data-glass-displacement]').count() > 0, 'full card refraction generated');
     const cardHeight = await card.evaluate(node => node.getBoundingClientRect().height);
     await until(async () => { const task = (await state()).tasks.find(task => !beforeTasks.has(task.id)); return task?.status === 'completed'; }, tool.id + ' completes via actual provider');
-    await until(async () => (await card.innerText()).includes(requests.at(-1)!.response), tool.id + ' result rendered');
+    await until(async () => (await card.innerText()).replace(/\s+/g, ' ').includes(requests.at(-1)!.response.replace(/\s+/g, ' ')), tool.id + ' result rendered');
     assert.equal(requests.length, beforeCalls + 1); assert.equal(await card.evaluate(node => node.getBoundingClientRect().height), cardHeight, 'provider completion does not resize optical card');
     const events = await invoke<{ type: string; data: { toolId?: string; scope?: string; taskId?: string } }[]>('events');
     const event = events.filter(event => event.type === 'ai.reading').at(-1)!; assert.equal(event.data.toolId, tool.id); assert.equal(event.data.scope, scope);
     const task = (await state()).tasks.find(task => task.id === event.data.taskId)!;
     const snapshot = await invoke<ReadingSnapshot>('snapshot-read', { snapshotId: task.snapshotId });
     assert.equal(snapshot.context.viewId, viewId); assert.equal(snapshot.document.revision, originalDocument.revision);
-    const prompt = requests.at(-1)!.prompt, match = /\n内容：([\s\S]*?)\n问题：/.exec(prompt); assert.ok(match);
+    const prompt = requests.at(-1)!.prompt, match = /\n内容：([\s\S]*?)\n任务：/.exec(prompt); assert.ok(match);
     if (scope === 'selection') assert.equal(match[1], selected);
     else { assert.ok(match[1].includes('VISIBLE_SECONDARY_SOURCE')); assert.ok(match[1].length > selected.length); }
     assert.ok(!prompt.includes('SECRET_UNREAD_DOCUMENT_TAIL')); assert.ok(!prompt.includes(directory));
@@ -114,16 +118,16 @@ try {
       await card.getByRole('button', { name: '保存分析为独立文档', exact: true }).click();
       await until(async () => (await state()).documents.some(document => document.title === tool.label + '.md' && document.id !== originalDocument.id), 'analysis becomes independent Markdown document');
       const generated = (await state()).documents.find(document => document.title === tool.label + '.md' && document.id !== originalDocument.id)!;
-      assert.equal(generated.model.text, expected);
+      assert.ok(generated.model.text?.includes(expected)); assert.match(generated.model.text!, /来源/);
       const artifactPath = join(directory, 'analysis-result.md');
       await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }); }, artifactPath);
       await page.keyboard.press('Control+s');
       await until(async () => (await state()).documents.find(document => document.id === generated.id)?.path === artifactPath, 'independent analysis saved to disk');
-      assert.equal(await readFile(artifactPath, 'utf8'), expected); assert.deepEqual(await readFile(sourcePath), disk);
+      assert.equal(await readFile(artifactPath, 'utf8'), generated.model.text); assert.deepEqual(await readFile(sourcePath), disk);
       await page.locator('.tab').filter({ hasText: originalDocument.title }).getByRole('button', { name: originalDocument.title, exact: true }).click();
     } else await card.getByRole('button', { name: '关闭分析结果', exact: true }).click();
   }
-  checks.push('all 11 UI actions reach the model once, report scope/identity, leave original model and file clean');
+  checks.push('all catalog UI actions reach the model once, report scope/identity, leave original model and file clean');
   checks.push('fixed-size refractive result card, copy handler, independent Markdown creation and real disk save');
   await page.locator('.prose p').filter({ hasText: selected }).evaluate((node, text) => { const range = document.createRange(); range.setStart(node.firstChild!, 0); range.setEnd(node.firstChild!, text.length); const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range); node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); }, selected);
   await until(async () => (await invoke<ReadingContext>('context', { viewId })).selection.text === selected, 'selection restored for translation');
@@ -134,6 +138,102 @@ try {
   await until(async () => await translation.locator('feDisplacementMap[data-glass-displacement]').count() > 0, 'translation card full refraction');
   assert.deepEqual((await state()).documents.find(document => document.id === originalDocument.id), originalDocument);
   checks.push('selection translation uses a refractive separate result without editing original');
+  nextAnswer = '## 片段分析\n\n- **关键结论**：依据原文。\n\n| 项目 | 说明 |\n| --- | --- |\n| 范围 | 当前选区 |\n\n```ts\nconst safe = true;\n```\n\n![远程图片](http://127.0.0.1:' + modelAddress.port + '/image-probe)\n\n<script>window.__modelExecuted=true</script>';
+  await openAI(); await page.locator('.ai-reading-scopes').getByRole('radio', { name: '选中内容', exact: true }).click();
+  await page.locator('[data-ai-tool="summary"]').click();
+  const richResult = page.locator('.ai-result-popover');
+  await richResult.locator('h2').filter({ hasText: '片段分析' }).waitFor();
+  assert.equal(await richResult.locator('table').count(), 1);
+  assert.equal(await richResult.locator('pre code').innerText(), 'const safe = true;\n');
+  assert.equal(await richResult.locator('img,script').count(), 0);
+  assert.equal(await page.evaluate(() => (window as unknown as { __modelExecuted?: boolean }).__modelExecuted), undefined);
+  assert.equal(imageRequests, 0, 'model image syntax does not contact external resources');
+  await invoke('settings-set', { id: 'appearance.theme', value: 'dark' });
+  await page.locator('html[data-theme="dark"]').waitFor();
+  await page.screenshot({ path: join(evidence, 'ai-rich-dark.png'), scale: 'css' });
+  await invoke('settings-set', { id: 'appearance.theme', value: 'light' });
+  await page.locator('html[data-theme="light"]').waitFor();
+  await richResult.getByRole('button', { name: '关闭分析结果', exact: true }).click();
+  checks.push('AI output renders Markdown tables/code/list without model scripts or remote image requests');
+  // Retrying a finished reading result must keep its original frozen material,
+  // even after a different human selection is visible.
+  await openAI();
+  await page.locator('.ai-history-item').first().click();
+  const previousCard = page.locator('.ai-result-popover');
+  await previousCard.getByRole('button', { name: '查看本次来源', exact: true }).click();
+  const frozenText = await previousCard.locator('.ai-source-text').innerText();
+  assert.ok(frozenText.length > 0);
+  await previousCard.getByRole('button', { name: '返回结果', exact: true }).click();
+  const callsBeforeRetry = requests.length;
+  await previousCard.getByRole('button', { name: '使用本次来源重新分析', exact: true }).click();
+  await until(async () => requests.length === callsBeforeRetry + 1 && (await state()).tasks.at(-1)?.status === 'completed', 'same-source retry completes');
+  assert.equal(/\n内容：([\s\S]*?)\n任务：/.exec(requests.at(-1)!.prompt)?.[1], frozenText);
+  await previousCard.getByRole('button', { name: '关闭分析结果', exact: true }).click();
+  await translation.getByRole('button', { name: '固定译文', exact: true }).click();
+  assert.equal(await translation.getByRole('button', { name: '取消固定译文', exact: true }).getAttribute('aria-pressed'), 'true');
+  // A different selection does not replace the pinned card, and choosing a new
+  // language retranslates the saved excerpt rather than the current selection.
+  await page.locator('.prose p').filter({ hasText: 'VISIBLE_SECONDARY_SOURCE' }).evaluate(node => {
+    const range = document.createRange(); range.selectNodeContents(node);
+    const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+    node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  await until(async () => (await invoke<ReadingContext>('context', { viewId })).selection.text.includes('VISIBLE_SECONDARY_SOURCE'), 'new selection reported');
+  const beforeLanguage = requests.length;
+  await translation.getByRole('combobox', { name: '此译文的目标语言' }).selectOption('ja');
+  await until(async () => requests.length === beforeLanguage + 1 && await translation.locator('.translation-result').count() > 0, 'pinned saved excerpt retranslates');
+  assert.ok(requests.at(-1)!.prompt.includes(selected));
+  assert.ok(!requests.at(-1)!.prompt.includes('VISIBLE_SECONDARY_SOURCE'));
+  assert.ok(requests.at(-1)!.prompt.includes('ja'));
+  const moreConnections = await invoke<{ profiles: { id: string }[] }>('connections-upsert', { name: 'alternate translation model', protocol: 'chat-completions', baseUrl: 'http://127.0.0.1:' + modelAddress.port + '/v1', modelId: 'alternate-model' });
+  const alternateId = moreConnections.profiles.at(-1)!.id;
+  await until(async () => await translation.locator(`option[value="${alternateId}"]`).count() === 1, 'model chooser reflects available connections');
+  const beforeModel = requests.length;
+  await translation.getByRole('combobox', { name: '此译文的模型' }).selectOption(alternateId);
+  await until(async () => requests.length === beforeModel + 1 && await translation.locator('.translation-result').count() > 0, 'card-specific model retranslation');
+  assert.equal(requests.at(-1)!.model, 'alternate-model');
+  assert.ok(requests.at(-1)!.prompt.includes(selected));
+  assert.equal((await invoke<{ routes: { selection: string } }>('connections-read')).routes.selection, profileId, 'card model change leaves global route unchanged');
+  await page.screenshot({ path: join(evidence, 'translation-model-card.png'), scale: 'css' });
+  const beforeCancel = requests.length; nextDelay = 1200;
+  await translation.getByRole('button', { name: '重新翻译此片段', exact: true }).click();
+  await until(async () => requests.length === beforeCancel + 1, 'translation provider request begins before cancellation');
+  await translation.getByRole('button', { name: '停止选区翻译', exact: true }).click();
+  await translation.getByText('已停止，可使用同一片段重试。', { exact: true }).waitFor();
+  await page.waitForTimeout(1350);
+  assert.equal(await translation.locator('.translation-result').count(), 0, 'cancelled late answer cannot revive card');
+  await translation.getByRole('button', { name: '重新翻译此片段', exact: true }).click();
+  await translation.locator('.translation-result').waitFor();
+  await translation.getByRole('button', { name: '复制双语', exact: true }).click();
+  assert.ok((await page.evaluate(() => sessionStorage.getItem('qa-ai-copy')))?.startsWith(selected + '\n\n'));
+  await translation.getByRole('button', { name: '关闭此译文', exact: true }).click();
+  assert.equal(await page.locator('.translation-popover').count(), 0);
+  assert.deepEqual(await readFile(sourcePath), disk);
+  checks.push('reading retry preserves frozen source; pinned translation language change preserves old excerpt; copy and dismiss work');
+
+  // A slow selection-capsule request must not replace a newer right-toolbar
+  // translation. Exercise both real user entry points with the same source view.
+  const selectParagraph = async (text: string) => {
+    await page.locator('.prose p').filter({ hasText: text }).evaluate(node => {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+    await until(async () => (await invoke<ReadingContext>('context', { viewId })).selection.text.includes(text), 'race-test selection reported');
+  };
+  await selectParagraph(selected); nextDelay = 1400; nextAnswer = 'OLDER_CAPSULE_ANSWER';
+  const beforeManual = requests.length;
+  await page.locator('.selection-tools').getByRole('button', { name: '翻译选区', exact: true }).click();
+  await until(async () => requests.length === beforeManual + 1, 'old capsule translation begins');
+  await selectParagraph('VISIBLE_SECONDARY_SOURCE'); nextAnswer = 'NEWER_TRANSLATION_ANSWER';
+  await openAI(); await page.locator('.ai-drawer').getByRole('button', { name: '翻译选区', exact: true }).click();
+  await page.locator('.ai-drawer').getByRole('button', { name: '关闭 AI 抽屉', exact: true }).click();
+  await page.locator('.translation-result').getByText('NEWER_TRANSLATION_ANSWER', { exact: true }).waitFor();
+  await page.waitForTimeout(1550);
+  assert.equal(await page.locator('.translation-result').innerText(), 'NEWER_TRANSLATION_ANSWER');
+  await page.locator('.translation-popover').getByRole('button', { name: '关闭此译文', exact: true }).click();
+  checks.push('late manual selection-capsule translation cannot replace a newer right-toolbar selection result');
+
   const nav = page.locator('.reader-toolbar');
   assert.equal(await nav.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)');
   assert.equal(await nav.evaluate(node => getComputedStyle(node).backdropFilter), 'none');
@@ -146,7 +246,7 @@ try {
   assert.equal(await toolbar.locator('.navigation-glass').getAttribute('data-glass-effect'), 'refractive');
   checks.push('local and native tooltip surfaces are frosted without fallback; navigation root has no rectangular mask');
   assert.deepEqual(errors, []);
-  await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed: true, port, checks, errors, providerCalls: requests.length, tools: AI_READING_TOOLS.map(tool => tool.id), clipboard: 'isolated renderer Clipboard API; OS clipboard untouched' }, null, 2));
+  await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed: true, port, checks, errors, providerCalls: requests.length, actualRenderer: await page.evaluate(() => [...document.scripts].map(script => script.src).filter(Boolean)), tools: AI_READING_TOOLS.map(tool => tool.id), clipboard: 'isolated renderer Clipboard API; OS clipboard untouched' }, null, 2));
   console.log('AI reading UI/provider/scope/material/save: PASS', evidence);
 } catch (error) {
   await page.screenshot({ path: join(evidence, 'failure.png'), scale: 'css' }).catch(() => {});

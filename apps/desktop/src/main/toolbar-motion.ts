@@ -7,3 +7,12 @@ export function navigationExitDuration(current: unknown, previous: unknown): num
   }
   return 650;
 }
+
+/** Accessibility modes shorten an already retained exit. Ordinary geometry/speed
+ * updates keep its deadline: a CSS timing-token change alone does not retarget
+ * an in-flight transition. Off must remove the transparent input surface now. */
+export function retainedSurfaceExit(currentDuration: number, previousDuration: unknown): 'keep' | 'restart' | 'hide' {
+  if (!(currentDuration > 0)) return 'hide';
+  if (currentDuration > 80) return 'keep';
+  return Number(previousDuration) === currentDuration ? 'keep' : 'restart';
+}

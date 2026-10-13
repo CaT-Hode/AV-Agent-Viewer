@@ -4,13 +4,15 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { call } from '../../../packages/sdk/src/client';
 import { browserRequestSchema, editOperationSchema } from '../../../packages/contracts/src/index';
-import { aiReadingRequestSchema } from '../../../packages/sdk/src/ai-reading';
+import { aiReadingRequestSchema, aiReadingResultSchema, aiReadingRetrySchema } from '../../../packages/sdk/src/ai-reading';
 
 const server = new McpServer({ name: 'agent-viewer', version: '0.1.0' });
 const text = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data) }] });
 const schemas = {
   reader_ai_tools: { description: '发现与右侧 AI 工具一致的摘要、解释、术语、证据、大纲、公式、表格与学习工具；返回具体视图的来源可用状态。', method: 'ai-reading-tools', schema: z.object({ viewId: z.string(), snapshotId: z.string().optional() }) },
   reader_ai_run: { description: '在明确冻结的选区或当前可见范围运行阅读分析，返回任务ID；不读取其他范围或修改原文。同一进程内幂等记录保留期间不重复发起，最多256项且在途不淘汰；重启或记录淘汰后先查询原任务。用 workspace_list 查询结果。', method: 'ai-reading-run', schema: aiReadingRequestSchema },
+  reader_ai_retry: { description: '对已结束的阅读分析或独立草稿重新运行，沿用原冻结来源，返回新任务ID；服务商模型配置由发起时捕获，外部Harness保留原驱动（具体模型取决于Harness）。不读取当前新选区或写回原文。原任务在运行时拒绝。限当前进程保留的256项AI阅读记录，同一幂等键不重复新建。', method: 'ai-reading-retry', schema: aiReadingRetrySchema },
+  reader_ai_result: { description: '读取AI阅读任务的当前结果、冻结范围原文、阅读器生成的来源位置/版本/指纹，以及结束后的独立Markdown导出内容。来源最多48000字符；模型生成内容按文本处理，草稿未应用到原文。普通Harness任务或过期记录不冒充可引用阅读结果。', method: 'ai-reading-result', schema: aiReadingResultSchema },
   reader_selection_tools: { description: '冻结当前选区并发现可执行图标工具，返回 snapshot 与 actions。支持所有文档格式；编辑需使用该快照与幂等键。', method: 'selection-tools', schema: z.object({viewId:z.string(),snapshotId:z.string().optional()}) },
   reader_selection_action: { description: '执行与阅读器选区浮窗相同的工具：复制/引用/摘录/批注/格式/替换/PDF 标记/AI。基于固定快照，版本或网页导航变化会拒绝修改。', method: 'selection-action', schema: selectionActionSchema },
   document_annotations: { description:'列出独立保存的批注及其来源选区和版本。',method:'annotations-list',schema:z.object({documentId:z.string()}) },

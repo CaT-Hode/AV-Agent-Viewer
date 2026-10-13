@@ -2,7 +2,7 @@ import { actionsFor, selectionAction } from '../../selection-tools/src/index';
 import type { Actor, EditOperation, ReadingContext, Rect, ViewInfo } from '../../contracts/src/index';
 import { browserRequestSchema, normalizeWebAddress, ViewerError } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
-import { aiReadingTools, runAIReading } from './ai-reading';
+import { aiReadingResult, aiReadingTools, retryAIReading, runAIReading } from './ai-reading';
 
 export async function dispatch(core: ViewerCore, method: string, args: Record<string, unknown>, actor: Actor = 'agent'): Promise<unknown> {
   const str = (key: string) => { const value = args[key]; if (typeof value !== 'string') throw new ViewerError('INVALID_ARGUMENT', `${key} 必须是字符串。`); return value; };
@@ -10,6 +10,8 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
   switch (method) {
     case 'ai-reading-tools': return aiReadingTools(core, args);
     case 'ai-reading-run': return runAIReading(core, args, actor);
+    case 'ai-reading-retry': return retryAIReading(core, args, actor);
+    case 'ai-reading-result': return aiReadingResult(core, args);
     case 'selection-tools': { const snapshot = args.snapshotId ? core.readSnapshot(str('snapshotId')) : await core.snapshot(viewId); return { snapshot, actions: actionsFor(snapshot, !!core.extensions.get('selection-ai')) }; }
     case 'selection-action': return selectionAction(core, args, actor);
     case 'annotations-list': return [...core.annotations.values()].filter(note => note.documentId === str('documentId'));

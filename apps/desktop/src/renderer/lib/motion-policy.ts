@@ -1,5 +1,7 @@
 /** Shared renderer/native-host policy; contains no DOM, timers or React. */
 export type MotionMode = 'standard' | 'elegant' | 'reduced' | 'off';
+/** Renderer presence and native retained views must share this base. */
+export const AI_POPOVER_MOTION_BASE_MS = 300;
 export function resolveMotionMode(value: string | undefined, prefersReducedMotion = false): MotionMode {
   if (value === 'off') return 'off';
   if (prefersReducedMotion || value === 'reduced') return 'reduced';

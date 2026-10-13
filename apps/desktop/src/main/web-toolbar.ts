@@ -1,11 +1,11 @@
 import { BrowserWindow, WebContentsView, screen, type NativeImage, type WebContents } from 'electron';
 import { AGENT_OPERATION_METRICS, NAVIGATION_METRICS } from '../renderer/lib/navigation-optics';
 import { NativeBackdropCache, backdropStatistics, type BackdropCacheStatistics, type BackdropPixels } from './backdrop-cache';
-import { motionDurationForMode, resolveMotionMode } from '../renderer/lib/motion-policy';
+import { AI_POPOVER_MOTION_BASE_MS, motionDurationForMode, resolveMotionMode } from '../renderer/lib/motion-policy';
 import { nativeTooltipLayout, type TooltipRect, type TooltipSize } from '../renderer/lib/tooltip-placement';
 import { NativeBackdropFrameHub } from './backdrop-frame-hub';
 import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
-import { navigationExitDuration } from './toolbar-motion';
+import { navigationExitDuration, retainedSurfaceExit } from './toolbar-motion';
 const backdropFrames = new NativeBackdropFrameHub();
 type Rect = { x: number; y: number; width: number; height: number };
 export type BackdropSource = { view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
@@ -104,8 +104,9 @@ export class WebToolbarHost {
     const previous=entry.state,visible=!!state.viewId&&!!state.visible;
     const wasExiting=!!entry.exitTimer;
     if(visible){clearTimeout(entry.exitTimer);entry.exitTimer=undefined;}
-    const mode=(previous.settings as any)?.values?.['appearance.motion'];
-    const duration=this.route==='/selection-toolbar'?motionDurationForMode(140,resolveMotionMode(mode)):this.route==='/agent-toolbar'||this.route==='/ai-result-toolbar'?Math.max(0,Math.min(650,Number(state.hideDurationMs ?? motionDurationForMode(200,resolveMotionMode(mode))))):navigationExitDuration(state.hideDurationMs,previous.hideDurationMs);
+    const mode=((state.settings ?? previous.settings) as any)?.values?.['appearance.motion'];
+    const duration=this.route==='/selection-toolbar'?motionDurationForMode(140,resolveMotionMode(mode)):this.route==='/agent-toolbar'||this.route==='/ai-result-toolbar'?Math.max(0,Math.min(650,Number(state.hideDurationMs ?? motionDurationForMode(this.route==='/ai-result-toolbar'?AI_POPOVER_MOTION_BASE_MS:200,resolveMotionMode(mode))))):navigationExitDuration(state.hideDurationMs,previous.hideDurationMs);
+    const retainedExit=(this.route==='/ai-result-toolbar'||this.route==='/web-toolbar')&&wasExiting&&state.viewId===previous.viewId?retainedSurfaceExit(duration,previous.hideDurationMs):undefined;
     const animate=!visible&&!!previous.visible&&!!(state.animate||(state.viewId&&state.viewId===previous.viewId));
     if (!state.visible || state.viewId !== entry.state.viewId || (entry.tooltipLayout && JSON.stringify(previous.bounds)!==JSON.stringify(state.bounds))) { clearTimeout(entry.tooltipTimer);entry.panel = false; entry.tooltip = false;entry.tooltipLayout=undefined;entry.tooltipPending=false;entry.tooltipTicket=(entry.tooltipTicket??0)+1;entry.tooltipClose?.(this.tooltipReply(entry));entry.tooltipClose=undefined; }
     if (state.viewId !== entry.state.viewId) { this.clearFrameSubscription(entry); entry.capsuleBounds = undefined; entry.geometryRevision++; entry.cache.clear(); }
@@ -113,6 +114,7 @@ export class WebToolbarHost {
     if (agentGeometryChange) { entry.capsuleBounds = undefined; entry.geometryRevision++; }
     const sameSample = !agentGeometryChange && previous.viewId === state.viewId && previous.address === state.address && JSON.stringify(previous.bounds) === JSON.stringify(state.bounds);
     entry.state = visible ? { ...(sameSample ? { backdropImage: previous.backdropImage, backdropSample: previous.backdropSample } : {}), ...state } : { ...previous, ...state, visible: false };
+    if((this.route==='/ai-result-toolbar'||this.route==='/web-toolbar')&&!visible)entry.state.hideDurationMs=duration;
     // A bottom operation surface exists only for its short visible operation.
     // It has no permanent idle sampling loop; paused/stopped labels also expire.
     if (this.route === '/agent-toolbar' || this.route === '/ai-result-toolbar') {
@@ -124,8 +126,8 @@ export class WebToolbarHost {
     }
     owner.contentView.addChildView(entry.view);
     if(visible)entry.view.setVisible(true);
-    else if(wasExiting&&(state.animate||state.viewId===previous.viewId)){/* Keep the existing exit during layout updates. */}
-    else if(animate&&duration){const current=entry;entry.exitTimer=setTimeout(()=>{current.exitTimer=undefined;if(!current.view.webContents.isDestroyed())this.hide(owner,current);},duration);}
+    else if(wasExiting&&(state.animate||state.viewId===previous.viewId)&&(!retainedExit||retainedExit==='keep')){/* Keep the existing exit during layout updates. */}
+    else if((animate||retainedExit==='restart')&&duration){clearTimeout(entry.exitTimer);const current=entry;entry.exitTimer=setTimeout(()=>{current.exitTimer=undefined;if(!current.view.webContents.isDestroyed())this.hide(owner,current);},duration);}
     else {clearTimeout(entry.exitTimer);entry.exitTimer=undefined;this.hide(owner,entry);}
     this.sendState(entry);
     this.syncFrameSubscription(owner, entry);
@@ -188,7 +190,7 @@ export class WebToolbarHost {
   }
   private syncFrameSubscription(owner: BrowserWindow, entry: ToolbarEntry) {
     const values = (entry.state.settings as any)?.values;
-    if (!this.hasBackdrop() || owner.isDestroyed() || !owner.isVisible() || owner.isMinimized() || entry.view.webContents.isDestroyed() || (!entry.state.visible && !entry.exitTimer) || values?.['appearance.glass'] === 'off' || values?.['appearance.reduceTransparency'] || values?.['appearance.highContrast']) { this.clearFrameSubscription(entry); return; }
+    if (!this.hasBackdrop() || owner.isDestroyed() || !owner.isVisible() || owner.isMinimized() || entry.view.webContents.isDestroyed() || (!entry.state.visible && (!entry.exitTimer || this.route === '/ai-result-toolbar')) || values?.['appearance.glass'] === 'off' || values?.['appearance.reduceTransparency'] || values?.['appearance.highContrast']) { this.clearFrameSubscription(entry); return; }
     const source = this.sourceFor?.(String(entry.state.viewId));
     // Source readback briefly returns undefined. Do not restart subscriptions
     // on every scroll hint; callbacks still require a current capture request.
@@ -249,7 +251,7 @@ export class WebToolbarHost {
   }
   private canSample(owner: BrowserWindow, entry: ToolbarEntry) {
     const values = (entry.state.settings as any)?.values;
-    return this.hasBackdrop() && !entry.tooltipPending && (!!entry.state.visible || !!entry.exitTimer) && !!entry.state.bounds && !owner.isDestroyed() && owner.isVisible() && !owner.isMinimized() && !entry.view.webContents.isDestroyed() && values?.['appearance.glass'] !== 'off' && !values?.['appearance.reduceTransparency'] && !values?.['appearance.highContrast'];
+    return this.hasBackdrop() && !entry.tooltipPending && (!!entry.state.visible || (!!entry.exitTimer && this.route !== '/ai-result-toolbar')) && !!entry.state.bounds && !owner.isDestroyed() && owner.isVisible() && !owner.isMinimized() && !entry.view.webContents.isDestroyed() && values?.['appearance.glass'] !== 'off' && !values?.['appearance.reduceTransparency'] && !values?.['appearance.highContrast'];
   }
   private captureLatest(owner: BrowserWindow, entry: ToolbarEntry) {
     if (!entry.pending || entry.sampling || !this.canSample(owner, entry)) return;

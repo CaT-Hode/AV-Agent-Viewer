@@ -23,7 +23,7 @@ function fixture(): ReadingSnapshot {
 }
 
 test('the shared catalog has unique stable IDs, labels and source-bounded prompts', () => {
-  assert.equal(AI_READING_TOOLS.length, 11);
+  assert.equal(AI_READING_TOOLS.length, 13);
   assert.equal(new Set(AI_READING_TOOLS.map(tool => tool.id)).size, AI_READING_TOOLS.length);
   for (const tool of AI_READING_TOOLS) {
     assert.equal(getAIReadingTool(tool.id), tool);

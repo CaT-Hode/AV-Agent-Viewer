@@ -59,4 +59,4 @@ html,body,#root{height:100%;overflow:clip}
    separately. This also covers nested selection/modal hosts. */
 :root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]{opacity:1}
 :root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]>.liquid-glass-surface{opacity:1}
-:root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]>.liquid-glass-surface :is(.liquid-glass-center,.liquid-glass-edge,.liquid-glass-highlight,.liquid-glass-tint){transition:opacity var(--motion-duration,180ms) var(--ease-out)}
+:root :is(.material-host:has(>.liquid-glass-surface[data-glass-effect="refractive"]),.app-tooltip.material-host)[data-motion-phase]:not([data-motion-surface="ai-popover"])>.liquid-glass-surface :is(.liquid-glass-center,.liquid-glass-edge,.liquid-glass-highlight,.liquid-glass-tint){transition:opacity var(--motion-duration,180ms) var(--ease-out)}
