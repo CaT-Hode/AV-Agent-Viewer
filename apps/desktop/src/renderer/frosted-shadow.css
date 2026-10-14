@@ -1,0 +1,48 @@
+/* Frosted materials cast outwards. Their own blur must never sample a cast
+   shadow painted underneath the material or acquire a black inset rim.
+   Refractive navigation, control thumbs and the physical preview are excluded. */
+:root[data-theme] .material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]) > .liquid-glass-surface > .liquid-glass-highlight {
+  background: transparent;
+  box-shadow: inset calc(var(--glass-material-shadow-x,0px) / -2) calc(var(--glass-material-shadow-y,4px) / -2) 24px rgb(255 255 255 / var(--glass-material-inset-alpha,.2));
+}
+/* Place the cast after the background optics. Tooltip content already owns
+   an external cast above its material and must not receive a second one. */
+:root[data-theme] .material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]):not(.app-tooltip) {
+  --reader-pane-host-shadow: none;
+  box-shadow: none;
+}
+:root[data-theme] .material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]):not(.app-tooltip)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  z-index: 2;
+  pointer-events: none;
+  border-radius: inherit;
+  background: transparent;
+  opacity: 1;
+  box-shadow: var(--frosted-cast-shadow, var(--glass-shadow));
+}
+:root[data-theme] :is(.settings-search,.search-field).material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]) {
+  --frosted-cast-shadow: 0 3px 12px -6px rgb(20 38 50 / .16);
+}
+:root[data-theme] :is(.settings-search,.search-field).material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]):focus-within {
+  --frosted-cast-shadow: 0 5px 18px -6px rgb(53 127 188 / .22), 0 0 0 2px rgb(53 127 188 / .14);
+}
+:root[data-theme] :is(.modal,.toast,.selection-input,.selection-error).material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]) {
+  --frosted-cast-shadow: var(--glass-shadow-lift);
+}
+/* Surface-only springs deform the cast together with the material, without
+   moving text, focus rings, resize handles or document input coordinates. */
+:root[data-theme] .material-host[data-glass-elastic-layer="surface"]:has(> .liquid-glass-surface[data-glass-effect="frosted"])::after {
+  scale: var(--glass-elastic-scale-x,1) var(--glass-elastic-scale-y,1);
+  translate: var(--glass-elastic-x,0px) var(--glass-elastic-y,0px);
+  transform-origin: var(--glass-elastic-origin-x,50%) var(--glass-elastic-origin-y,50%);
+}
+:root:is([data-glass="off"],[data-contrast="high"],[data-reduce-transparency="true"]) .material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"])::after {
+  display: none;
+}
+@media (forced-colors: active), (prefers-contrast: more), (prefers-reduced-transparency: reduce) {
+  .material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"])::after { display: none; }
+}

@@ -1,14 +1,18 @@
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { createServer, type Server, type Socket } from 'node:net';
+import type { Writable } from 'node:stream';
 import { libreOfficeExecutable } from '../../engines/src/index';
 import type { Rect, Actor, NativeOfficeQuery, NativeOfficeExecuteRequest, NativeOfficeExecution, UNOProperty, NativeOfficeNavigateTarget, NativeOfficeExportFormat, NativeOfficeInputRequest } from '../../contracts/src/index';
 import { browserActionSchema } from '../../contracts/src/index';
 import { nativeOfficeCommandPolicy } from '../../contracts/src/native-office-policy';
 import { nativeOfficeWorkerSource } from './worker-source';
+import { officeKitWorkerSource } from './kit-worker-source';
+import type { OfficeSurfaceState, OfficeSurfaceLayoutRequest, OfficeSurfaceTilesRequest, OfficeSurfaceTilesReply, OfficeSurfaceInputRequest, OfficeSurfaceInputReply, OfficeSurfaceWindowPaintRequest, OfficeSurfaceWindowPaintReply, OfficeSurfaceWindowInputRequest, OfficeSurfaceWindowCloseRequest, OfficeSurfaceWindowIdentity } from '../../contracts/src/office-surface';
 import { NativeOfficeProtocolReader, validateNativeOfficeDispatch, validateNativeOfficeLayout } from './protocol';
 import { validateNativeOfficeAppearance, type NativeOfficeAppearance } from './appearance';
 import { NativeOfficeError, type NativeOfficeState, type NativeOfficeOpen, type NativeOfficeRuntimeOptions, type NativeOfficeLayout, type NativeOfficeSnapshot, type NativeOfficeCapture, type NativeOfficeDispatch, type NativeOfficeCommandStatus } from './types';
@@ -34,6 +38,9 @@ export class NativeOfficeRuntime extends EventEmitter {
   private closed = false;
   private uncertain = false;
   private engineEpoch?: string;
+  private rpc?: Writable;
+  private kitSocket?: Socket;
+  private kitServer?: Server;
   private appearance: NativeOfficeAppearance;
   private appliedAppearance?: NativeOfficeAppearance;
   private appearanceUpdate?: Promise<AppearanceResult | undefined>;
@@ -51,24 +58,62 @@ export class NativeOfficeRuntime extends EventEmitter {
       if (process.platform !== 'win32' && !this.options.createWorker) throw new NativeOfficeError('NATIVE_PLATFORM_UNSUPPORTED', '完整原生 Office 编辑器目前支持 Windows。');
       const executable = this.options.sofficePath ?? libreOfficeExecutable(this.options.appRoot)?.path;
       if (!executable) throw new NativeOfficeError('NATIVE_ENGINE_UNAVAILABLE', '找不到内置 Office 引擎。');
-      const program = dirname(resolve(executable)), python = this.options.pythonPath ?? join(program, 'python.exe');
+      const kit = this.options.backend === 'kit';
+      const program = dirname(resolve(executable));
+      const pythonCores = kit && existsSync(program) ? readdirSync(program,{withFileTypes:true}).filter(entry=>entry.isDirectory()&&/^python-core(?:-\d[\d.]*)?$/.test(entry.name)).map(entry=>join(program,entry.name)) : [];
+      if (kit && !this.options.pythonPath && pythonCores.length !== 1) throw new NativeOfficeError('NATIVE_UNO_UNAVAILABLE', '内置 Office Python 版本目录无法唯一确认。');
+      const python = this.options.pythonPath ?? (kit ? join(pythonCores[0], 'bin', 'python.exe') : join(program, 'python.exe'));
       if (!this.options.createWorker && (!existsSync(python) || !existsSync(join(program, 'pyuno.pyd')))) throw new NativeOfficeError('NATIVE_UNO_UNAVAILABLE', '内置 Office Python/UNO 桥接不可用。');
       await mkdir(this.workerDirectory, { recursive: true });
-      const workerFile = join(this.workerDirectory, 'office-worker.py'); await writeFile(workerFile, nativeOfficeWorkerSource, 'utf8');
+      const workerFile = join(this.workerDirectory, 'office-worker.py'); await writeFile(workerFile, kit ? officeKitWorkerSource : nativeOfficeWorkerSource, 'utf8');
       const readiness = new Promise<void>((resolveReady, reject) => { this.readyResolve = resolveReady; this.readyReject = reject; });
       const reader = new NativeOfficeProtocolReader(value => this.receive(value));
       const startupAppearance = { ...this.appearance };
-      const args = ['-u', workerFile, this.workerDirectory, program, JSON.stringify(startupAppearance)];
-      const worker = this.options.createWorker?.(python, args) ?? spawn(python, args, { windowsHide: true, stdio: 'pipe', env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      const args = kit ? [] : ['-u', workerFile, this.workerDirectory, program, JSON.stringify(startupAppearance)];
+      const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+      if (kit) {
+        // Windows VCL and Python share the worker CRT descriptors. Explicit
+        // JSONL flushes provide immediate replies without changing CRT mode.
+        delete env.PYTHONUNBUFFERED;
+        const adapterPath = this.options.adapterPath ?? join(this.options.appRoot, 'dist', 'main', 'office-kit-windows.dll');
+        if (!existsSync(adapterPath)) throw new NativeOfficeError('OFFICE_KIT_ADAPTER_UNAVAILABLE', '内嵌 Office 绘制适配器缺失，请修复应用安装。');
+        const endpoint = await this.createKitEndpoint();
+        Object.assign(env, { PYTHONHOME: dirname(dirname(python)), PYTHONPATH: program, PATH: program + ';' + (process.env.PATH ?? ''), AGENTVIEWER_OFFICE_KIT_CONFIG: JSON.stringify({ directory: this.workerDirectory, program, appearance: startupAppearance, adapterPath, rpc: endpoint }) });
+      }
+      const worker = this.options.createWorker?.(python, args) ?? spawn(python, args, { windowsHide: true, stdio: 'pipe', env });
       this.worker = worker; worker.stdout.setEncoding('utf8'); worker.stdout.on('data', chunk => { try { reader.feed(String(chunk)); } catch (error) { this.failPending(error); } });
+      if (kit) worker.stdin.end(officeKitWorkerSource); else this.rpc = worker.stdin;
       // Drain errors without placing user document text or local profile paths in normal logs.
       worker.stderr.on('data', () => { this.emit('diagnostic', { code: 'NATIVE_WORKER_STDERR' }); });
       worker.once('error', () => { const error = new NativeOfficeError('NATIVE_WORKER_FAILED', '原生编辑器桥接未能启动。'); this.readyReject?.(error); this.failPending(error); });
-      worker.once('exit', () => { reader.clear(); this.closed = true; const error = new NativeOfficeError('NATIVE_WORKER_EXITED', '原生编辑器桥接已经退出。'); this.readyReject?.(error); this.failPending(error); this.emit('exit'); });
+      worker.once('exit', () => { reader.clear(); this.closed = true; this.kitServer?.close(); this.kitSocket?.destroy(); const error = new NativeOfficeError('NATIVE_WORKER_EXITED', '原生编辑器桥接已经退出。'); this.readyReject?.(error); this.failPending(error); this.emit('exit'); });
       const timer = setTimeout(() => { this.uncertain = true; this.readyReject?.(new NativeOfficeError('NATIVE_STARTUP_TIMEOUT', '原生编辑器启动超时，专用恢复目录已保留。')); }, this.options.requestTimeoutMs ?? 120000);
-      try { await readiness; this.appliedAppearance = startupAppearance; } finally { clearTimeout(timer); this.readyResolve = undefined; this.readyReject = undefined; }
+      try { await readiness; if (!this.rpc) throw new NativeOfficeError('OFFICE_KIT_NOT_AUTHENTICATED', '内嵌 Office 连接未能确认。'); this.appliedAppearance = startupAppearance; } finally { clearTimeout(timer); this.kitServer?.close(); this.readyResolve = undefined; this.readyReject = undefined; }
     })();
     return this.starting;
+  }
+  private async createKitEndpoint() {
+    const token = randomUUID() + randomUUID();
+    const server = createServer(socket => {
+      let line = ''; const timer = setTimeout(() => socket.destroy(), 5000); timer.unref();
+      const authenticate = (chunk: Buffer) => {
+        line += chunk.toString('utf8');
+        if (line.length > 4096) { clearTimeout(timer); socket.destroy(); return; }
+        const end = line.indexOf('\n'); if (end < 0) return;
+        clearTimeout(timer); socket.removeListener('data', authenticate);
+        let message: any; try { message = JSON.parse(line.slice(0, end)); } catch { socket.destroy(); return; }
+        if (message?.type !== 'auth' || message.token !== token || this.kitSocket) { socket.destroy(); return; }
+        this.kitSocket = socket; this.rpc = socket; socket.setNoDelay(true); server.close();
+        socket.on('error', () => this.failPending(new NativeOfficeError('NATIVE_CONNECTION_LOST', '内嵌 Office 连接已中断。')));
+        socket.on('close', () => { if (!this.closed) this.failPending(new NativeOfficeError('NATIVE_CONNECTION_LOST', '内嵌 Office 连接已中断。')); });
+      };
+      socket.on('data', authenticate);
+      socket.on('error', () => { clearTimeout(timer); });
+    });
+    this.kitServer = server;
+    await new Promise<void>((resolveServer, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolveServer(); }); });
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('OFFICE_KIT_ENDPOINT_FAILED');
+    return { host: '127.0.0.1', port: address.port, token };
   }
   private receive(value: unknown) {
     if (!value || typeof value !== 'object') return;
@@ -95,7 +140,7 @@ export class NativeOfficeRuntime extends EventEmitter {
     return new Promise<T>((resolveResult, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); if (mutation) this.uncertain = true; reject(new NativeOfficeError('NATIVE_REQUEST_TIMEOUT', '原生操作超时；不会自动重复执行修改。')); }, this.options.requestTimeoutMs ?? 120000);
       this.pending.set(id, { resolve: resolveResult, reject, timer });
-      this.worker!.stdin.write(JSON.stringify({ id, method, args }) + '\n', error => {
+      this.rpc!.write(JSON.stringify({ id, method, args }) + '\n', error => {
         if (!error) return; const entry = this.pending.get(id); if (!entry) return; clearTimeout(entry.timer); this.pending.delete(id); if (mutation) this.uncertain = true; entry.reject(new NativeOfficeError('NATIVE_CONNECTION_LOST', '原生编辑器连接已中断。'));
       });
     }).finally(() => { const elapsed=performance.now()-started;metrics.completed++;metrics.totalMs+=elapsed;metrics.maximumMs=Math.max(metrics.maximumMs,elapsed); });
@@ -122,7 +167,7 @@ export class NativeOfficeRuntime extends EventEmitter {
     const update = (this.appearanceUpdate ?? Promise.resolve()).catch(() => {}).then(async () => {
       await this.starting;
       const desired = { ...this.appearance };
-      if (this.appliedAppearance?.theme === desired.theme && this.appliedAppearance.canvasColor === desired.canvasColor) return;
+      if (this.appliedAppearance?.theme === desired.theme && this.appliedAppearance.canvasColor === desired.canvasColor && this.appliedAppearance.paperColor === desired.paperColor) return;
       // The worker updates several profile nodes. A rejection can leave partial
       // changes, so even the previous configuration must be reapplied after it.
       this.appliedAppearance = undefined;
@@ -180,11 +225,30 @@ export class NativeOfficeRuntime extends EventEmitter {
   async close(sessionId: string, options: { discard?: boolean } = {}) {
     await this.request('close', { sessionId, discard: options.discard === true }); const record = this.sessions.get(sessionId); this.sessions.delete(sessionId); if (record) this.documentSessions.delete(record.documentId);
   }
+  surfaceLayout(sessionId: string, value: OfficeSurfaceLayoutRequest) { return this.request<OfficeSurfaceState>('surfaceLayout', { sessionId, ...value }); }
+  async surfaceTiles(sessionId: string, value: OfficeSurfaceTilesRequest): Promise<OfficeSurfaceTilesReply> {
+    const result = await this.request<any>('surfaceTiles', { sessionId, ...value });
+    return { ...result, tiles: result.tiles.map((tile: any) => ({ ...tile, data: new Uint8Array(Buffer.from(tile.data, 'base64')) })) };
+  }
+  surfaceInput(sessionId: string, value: OfficeSurfaceInputRequest) {
+    const event = value.event.kind === 'paste' ? { ...value.event, items: value.event.items.map(item => ({ ...item, data: Buffer.from(item.data).toString('base64') })) } : value.event;
+    return this.request<OfficeSurfaceInputReply>('surfaceInput', { sessionId, ...value, event }, true);
+  }
+  async surfaceWindowPaint(value: OfficeSurfaceWindowPaintRequest): Promise<OfficeSurfaceWindowPaintReply> {
+    const result = await this.request<any>('surfaceWindowPaint', value);
+    return { ...result, tile: { ...result.tile, data: new Uint8Array(Buffer.from(result.tile.data, 'base64')) } };
+  }
+  surfaceWindowInput(value: OfficeSurfaceWindowInputRequest) {
+    const event = value.event.kind === 'paste' ? { ...value.event, items: value.event.items.map(item => ({ ...item, data: Buffer.from(item.data).toString('base64') })) } : value.event;
+    return this.request<OfficeSurfaceInputReply>('surfaceWindowInput', { ...value, event }, true);
+  }
+  surfaceWindowClose(value: OfficeSurfaceWindowCloseRequest) { return this.request<OfficeSurfaceState>('surfaceWindowClose', value, true); }
+  surfaceWindowClipboard(value: OfficeSurfaceWindowIdentity) { return this.request<any>('surfaceWindowClipboard', value); }
   async shutdown(options: { discard?: boolean } = {}) {
     // A confirmed bridge exit is already terminal. Recovery bytes remain in workerDirectory;
     // asking the dead process to shut down again must not prevent the application from exiting.
     if (this.closed) return;
     if (!this.worker && !this.starting) { this.closed = true; return; }
-    await this.request('shutdown', { discard: options.discard === true }); this.worker?.stdin.end();
+    await this.request('shutdown', { discard: options.discard === true }); this.rpc?.end();
   }
 }

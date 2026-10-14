@@ -1,0 +1,18 @@
+/* The colour field moves as one composited texture. Paper and content never
+   move with it; no animated filters or per-frame layout/sampling are needed. */
+:root[data-theme] .app-shell > .workbench.overlay-reading { isolation:isolate; }
+:root[data-theme] .app-shell > .workbench.overlay-reading::before {
+  content:""; position:absolute; inset:-12%; z-index:-1;
+  pointer-events:none; background:var(--reading-canvas);
+}
+:root[data-background-motion="slow"]:is([data-document-background="spectrum"],[data-document-background="lagoon"],[data-document-background="iris"],[data-document-background="champagne"],[data-document-background="opal"]):not([data-motion="off"]):not([data-motion="reduced"]) .app-shell > .workbench.overlay-reading::before {
+  animation:reading-colour-drift 120s ease-in-out infinite;
+  will-change:transform;
+}
+@keyframes reading-colour-drift {
+  0%,100% { transform:translate3d(-2%,1%,0) scale(1.035); }
+  50% { transform:translate3d(2%,-1%,0) scale(1.065); }
+}
+@media (prefers-reduced-motion:reduce) {
+  :root[data-theme] .app-shell > .workbench.overlay-reading::before { animation:none; will-change:auto; }
+}

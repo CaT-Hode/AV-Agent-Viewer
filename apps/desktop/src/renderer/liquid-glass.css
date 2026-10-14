@@ -45,17 +45,17 @@
   --glass-specular-soft: transparent;
   /* A neutral hairline in place of the old top lip: still defines where the
      pane ends, but reads as an edge rather than a highlight. */
-  --glass-lip: inset 0 1px rgb(20 40 62 / .05);
+  --glass-lip: 0 1px 1px rgb(20 40 62 / .05);
 
   /* Interior surfaces (tiles sitting ON glass — never their own blur).
      Critically, there is NO bright top lip down here. A lit top edge means
      "raised and lit from above"; putting one on a tile that already sits on a
      lit panel gives two inner glows competing on the same axis and the nesting
      stops reading. Interior surfaces recede instead: a neutral (not white)
-     top hairline, a soft dark top inset, and a cast shadow. */
+     top hairline and a small external cast; the material interior stays clear. */
   --glass-inset: rgb(var(--glass-primary-soft) / .12);
   --glass-inset-hairline: rgb(37 55 70 / .07);
-  --glass-inset-shade: inset 0 1px rgb(37 55 70 / .05);
+  --glass-inset-shade: 0 1px 3px rgb(37 55 70 / .05);
   --glass-inset-cast: 0 3px 8px -6px rgb(24 50 69 / .3);
   --glass-hover: rgb(var(--glass-primary-soft) / .23);
 
@@ -130,11 +130,11 @@
   --glass-edge: rgb(var(--glass-primary-soft) / .17);
   --glass-specular: transparent;
   --glass-specular-soft: transparent;
-  --glass-lip: inset 0 1px rgb(0 0 0 / .3);
+  --glass-lip: 0 1px 2px rgb(0 0 0 / .22);
 
   --glass-inset: rgb(var(--glass-primary-soft) / .065);
   --glass-inset-hairline: rgb(255 255 255 / .09);
-  --glass-inset-shade: inset 0 1px rgb(0 0 0 / .22);
+  --glass-inset-shade: 0 1px 4px rgb(0 0 0 / .18);
   --glass-inset-cast: 0 3px 10px -6px rgb(0 0 0 / .5);
   --glass-hover: rgb(var(--glass-primary-soft) / .13);
 
@@ -270,8 +270,7 @@
   box-shadow:
     var(--glass-shadow),
     inset 0 1px var(--glass-specular),
-    inset 1px 0 rgb(255 255 255 / .18),
-    inset 0 -1px rgb(var(--glass-primary) / .06);
+    inset 1px 0 rgb(255 255 255 / .18);
   transition:
     box-shadow var(--dur-surface) var(--ease-io),
     border-color var(--dur-surface) var(--ease-io),
@@ -303,7 +302,7 @@
 :root[data-theme] .settings-nav {
   border-radius: 0;
   border-width: 0 1px 0 0;
-  box-shadow: inset 0 1px var(--glass-specular), inset -1px 0 rgb(var(--glass-primary) / .06);
+  box-shadow: 2px 0 10px -7px rgb(var(--glass-primary) / .12), inset 0 1px var(--glass-specular);
 }
 :root[data-theme] .home-sidebar { border-radius: 0 var(--glass-r-pane) var(--glass-r-pane) 0; }
 

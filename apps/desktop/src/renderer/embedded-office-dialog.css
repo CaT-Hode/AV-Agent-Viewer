@@ -1,0 +1,16 @@
+.embedded-office-dialog-backdrop { z-index: 80; background: rgb(20 25 32 / .16); }
+:root[data-theme] .embedded-office-dialog-backdrop.is-modeless { background: transparent; pointer-events: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.embedded-office-dialog-backdrop.is-modeless .embedded-office-dialog-window { pointer-events: auto; }
+.embedded-office-dialog-window { position: absolute; width: auto; padding: 12px; border-radius: 22px; color: var(--text-primary); background: transparent; box-shadow: 0 20px 60px rgb(0 0 0 / .18); }
+:root[data-theme] .embedded-office-dialog-window { width: auto; border-radius: 22px; background: transparent; }
+.embedded-office-window-heading { margin: 0 0 8px; gap: 24px; min-height: 32px; }
+.embedded-office-window-heading h2 { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.embedded-office-window-viewport { max-width: calc(100vw - 88px); max-height: calc(100vh - 144px); overflow: auto; border-radius: 12px; background: var(--surface); }
+.embedded-office-window-body { position: relative; }
+.embedded-office-window-body canvas { display: block; max-width: none; touch-action: none; }
+.embedded-office-window-input { position: absolute; width: 2px !important; height: 20px !important; min-height: 0 !important; border: 0 !important; outline: none !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; resize: none; opacity: .015; overflow: hidden; color: transparent; background: transparent; pointer-events: none; }
+.embedded-office-window-error { max-width: 620px; margin: 10px 2px 2px !important; color: var(--danger, #b85050) !important; font-size: 12px; }
+.embedded-office-window-status { display: block; margin: 8px 2px 0; color: var(--text-secondary); font-size: 12px; }
+.embedded-office-dialog-window.is-popup { padding: 8px; border-radius: 16px; }
+.embedded-office-dialog-window.is-popup .embedded-office-window-heading { margin-bottom: 4px; }
+.embedded-office-dialog-window.is-deck { position: fixed; right: 24px; top: 80px; }

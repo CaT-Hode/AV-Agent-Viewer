@@ -82,7 +82,7 @@ export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, 
       });
     };
     const appearance = new MutationObserver(measure);
-    appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-document-background', 'data-document-tone'] });
+    appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-document-background', 'data-document-tone', 'data-document-paper'] });
     const content = new MutationObserver(measure);
     const documentHost = root.current?.closest('.reader-panel')?.querySelector('.document-content');
     if (documentHost) content.observe(documentHost, { childList: true, subtree: true, characterData: true });

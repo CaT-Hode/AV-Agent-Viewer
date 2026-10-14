@@ -1,0 +1,23 @@
+/* Independent of Kube optics: only layout height and content presentation. */
+:root[data-theme] .app-shell > .workbench.overlay-reading > .floating-side-panel[data-panel-adaptive="true"] {
+  bottom:auto;
+  height:var(--adaptive-panel-height,auto);
+  max-height:calc(100% - 22px);
+  min-height:0;
+}
+.floating-side-panel[data-panel-adaptive="true"] > .adaptive-panel-scroll {
+  position:relative;
+  flex:1 1 auto;
+  min-width:0;
+  min-height:0;
+  overflow:auto;
+  overscroll-behavior:contain;
+  border-radius:0 0 21px 21px;
+}
+.adaptive-panel-natural { display:flow-root; min-width:0; transform-origin:top center; }
+.adaptive-panel-natural > :is(.format-scroll,.drawer-content) { flex:none; height:auto; min-height:0; overflow:visible; animation:none!important; }
+:root.reader-panel-window .reader-panel-ported[data-panel-adaptive="true"] {
+  height:var(--adaptive-panel-height,auto)!important;
+  max-height:none!important;
+  bottom:auto!important;
+}

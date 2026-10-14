@@ -1,0 +1,29 @@
+.embedded-office-document { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.embedded-office-content { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 0 !important; overflow: auto; background: transparent; overscroll-behavior: contain; }
+.embedded-office-pptx > .embedded-office-content { margin-inline: var(--office-presentation-left-inset,12px) var(--office-presentation-right-inset,12px); margin-top: var(--office-presentation-top-inset,84px); margin-bottom:12px; }
+.embedded-office-stage { position: relative; min-width: 100%; min-height: 100%; isolation: isolate; }
+.embedded-office-paper-base { position: absolute; z-index: 0; background: var(--document-paper, #fff); pointer-events: none; }
+.embedded-office-canvas { position: sticky; top: 0; left: 0; z-index: 1; display: block; pointer-events: none; max-width: none; }
+.embedded-office-interaction { position: absolute; z-index: 2; inset: 0; touch-action: none; user-select: none; }
+.embedded-office-interaction > span { position: absolute; pointer-events: none; box-sizing: border-box; }
+.embedded-office-selection { background: rgba(53, 130, 215, .22); }
+.embedded-office-cell-selection { border: 1px solid rgba(44, 142, 89, .75); background: rgba(44, 142, 89, .12); }
+.embedded-office-cell-cursor { border: 2px solid #348a59; }
+.embedded-office-auto-fill { background: #348a59; }
+.embedded-office-object-selection { border: 1px solid rgba(54, 120, 200, .8); }
+.embedded-office-caret { background: var(--document-paper-ink, #222); width: 1px !important; }
+.embedded-office-document[data-office-actor="agent"][data-office-agent-active="true"] .embedded-office-selection { background: rgb(36 154 171 / .15); outline: 1px solid rgb(36 154 171 / .44); outline-offset: 1px; }
+.embedded-office-document[data-office-actor="agent"][data-office-agent-active="true"] :is(.embedded-office-cell-selection,.embedded-office-cell-cursor,.embedded-office-object-selection) { border-color: rgb(36 154 171 / .7); }
+.embedded-office-document[data-office-actor="agent"][data-office-agent-active="true"] .embedded-office-caret { background: #249aab; }
+.embedded-office-selection-handle { position: absolute; width: 10px; height: 10px; padding: 0; border: 1px solid rgba(255,255,255,.8); border-radius: 50%; background: #367dc0; touch-action: none; cursor: grab; }
+.embedded-office-selection-handle:active { cursor: grabbing; }
+.embedded-office-input { position: absolute; z-index: 3; width: 2px !important; height: 20px !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; opacity: .015; border: 0 !important; box-shadow: none !important; resize: none; overflow: hidden; pointer-events: none; color: transparent; background: transparent; }
+.embedded-office-input:focus { outline: none; }
+.embedded-office-message { position: sticky; top: 40%; margin: 0 auto; width: fit-content; max-width: min(600px, 85%); padding: 16px 20px; border-radius: 18px; color: var(--text-secondary); background: var(--surface); }
+.embedded-office-message.has-error { color: var(--text-primary); }
+.embedded-office-sheet-tabs { flex: 0 0 28px; display: flex; align-items: center; gap: 4px; margin-inline: var(--office-controls-left-inset,8px) var(--office-controls-right-inset,8px); padding: 0; box-sizing: border-box; overflow: auto hidden; background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.embedded-office-document > .native-office-formula-bar { margin-inline: var(--office-controls-left-inset,8px) var(--office-controls-right-inset,8px); padding-inline: 0; box-sizing: border-box; overflow: auto hidden; }
+.embedded-office-sheet-tabs button { flex: 0 0 auto; border: 0; border-radius: 6px; padding: 3px 10px; background: transparent; color: var(--text-secondary); font-size: 12px; }
+.embedded-office-sheet-tabs button[aria-selected="true"] { color: var(--text-primary); background: color-mix(in srgb, var(--surface) 90%, transparent); }
+.embedded-office-accessible-text { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+@media (prefers-contrast: more) { .embedded-office-selection { outline: 1px solid Highlight; background: rgba(53, 130, 215, .35); } }

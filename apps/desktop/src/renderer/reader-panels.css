@@ -1,15 +1,18 @@
 /* Side tools overlay the full reading canvas; opening or resizing never changes it. */
-:root[data-theme] .app-shell > .workbench.overlay-reading { display:block; position:relative; padding:0; gap:0; min-width:0; overflow:clip; }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .reader-panel { position:absolute; inset:0 73px 0 var(--reader-left-inset,73px); margin:0; width:auto; height:auto; display:flex; grid-column:auto; z-index:auto; }
+:root[data-theme] .app-shell > .workbench.overlay-reading { --reader-rail-width:52px; --reader-rail-offset:12px; --reader-rail-clearance:9px; --reader-rail-reserved:calc(var(--reader-rail-width) + var(--reader-rail-offset) + var(--reader-rail-clearance)); display:block; position:relative; padding:0; gap:0; min-width:0; overflow:clip; }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .reader-panel { position:absolute; inset:0 var(--reader-rail-reserved) 0 var(--reader-left-inset,73px); margin:0; width:auto; height:auto; display:flex; grid-column:auto; z-index:auto; min-inline-size:0; }
+:root[data-theme] .overlay-reading > .reader-panel :is(.document-content,.pdf-content,.embedded-office-document) { min-inline-size:0; max-inline-size:100%; box-sizing:border-box; }
 :root[data-theme] .app-shell > .workbench.overlay-reading > .reader-panel > .navigation-toolbar { z-index:30; }
 :root[data-theme] .app-shell > .workbench.overlay-reading > .reader-panel > :is(.agent-capsule,.agent-operation-capsule) { z-index:31; }
-:root[data-theme] .app-shell > .workbench.overlay-reading > :is(.activity-rail,.ai-rail) { position:absolute; top:11px; bottom:11px; width:52px; margin:0; grid-column:auto; z-index:14; }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .activity-rail { left:12px; }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .ai-rail { right:12px; }
+:root[data-theme] .app-shell > .workbench.overlay-reading > :is(.activity-rail,.ai-rail) { position:absolute; top:11px; bottom:11px; width:var(--reader-rail-width); margin:0; grid-column:auto; z-index:14; }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .activity-rail { left:var(--reader-rail-offset); }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .ai-rail { right:var(--reader-rail-offset); }
 :root[data-theme] .app-shell > .workbench.overlay-reading > .floating-side-panel { position:absolute; top:11px; bottom:11px; margin:0; grid-column:auto; z-index:12; overflow:visible; }
 :root[data-theme] .app-shell > .workbench.overlay-reading > .reader-panel-anchor { translate:none !important; scale:1 !important; }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .format-sidebar.floating-side-panel { left:var(--reader-left-inset,73px); width:var(--reader-left-width,248px); min-width:180px; max-width:min(620px,calc((100% - var(--reader-left-inset,73px) - 73px - 32px) / 2)); }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .ai-drawer.floating-side-panel { right:73px; width:var(--reader-right-width,380px); min-width:280px; max-width:min(720px,calc((100% - var(--reader-left-inset,73px) - 73px - 32px) / 2)); }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .format-sidebar.floating-side-panel { left:var(--reader-left-inset,73px); width:var(--reader-left-width,248px); min-width:180px; max-width:min(620px,calc(100% - var(--reader-left-inset,73px) - 73px - 148px)); }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .ai-drawer.floating-side-panel { right:73px; width:var(--reader-right-width,380px); min-width:280px; max-width:min(720px,calc(100% - var(--reader-left-inset,73px) - 73px - 148px)); }
+:root[data-theme] .app-shell > .workbench.overlay-reading:has(> .floating-side-panel[data-side="left"]):has(> .floating-side-panel[data-side="right"]) > .format-sidebar.floating-side-panel { max-width:min(620px,calc((100% - var(--reader-left-inset,73px) - 73px - 148px) / 2)); }
+:root[data-theme] .app-shell > .workbench.overlay-reading:has(> .floating-side-panel[data-side="left"]):has(> .floating-side-panel[data-side="right"]) > .ai-drawer.floating-side-panel { max-width:min(720px,calc((100% - var(--reader-left-inset,73px) - 73px - 148px) / 2)); }
 .floating-side-panel > :is(.format-heading,.drawer-heading,.prompt-box) { flex-shrink:0; }
 .floating-side-panel > :is(.format-scroll,.drawer-content) { min-width:0; min-height:0; overflow:auto; }
 .reader-panel-resize { position:absolute; z-index:5; top:18px; bottom:18px; width:12px; touch-action:none; cursor:col-resize; user-select:none; -webkit-app-region:no-drag; outline:none; }

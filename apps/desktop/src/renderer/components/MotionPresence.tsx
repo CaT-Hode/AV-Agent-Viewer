@@ -1,6 +1,7 @@
 import { cloneElement, isValidElement, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
-import { motionDuration, useMotionSnapshot } from '../lib/motion';
+import { motionDuration, resolveMotionMode, useMotionSnapshot } from '../lib/motion';
 import { presencePresentation, presenceTarget, type PresenceState } from '../lib/presence-state';
+import { useSidebarPresence } from '../lib/useSidebarPresence';
 type Options = { duration?: number; identity?: unknown; keyboardImmediate?: boolean };
 export function usePresence(show: boolean, { duration: base = 180, identity, keyboardImmediate = true }: Options = {}) {
   const mode = useMotionSnapshot(), duration = motionDuration(base, mode, keyboardImmediate);
@@ -30,7 +31,10 @@ export function usePresence(show: boolean, { duration: base = 180, identity, key
   } };
 }
 export function MotionPresence({ show, children, surface = 'popover', duration = 180, identity, keyboardImmediate = true }: Options & { show: boolean; children: ReactNode; surface?: string }) {
-  const motion = usePresence(show, { duration, identity, keyboardImmediate });
+  const mode = resolveMotionMode(useMotionSnapshot().split(':')[0]), sidebar = surface === 'left' || surface === 'right', elastic = sidebar && (mode === 'standard' || mode === 'elegant');
+  const fallback = usePresence(show, { duration: elastic ? 0 : duration, identity, keyboardImmediate });
+  const spring = useSidebarPresence(show, identity, surface, mode, elastic);
+  const motion = elastic ? spring : fallback;
   const retained = useRef<{ identity: unknown; element: ReactElement; key: number } | null>(null);
   const sequence = useRef(0);
   if (retained.current && retained.current.identity !== identity) retained.current = null;

@@ -266,8 +266,21 @@ try {
   await until(async () => right.locator('.reader-panel-backdrop').evaluate(node => getComputedStyle(node).backgroundImage.startsWith('url(')), 'frost resumes from the same source');
   await right.getByRole('separator').focus(); await right.keyboard.press('Control+,');
   await until(async () => app.context().pages().some(page => page.url().includes('#/settings')), 'same app shortcuts work in owned toolbars');
-  await app.context().pages().find(page => page.url().includes('#/settings'))!.close();
-  const layers = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({ url: window.webContents.getURL(), visible: window.isVisible(), bounds: window.getBounds(), parent: window.getParentWindow()?.webContents.getURL() })));
+  const settingsPage = app.context().pages().find(page => page.url().includes('#/settings'))!;
+  const settingsWindowId = await app.evaluate(({ BrowserWindow }, url) => BrowserWindow.getAllWindows().find(window => !window.isDestroyed() && !window.webContents.isDestroyed() && window.webContents.getURL() === url)?.id, settingsPage.url());
+  assert.equal(typeof settingsWindowId, 'number', 'The shortcut opens an identifiable settings window');
+  await settingsPage.close();
+  // Page.close resolves when its renderer closes, before the BrowserWindow may
+  // leave Electron's registry. Wait for this exact window, not a fixed delay.
+  await until(async () => app.evaluate(({ BrowserWindow }, id) => {
+    const closing = BrowserWindow.getAllWindows().find(window => window.id === id);
+    return !closing || closing.isDestroyed();
+  }, settingsWindowId), 'settings window is destroyed after close');
+  const layers = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().flatMap(window => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return [];
+    const parent = window.getParentWindow();
+    return [{ url: window.webContents.getURL(), visible: window.isVisible(), bounds: window.getBounds(), parent: parent && !parent.isDestroyed() && !parent.webContents.isDestroyed() ? parent.webContents.getURL() : undefined }];
+  }));
   results.web = { canvas: webCanvas, layers };
   const samples = await main.evaluate(async () => { const response = await fetch('/api/samples'); return response.json(); }) as { path: string; format: string }[];
   for (const format of ['docx','xlsx','pptx']) {

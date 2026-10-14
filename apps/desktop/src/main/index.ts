@@ -1,3 +1,4 @@
+import './safe-stdio-init';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from 'electron';
 import { extname, isAbsolute, join, resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -39,7 +40,7 @@ let core: ViewerCore, endpoint: string;
 let translations: DocumentTranslationService;
 let selectionTranslations: SelectionTranslationService;
 const settings = new SettingsService(join(directory, 'settings.json'));
-const officeAppearance = () => nativeOfficeAppearance(settings.get('appearance.theme'), settings.get('appearance.documentBackground'), nativeTheme.shouldUseDarkColors);
+const officeAppearance = () => nativeOfficeAppearance(settings.get('appearance.theme'), settings.get('appearance.documentBackground'), nativeTheme.shouldUseDarkColors, settings.get('appearance.documentPaperColor'));
 const syncOfficeAppearance = () => void office?.setAppearance(officeAppearance()).catch(error => core?.event('office.appearance-error', { error: String(error) }));
 nativeTheme.on('updated', () => { if (settings.get('appearance.theme') === 'system') syncOfficeAppearance(); });
 const connections = new AIConnectionService(join(directory, 'connections.json'));
@@ -317,7 +318,7 @@ void app.whenReady().then(async () => {
     const { method, args } = request;
     if (method === 'reader-panel-layout') { const viewId = typeof args.viewId === 'string' ? args.viewId : undefined; if (viewId && core.getView(viewId).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.update(owner, viewId, args.panels as never); return {}; }
     if (method === 'settings-read') return { definitions: settingsRegistry.map(definition => ({ ...definition, ...settingsAvailability(definition.id) })), snapshot: settings.snapshot() };
-    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (['appearance.glass','appearance.reduceTransparency','appearance.highContrast'].includes(String(args.id))) readerPanelHost.preferencesChanged(); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground') syncOfficeAppearance(); return snapshot; }
+    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (['appearance.glass','appearance.reduceTransparency','appearance.highContrast'].includes(String(args.id))) readerPanelHost.preferencesChanged(); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground' || args.id === 'appearance.documentPaperColor') syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); readerPanelHost.preferencesChanged(); syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-open') { await openSettings(typeof args.category === 'string' ? args.category : undefined); return {}; }
     if (method === 'connections-read') return connections.snapshot();
@@ -333,6 +334,11 @@ void app.whenReady().then(async () => {
     // polling must not copy every cell/shape/page through Chromium again.
     if (method === 'state') return core.stateForDisplay();
     if (method === 'office-statistics') return office?.runtime.statistics;
+    if (method.startsWith('office-surface-')) {
+      if (!office) throw new Error('OFFICE_ENGINE_UNAVAILABLE');
+      try { return await office.surfaceRequest(owner, method, args); }
+      catch (cause) { const error = cause as { code?: string; message?: string }; throw new Error((typeof error.code === 'string' && /^[A-Z_]+$/.test(error.code) ? error.code + ': ' : '') + (error.message ?? 'Office 内嵌操作失败。')); }
+    }
     if (method === 'drop-files') return openDroppedPaths(owner, args.paths);
     if (method === 'office-layout') {
       if(!office || !Array.isArray(args.views) || args.views.length>1)throw new Error('INVALID_NATIVE_LAYOUT');

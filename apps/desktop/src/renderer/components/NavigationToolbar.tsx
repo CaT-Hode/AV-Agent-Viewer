@@ -1,8 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowLeft, ArrowRight, Copy, Languages, Minus, Plus, RotateCw, Save, Undo2, X } from 'lucide-react';
+import { flushSync } from 'react-dom';
+import { ArrowLeft, ArrowRight, Copy, Languages, Minus, MoreHorizontal, Plus, RotateCw, Save, Undo2, X } from 'lucide-react';
 import { NavigationGlass } from './NavigationGlass';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
 import { navigationMotionDuration, useMotionSnapshot } from '../lib/motion';
+import { LiquidGlassSurface } from './LiquidGlassSurface';
+import { useGlassSpringValue } from '../lib/glass-elasticity';
+import { KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
+import { boundedNavigationPresentation, navigationControlMetrics, navigationDensity, observeNavigationLane, preferredNavigationWidth, readNavigationLane, type NavigationLane } from '../lib/navigation-lane';
 
 export type NavigationAction =
   | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' | 'dismiss' }
@@ -13,22 +18,19 @@ export type NavigationState = {
   format: string; title?: string; titleIcon?: ReactNode; address?: string;
   mode?: 'read' | 'source' | 'split'; canUndo?: boolean; busy?: boolean; translated?: boolean; zoom?: number;
 };
-type ModuleProps = { state: NavigationState; dispatch(action: NavigationAction): void };
+type ModuleProps = { state: NavigationState; dispatch(action: NavigationAction): void; addressDraft?: string; setAddressDraft?(value: string): void; zoomDraft?: string; setZoomDraft?(value: string): void };
 
 function Divider() { return <span className="capsule-divider" aria-hidden="true" />; }
-function HistoryModule({ dispatch }: ModuleProps) {
+function HistoryModule({ dispatch, forward = true, reload = true, back = true }: ModuleProps & { forward?: boolean; reload?: boolean; back?: boolean }) {
   return <div className="navigation-module navigation-history" data-navigation-module="history">
-    <button className="icon-button" title="后退" aria-label="后退" onClick={() => dispatch({ type: 'back' })}><ArrowLeft size={17} /></button>
-    <button className="icon-button" title="前进" aria-label="前进" onClick={() => dispatch({ type: 'forward' })}><ArrowRight size={17} /></button>
-    <button className="icon-button" title="刷新" aria-label="刷新" onClick={() => dispatch({ type: 'reload' })}><RotateCw size={16} /></button>
+    {back && <button className="icon-button" title="后退" aria-label="后退" onClick={() => dispatch({ type: 'back' })}><ArrowLeft size={17} /></button>}
+    {forward && <button className="icon-button" title="前进" aria-label="前进" onClick={() => dispatch({ type: 'forward' })}><ArrowRight size={17} /></button>}
+    {reload && <button className="icon-button" title="刷新" aria-label="刷新" onClick={() => dispatch({ type: 'reload' })}><RotateCw size={16} /></button>}
   </div>;
 }
-function AddressModule({ state, dispatch }: ModuleProps) {
-  const [address, setAddress] = useState(state.address ?? '');
-  // Sampling, theme notifications and hide progress must never replace a draft URL.
-  useEffect(() => { setAddress(state.address ?? ''); }, [state.address]);
+function AddressModule({ dispatch, addressDraft: address = '', setAddressDraft: setAddress }: ModuleProps) {
   return <form className="address navigation-module" data-navigation-module="address" onSubmit={event => { event.preventDefault(); dispatch({ type: 'navigate', url: address }); }}>
-    <input className="address-input" aria-label="网页地址" value={address} onChange={event => setAddress(event.target.value)} placeholder="输入网页地址" />
+    <input className="address-input" aria-label="网页地址" value={address} onChange={event => setAddress?.(event.target.value)} placeholder="输入网页地址" />
   </form>;
 }
 function DocumentModule({ state }: ModuleProps) {
@@ -41,21 +43,20 @@ function ModeModule({ state, dispatch }: ModuleProps) {
     {(['read', 'source', 'split'] as const).map((mode, index) => <button key={mode} className={state.mode === mode ? 'selected' : ''} aria-pressed={state.mode === mode} onClick={() => dispatch({ type: 'mode', mode })}>{['阅读', '源码', '分栏'][index]}</button>)}
   </div>;
 }
-function EditModule({ state, dispatch }: ModuleProps) {
+function EditModule({ state, dispatch, undo = true, save = true }: ModuleProps & { undo?: boolean; save?: boolean }) {
   return <div className="navigation-module" data-navigation-module="editing">
-    <button className="icon-button" title="撤销最近修改" aria-label="撤销最近修改" disabled={!state.canUndo} onClick={() => dispatch({ type: 'undo' })}><Undo2 size={16} /></button>
-    <button className="icon-button" title="保存" aria-label="保存" onClick={() => dispatch({ type: 'save' })}><Save size={16} /></button>
+    {undo && <button className="icon-button" title="撤销最近修改" aria-label="撤销最近修改" disabled={!state.canUndo} onClick={() => dispatch({ type: 'undo' })}><Undo2 size={16} /></button>}
+    {save && <button className="icon-button" title="保存" aria-label="保存" onClick={() => dispatch({ type: 'save' })}><Save size={16} /></button>}
   </div>;
 }
-function ZoomModule({ state, dispatch }: ModuleProps) {
-  const percentage = Math.round((state.zoom ?? 1) * 100), [draft, setDraft] = useState(String(percentage));
+function ZoomModule({ state, dispatch, zoomDraft: draft = '100', setZoomDraft: setDraft, steps = true, value = true }: ModuleProps & { steps?: boolean; value?: boolean }) {
+  const percentage = Math.round((state.zoom ?? 1) * 100);
   const cancelBlur = useRef(false);
-  useEffect(() => { setDraft(String(percentage)); }, [percentage]);
-  const commit = () => { if (cancelBlur.current) { cancelBlur.current = false; return; } const next = Number(draft); if (Number.isFinite(next) && next >= 25 && next <= 400) dispatch({ type: 'zoom', factor: next / 100 }); else setDraft(String(percentage)); };
+  const commit = () => { if (cancelBlur.current) { cancelBlur.current = false; return; } const next = Number(draft); if (Number.isFinite(next) && next >= 25 && next <= 400) dispatch({ type: 'zoom', factor: next / 100 }); else setDraft?.(String(percentage)); };
   return <div className="navigation-module navigation-zoom" data-navigation-module="zoom">
-    <button className="icon-button" aria-label="缩小正文" title="缩小正文 · Ctrl+滚轮" disabled={percentage <= 25} onClick={() => dispatch({ type: 'zoom', factor: Math.max(.25, (percentage - 10) / 100) })}><Minus size={14} /></button>
-    <label className="navigation-zoom-value"><input aria-label="正文缩放比例" title="输入 25–400；双击恢复 100%" type="number" min={25} max={400} value={draft} onChange={event => setDraft(event.target.value)} onBlur={commit} onDoubleClick={() => dispatch({ type: 'zoom', factor: 1 })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } if (event.key === 'Escape') { event.preventDefault(); cancelBlur.current = true; setDraft(String(percentage)); event.currentTarget.blur(); } }} /><span>%</span></label>
-    <button className="icon-button" aria-label="放大正文" title="放大正文 · Ctrl+滚轮" disabled={percentage >= 400} onClick={() => dispatch({ type: 'zoom', factor: Math.min(4, (percentage + 10) / 100) })}><Plus size={14} /></button>
+    {steps && <button className="icon-button" aria-label="缩小正文" title="缩小正文 · Ctrl+滚轮" disabled={percentage <= 25} onClick={() => dispatch({ type: 'zoom', factor: Math.max(.25, (percentage - 10) / 100) })}><Minus size={14} /></button>}
+    {value && <label className="navigation-zoom-value"><input aria-label="正文缩放比例" title="输入 25–400；双击恢复 100%" type="number" min={25} max={400} value={draft} onChange={event => setDraft?.(event.target.value)} onBlur={commit} onDoubleClick={() => dispatch({ type: 'zoom', factor: 1 })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } if (event.key === 'Escape') { event.preventDefault(); cancelBlur.current = true; setDraft?.(String(percentage)); event.currentTarget.blur(); } }} /><span>%</span></label>}
+    {steps && <button className="icon-button" aria-label="放大正文" title="放大正文 · Ctrl+滚轮" disabled={percentage >= 400} onClick={() => dispatch({ type: 'zoom', factor: Math.min(4, (percentage + 10) / 100) })}><Plus size={14} /></button>}
   </div>;
 }
 function WebPageModule({ state, dispatch }: ModuleProps) {
@@ -73,13 +74,51 @@ const contributions = {
   document: { identity: DocumentModule, tools: [EditModule] },
 };
 
-export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 650, manualHidden = false, instant = false, backdropImage, backdropSample, onGeometry, onHover, onLeave, onFocus, onBlur }: ModuleProps & {
+export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 650, manualHidden = false, instant = false, backdropImage, backdropSample, availableWidth, onOverflowChange, onGeometry, onHover, onLeave, onFocus, onBlur }: ModuleProps & {
   progress?: number; durationMs?: number; manualHidden?: boolean; instant?: boolean; backdropImage?: string; backdropSample?: NavigationBackdropSample;
+  availableWidth?: number; onOverflowChange?(open: boolean): Promise<unknown> | void;
   onGeometry?(bounds: NavigationBounds): void;
   onHover?(): void; onLeave?(): void; onFocus?(): void; onBlur?(): void;
 }) {
   const contribution = contributions[state.format as keyof typeof contributions] ?? contributions.document;
   const Identity = contribution.identity, hidden = progress >= 1;
+  const nav = useRef<HTMLElement>(null), menu = useRef<HTMLDivElement>(null), more = useRef<HTMLButtonElement>(null);
+  const [lane,setLane] = useState<NavigationLane>({left:0,right:availableWidth ?? 820,width:availableWidth ?? 820,center:(availableWidth ?? 820)/2});
+  useLayoutEffect(() => {
+    const reader = nav.current?.closest<HTMLElement>('.reader-panel');
+    if (!reader) { const width = availableWidth ?? 820; setLane({left:0,right:width,width,center:width/2}); return; }
+    return observeNavigationLane(reader,beforePaint => { const next = readNavigationLane(reader), apply = () => setLane(old => JSON.stringify(old) === JSON.stringify(next) ? old : next); if (beforePaint) flushSync(apply); else apply(); });
+  },[availableWidth]);
+  const animatedWidth = useGlassSpringValue(preferredNavigationWidth(lane.width),KUBE_GLASS_SPRINGS.lensShape);
+  const animatedCenter = useGlassSpringValue(lane.center,KUBE_GLASS_SPRINGS.lensShape);
+  const fitted = boundedNavigationPresentation(lane,animatedWidth,animatedCenter), density = navigationDensity(fitted.width);
+  const wide = density === 'wide', tight = density === 'tight', compact = density === 'compact', minimal = density === 'minimal', micro = density === 'micro';
+  const showIdentity = !minimal && !micro, showHistory = !minimal && !micro, showForward = wide || tight || compact, showReload = wide || tight, showSteps = wide || tight || compact, showUndo = wide || tight;
+  const isWeb = state.format === 'web', isText = state.format === 'markdown' || state.format === 'html', hasMore = !wide;
+  const [addressDraft,setAddressDraft] = useState(state.address ?? ''), [zoomDraft,setZoomDraft] = useState(String(Math.round((state.zoom ?? 1)*100))), [menuOpen,setMenuOpen] = useState(false);
+  useEffect(() => setAddressDraft(state.address ?? ''),[state.address]);
+  useEffect(() => setZoomDraft(String(Math.round((state.zoom ?? 1)*100))),[state.zoom]);
+  const moduleProps = {state,dispatch,addressDraft,setAddressDraft,zoomDraft,setZoomDraft};
+  const overflowHandler = useRef(onOverflowChange); overflowHandler.current = onOverflowChange;
+  const positionMenu = () => {
+    const popup = menu.current, button = more.current; if (!popup || !button) return;
+    const box = button.getBoundingClientRect(), width = Math.min(300,window.innerWidth - 24);
+    popup.style.width = width + 'px'; popup.style.left = Math.max(12,Math.min(window.innerWidth - width - 12,box.right - width)) + 'px'; popup.style.top = box.bottom + 12 + 'px';
+    popup.style.maxHeight = Math.max(90,window.innerHeight - box.bottom - 24) + 'px';
+  };
+  const closeMenu = () => menu.current?.hidePopover();
+  const openMenu = async () => { if (!menu.current || !hasMore) return; await overflowHandler.current?.(true); await new Promise<void>(resolve => requestAnimationFrame(() => { positionMenu(); menu.current?.showPopover(); resolve(); })); };
+  useEffect(() => {
+    const close = () => closeMenu(), resize = () => { if (menu.current?.matches(':popover-open')) positionMenu(); };
+    window.addEventListener('blur',close); window.addEventListener('resize',resize);
+    return () => { window.removeEventListener('blur',close); window.removeEventListener('resize',resize); void overflowHandler.current?.(false); };
+  },[]);
+  useEffect(() => { if (hidden || !hasMore) closeMenu(); },[hidden,hasMore]);
+  useEffect(() => {
+    const focus = async () => { if (isWeb && !showIdentity) { await openMenu(); menu.current?.querySelector<HTMLInputElement>('.address-input')?.select(); } };
+    window.addEventListener('agentviewer:navigation-address-focus',focus); return () => window.removeEventListener('agentviewer:navigation-address-focus',focus);
+  },[isWeb,showIdentity,hasMore]);
+  const overflowProps = {...moduleProps,dispatch:(action:NavigationAction) => { dispatch(action); if (action.type !== 'zoom') closeMenu(); }};
   const motion = useMotionSnapshot();
   durationMs = navigationMotionDuration(durationMs, motion);
   const immediate = instant || motion.split(':')[0] === 'off';
@@ -117,18 +156,32 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     const observer = new ResizeObserver(measure); observer.observe(capsule.current);
     measure();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [!!onGeometry, visualProgress, durationMs, state.format]);
-  const style = { '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': NAVIGATION_METRICS.height + 'px', '--navigation-radius': NAVIGATION_METRICS.radius + 'px', '--navigation-button-size': NAVIGATION_METRICS.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
-  return <nav className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} data-navigation-manual-hidden={manualHidden || undefined} style={style}
+  }, [!!onGeometry, visualProgress, durationMs, state.format, fitted.center, fitted.width]);
+  const metrics = navigationControlMetrics(density);
+  const style = { '--navigation-slot-left': fitted.center + 'px', '--navigation-slot-width': fitted.width + 'px', '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': metrics.height + 'px', '--navigation-radius': metrics.radius + 'px', '--navigation-button-size': metrics.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
+  return <nav ref={nav} className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} data-navigation-density={density} data-navigation-manual-hidden={manualHidden || undefined} style={style}
     data-navigation-entering={!entered && !immediate || undefined}
     onMouseEnter={onHover} onMouseLeave={onLeave} onFocusCapture={onFocus} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) onBlur?.(); }}>
     <div ref={capsule} className="floating-capsule navigation-capsule" data-navigation-surface={surface}>
       <NavigationGlass backdropImage={backdropImage} backdropSample={backdropSample} capsuleBounds={capsuleBounds} onSurface={setSurface} />
-      <HistoryModule state={state} dispatch={dispatch} /><Divider />
-      <Identity state={state} dispatch={dispatch} /><Divider />
-      <ZoomModule state={state} dispatch={dispatch} /><Divider />
-      {contribution.tools.map((Module, index) => <Module key={index} state={state} dispatch={dispatch} />)}
-      <div className="navigation-module navigation-dismiss"><button className="icon-button" aria-label="关闭导航栏" title="关闭导航栏 · 鼠标移至阅读区顶部可重新显示" onClick={() => dispatch({ type: 'dismiss' })}><X size={16} /></button></div>
+      {showHistory && <><HistoryModule {...moduleProps} forward={showForward} reload={showReload} /><Divider /></>}
+      {showIdentity && <><Identity {...moduleProps} /><Divider /></>}
+      {!micro && <ZoomModule {...moduleProps} steps={showSteps} />}
+      {wide && isText && <ModeModule {...moduleProps} />}
+      {!isWeb && !micro && <EditModule {...moduleProps} undo={showUndo} />}
+      {wide && isWeb && <WebPageModule {...moduleProps} />}
+      {hasMore && <div className="navigation-module"><button ref={more} className="icon-button" aria-label="更多导航工具" title="更多导航工具" aria-expanded={menuOpen} onClick={() => { if (menuOpen) closeMenu(); else void openMenu(); }}><MoreHorizontal size={17} /></button></div>}
+      {!minimal && !micro && <div className="navigation-module navigation-dismiss"><button className="icon-button" aria-label="关闭导航栏" title="关闭导航栏 · 鼠标移至阅读区顶部可重新显示" onClick={() => dispatch({ type: 'dismiss' })}><X size={16} /></button></div>}
+    </div>
+    <div ref={menu} popover="auto" className="navigation-overflow-menu material-host" aria-label="更多阅读导航工具" onToggle={event => { const open = event.currentTarget.matches(':popover-open'); setMenuOpen(open); if (!open) void overflowHandler.current?.(false); }}>
+      <LiquidGlassSurface variant="panel" />
+      {!showIdentity && <Identity {...overflowProps} />}
+      {(!showHistory || !showForward || !showReload) && <HistoryModule {...overflowProps} back={!showHistory} forward={!showForward} reload={!showReload} />}
+      {!showSteps && <ZoomModule {...overflowProps} value={micro} />}
+      {isText && <ModeModule {...overflowProps} />}
+      {!isWeb && !showUndo && <EditModule {...overflowProps} save={micro} />}
+      {isWeb && <WebPageModule {...overflowProps} />}
+      {(minimal || micro) && <button className="capsule-text" onClick={() => overflowProps.dispatch({type:'dismiss'})}><X size={15} />关闭导航栏</button>}
     </div>
   </nav>;
 }

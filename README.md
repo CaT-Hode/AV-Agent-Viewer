@@ -26,6 +26,8 @@ npm.cmd start
 
 `dev` 同时启动 Vite 和 Electron；`start` 使用构建后的桌面应用。`dev:web` 是界面开发预览，原生网页输入和多窗口需要桌面模式。首次启动会生成五种格式的示例文件和一个本地交互测试网页。Windows x64 可执行 `npm.cmd run package:portable` 得到包含离线引擎的 `release/win-unpacked` 目录包；随后运行 `npm.cmd run install:local`，复制到 `%LOCALAPPDATA%\Programs\AgentViewer` 并建立开始菜单的 **AgentViewer** 快捷方式。更新已安装版本前需关闭应用；用户数据保存在独立目录。
 
+Windows 源码构建还需要 Visual Studio Build Tools 的 MSVC x64 C++ 工具链，用于编译内嵌 Office 光栅适配器；构建脚本通过 `vswhere` 发现工具链并校验缓存。发布包包含编译好的适配器，运行应用不需要安装编译工具。
+
 数据默认位于 `%APPDATA%\AgentViewer`，HTTP 仅监听 `127.0.0.1:3210`。新文件须选定保存位置；源文件被其他程序修改时会拒绝覆盖。复杂 Office 文件建议另存副本。
 
 ## 阅读界面、设置与翻译
@@ -54,7 +56,7 @@ npm.cmd start
 | 网页 | Chromium 浏览、导航、多视图、截图、鼠标/键盘、顶层可见文字与选区 | DOM 元素引用、跨 frame 语义读取、下载管理和多 profile 设置待补 |
 | HTML/网页副本 | 源码、净化预览、位置/选择、保存 HTML；可从真实网页建立副本 | 资源仍使用原链接；无完整离线资产包和结构富文本编辑器 |
 
-`.doc/.ppt/.xls` 使用内置 LibreOffice 26.8.1 转换器：保留原件，转换后编辑并另存现代格式。DOCX/XLSX/PPTX 在 Windows 阅读区内使用同一份真实 LibreOffice 模型，不再要求转入外部完整编辑窗口或手动重新载入。主工具默认在左栏；完整引擎命令按需展开，常用属性用应用自己的控件和类型化 MCP 事务。Office 运行时按需启动，主题与画布颜色使用私有 profile，不回写文档页面样式。PDF OCR 使用内置 Tesseract.js 与中英文字库；EPUB 为后续适配器。
+`.doc/.ppt/.xls` 使用内置 LibreOffice 26.8.1 转换器：保留原件，转换后编辑并另存现代格式。DOCX/XLSX/PPTX 在 Windows 阅读区内使用同一份真实 LibreOffice 模型。桌面主线直接加载核心 DLL，由 AgentViewer 绘制真实图块、承接键鼠与中文组合输入，不为每份文档启动一个 Office 编辑窗口。主工具默认在左栏；引擎命令按需展开，常用属性用应用自己的控件和类型化 MCP 事务。Office 运行时按需启动，主题、外围画布与纸面颜色独立设置，不回写文档页面样式。具体能力与验收边界见[内嵌 Office 核心](docs/design/EMBEDDED_OFFICE_CORE_2026-10-14.md)。PDF OCR 使用内置 Tesseract.js 与中英文字库；EPUB 为后续适配器。
 
 ## 原生网页输入
 

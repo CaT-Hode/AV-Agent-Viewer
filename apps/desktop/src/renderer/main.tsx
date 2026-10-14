@@ -26,6 +26,10 @@ import './reader-controls.css';
 import './office-editing.css';
 import './settings-redesign.css';
 import './home-search.css';
+import './document-paper.css';
+import './frosted-shadow.css';
+import './sidebar-presence.css';
+import './adaptive-panel.css';
 declare global { interface Window { __agentViewerRenderingDiagnostics?: () => { glass: ReturnType<typeof glassOpticsCacheStats>; office: ReturnType<typeof officeRenderStats>; poll: ReturnType<typeof rendererPollStats> } } }
 if (window.agentViewer?.testMode) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats(), office: officeRenderStats(), poll: rendererPollStats() }) });
 createRoot(document.getElementById('root')!).render(<>{location.hash.startsWith('#/reader-panel?') ? <ReaderPanelWindow /> : location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/agent-toolbar') ? <AgentOperationToolbar /> : location.hash.startsWith('#/ai-result-toolbar') ? <AIResultToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}<TooltipHost /><GlassInteractionHost /></>);

@@ -10,6 +10,14 @@ export function readerPanelLimits(side: ReaderPanelSide, readingWidth?: number):
   const limits = bounds[side];
   return { min: limits.min, max: typeof readingWidth === 'number' && Number.isFinite(readingWidth) && readingWidth > 0 ? Math.max(limits.min, Math.min(limits.max, Math.floor((readingWidth - 32) / 2))) : limits.max };
 }
+/** The two chrome panes share the space left by the core navigation controls.
+ * These responsive limits never alter the canvas or overwrite a saved width. */
+export function sharedReaderPanelLimits(side: ReaderPanelSide, readingWidth: number | undefined, bothOpen: boolean): PanelWidthLimits {
+  const limits = bounds[side];
+  if (typeof readingWidth !== 'number' || !Number.isFinite(readingWidth) || readingWidth <= 0) return { ...limits };
+  const budget = Math.floor(Math.max(0,readingWidth - 148) / (bothOpen ? 2 : 1));
+  return { min:limits.min,max:Math.max(limits.min,Math.min(limits.max,budget)) };
+}
 export function clampReaderPanelWidth(side: ReaderPanelSide, width: number, limits = readerPanelLimits(side)) {
   const fallback = side === 'left' ? DEFAULT_READER_PANEL_LAYOUT.leftWidth : DEFAULT_READER_PANEL_LAYOUT.rightWidth;
   return Math.round(Math.min(limits.max, Math.max(limits.min, Number.isFinite(width) ? width : fallback)));

@@ -99,7 +99,30 @@
   -webkit-backdrop-filter:none;
   backdrop-filter:none;
   border-color:transparent;
+  box-shadow:var(--reader-pane-host-shadow,var(--glass-shadow));
+}
+/* Sidebar frost must see only the document, never its own cast shadow. Paint
+   the external shadow after the material instead of on its backdrop host.
+   CSS outer shadows exclude the border box, so no dark shading enters it. */
+:root[data-theme] .workbench .floating-side-panel.material-host {
+  /* Bundlers can combine the preceding selector list with :is(), raising its
+     specificity to the rail :has() branch. Its shadow must read this token. */
+  --reader-pane-host-shadow:none;
+  box-shadow:none;
+}
+:root[data-theme] .workbench .floating-side-panel.material-host::after {
+  content:"";
+  position:absolute;
+  inset:0;
+  border-radius:inherit;
+  pointer-events:none;
+  z-index:2;
   box-shadow:var(--glass-shadow);
+}
+/* Retain a broad bright rim, but the magnifier's dark inset is inappropriate
+   over reading tools. This applies equally to DOM and native/web portals. */
+.floating-side-panel > .liquid-glass-surface:not(.navigation-glass)[data-glass-effect="frosted"] > .liquid-glass-highlight {
+  box-shadow:inset calc(var(--glass-material-shadow-x,0px) / -2) calc(var(--glass-material-shadow-y,4px) / -2) 24px rgb(255 255 255 / var(--glass-material-inset-alpha,.2));
 }
 /* On a sidebar the perceived interior edge fades over the source player's
    29px bezel. It is decorative, clipped to the original rounded material and

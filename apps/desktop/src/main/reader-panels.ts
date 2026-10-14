@@ -67,9 +67,18 @@ export class ReaderPanelHost {
     const owner = entry.owner.getContentBounds(), b = entry.bounds;
     entry.popup.setBounds({ x: owner.x + Math.round(b.x) - GUTTER, y: owner.y + Math.round(b.y) - GUTTER, width: Math.ceil(b.width) + 2 * GUTTER, height: Math.ceil(b.height) + 2 * GUTTER });
   }
+  private documentSources(entry: Entry) {
+    const native = entry.viewId ? this.native(entry.viewId) : undefined, candidate = entry.viewId ? this.web(entry.viewId) : undefined;
+    // WebContentsView frames contain the page alone. Never accept the owner
+    // renderer or another sidebar popup as a backdrop: either would feed the
+    // panel's own frame/shadow back into the next sample. Native capture stays
+    // on the provider's document HWND (PrintWindow), not the desktop composite.
+    const web = candidate && !candidate.view.webContents.isDestroyed() && candidate.view.webContents !== entry.owner.webContents && !this.owns(candidate.view.webContents.id) ? candidate : undefined;
+    return { native, web };
+  }
   private sync(entry: Entry) {
     if (entry.owner.isDestroyed() || entry.popup.isDestroyed()) return;
-    const native = entry.viewId && this.native(entry.viewId), web = entry.viewId && this.web(entry.viewId);
+    const { native, web } = this.documentSources(entry);
     if (!entry.ready || !entry.bounds || (!native && !web) || !entry.owner.isVisible() || entry.owner.isMinimized()) { this.hide(entry); return; }
     const source = native ? 'native:' + native.navigationId : 'web:' + (web as BackdropSource).navigationId;
     this.position(entry);
@@ -99,11 +108,11 @@ export class ReaderPanelHost {
     if (entry.ready && !entry.popup.isDestroyed()) entry.popup.webContents.send('agentviewer:toolbar', { action: 'reader-panel-backdrop', image: entry.image, rect: entry.rect });
   }
   private sample(entry: Entry, force = false) {
-    if (!this.frostEnabled() || !entry.visible || !entry.viewId || !entry.bounds || entry.popup.isDestroyed()) return;
+    if (!this.frostEnabled() || !entry.visible || !entry.viewId || !entry.bounds || entry.owner.isDestroyed() || entry.popup.isDestroyed()) return;
     if (entry.sampling) { entry.pending = true; return; }
     const delay = FROST_FRAME_MS - (Date.now() - entry.sampledAt);
     if (delay > 0) { if (!entry.timer) entry.timer = setTimeout(() => { entry.timer = undefined; this.sample(entry, true); }, delay); return; }
-    const native = this.native(entry.viewId), web = this.web(entry.viewId); if (!native && !web) return;
+    const { native, web } = this.documentSources(entry); if (!native && !web) return;
     const sourceBounds = native?.bounds ?? web!.view.getBounds(), panel = entry.bounds;
     const slot = { x: Math.round(panel.x) - GUTTER, y: Math.round(panel.y) - GUTTER, width: Math.ceil(panel.width) + 2 * GUTTER, height: Math.ceil(panel.height) + 2 * GUTTER };
     const area = intersection(slot, sourceBounds); if (!area) return;

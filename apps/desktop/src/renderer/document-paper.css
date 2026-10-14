@@ -1,0 +1,49 @@
+/* The surrounding canvas and the document paper are separate paint surfaces.
+   A theme/background preference never changes document bytes or export ink. */
+:root {
+  --document-paper:#fff;
+  --document-paper-ink:#24303b;
+  --document-paper-muted:#52606d;
+  --document-paper-soft:color-mix(in srgb,var(--document-paper-ink) 4%,var(--document-paper));
+  --document-paper-rule:color-mix(in srgb,var(--document-paper-ink) 16%,var(--document-paper));
+}
+:root[data-theme] .document-content.format-markdown article.prose {
+  background:var(--document-paper);
+  color:var(--document-paper-ink);
+  width:min(calc(100% - 48px),1200px);
+  max-width:1200px;
+  min-height:calc(100vh - 145px);
+  margin:24px auto;
+  box-shadow:0 3px 18px rgb(20 30 40 / .07);
+}
+:root[data-theme] .document-content.format-markdown article.prose :is(h1,h2,h3,h4,h5,h6,th,blockquote) { color:var(--document-paper-ink); }
+:root[data-theme] .document-content.format-markdown article.prose h1+p { color:var(--document-paper-muted); }
+:root[data-theme] .document-content.format-markdown article.prose :is(pre,blockquote,th) { background:var(--document-paper-soft); }
+:root[data-theme] .document-content.format-markdown article.prose pre,
+:root[data-theme] .document-content.format-markdown article.prose pre > code { color:var(--document-paper-ink); }
+:root[data-theme] .document-content.format-markdown article.prose :is(th,td,hr) { border-color:var(--document-paper-rule); }
+:root[data-theme] .document-content.format-markdown article.prose :not(pre)>code { color:var(--document-paper-ink);background:var(--document-paper-soft); }
+:root[data-theme] .document-content.format-markdown article.prose a { color:var(--document-paper-ink);text-decoration:underline;text-underline-offset:3px; }
+:root[data-theme] .document-content.format-markdown article.prose li::marker { color:var(--document-paper-muted); }
+:root[data-theme] .document-content :is(.office-word-paper,.word-page) { background:var(--document-paper);color:var(--document-paper-ink); }
+:root[data-theme] .document-content .office-document-editor { --office-cell-bg:var(--document-paper);--office-grid-line:var(--document-paper-rule); }
+:root[data-theme] .document-content :is(.office-sheet-table,.office-slide-canvas) { color:var(--document-paper-ink); }
+:root[data-theme] .document-content .office-sheet-table th { color:var(--document-paper-muted); }
+:root[data-theme] .pdf-page { background:var(--document-paper); }
+.document-paper-color-control { display:flex;align-items:center;gap:9px;position:relative; }
+.settings-shell .document-paper-color-control > input { width:98px;height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;font:12px/1.3 'Cascadia Code',Consolas,monospace;color:var(--text);background:#869bb309; }
+.document-paper-color-well { width:30px;height:30px;border:1px solid var(--line);border-radius:9px;box-shadow:inset 0 0 0 3px color-mix(in srgb,var(--surface) 35%,transparent); }
+.document-paper-palette { position:fixed;inset:auto;margin:0;z-index:20;gap:8px;padding:12px;border:1px solid var(--line);border-radius:14px;box-shadow:var(--glass-shadow);background:transparent;overflow:visible; }
+.document-paper-palette:popover-open { display:flex; }
+.document-paper-palette > button { width:24px;height:24px;border:1px solid var(--line);border-radius:50%; }
+.document-paper-palette > button[aria-checked="true"] { outline:2px solid var(--accent);outline-offset:3px; }
+.document-paper-color-error { position:absolute;right:0;top:calc(100% + 3px);white-space:nowrap;color:var(--danger,#b94c50);font-size:10px; }
+/* Source editing is also a local reading surface; syntax token colors remain
+   the editor's own, and HTML/web content keeps its authored page appearance. */
+:root[data-theme] .document-content.format-markdown .cm-editor { background:var(--document-paper);color:var(--document-paper-ink); }
+:root[data-theme] .document-content.format-markdown .cm-content { color:var(--document-paper-ink);caret-color:var(--document-paper-ink); }
+:root[data-theme] .document-content.format-markdown .cm-gutters { background:var(--document-paper-soft);color:var(--document-paper-muted); }
+@media print {
+  :root[data-theme] .document-content.format-markdown article.prose { --document-paper:#fff;--document-paper-ink:#000;--document-paper-muted:#555;--document-paper-soft:#f5f5f5;--document-paper-rule:#ddd;background:#fff;color:#000;box-shadow:none; }
+  :root[data-theme] .document-content.format-markdown article.prose :is(h1,h2,h3,h4,h5,h6,p,li,th,blockquote,code,a) { color:#000; }
+}

@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bold, Italic, Strikethrough, Underline } from 'lucide-react';
+import { Check, RefreshCw, RotateCcw } from 'lucide-react';
 import type { NativeOfficeFormat, NativeOfficeState, NativeOfficeStyleInspection, NativeOfficeStyleTarget, NativeOfficeStyleValues } from '../../../../../packages/contracts/src/native-office';
 import type { OfficeToolboxCategory } from './office/toolbox-contributions';
 import { nativeOfficeOwnedState, nativeOfficeStatusKey, type NativeOfficeRequest } from '../lib/native-office-tools';
 import { nativeStyleControls, nativeStyleTargets, parseNativeStyleValues, type NativeStyleControl } from '../lib/native-office-style';
 import { call } from '../lib/transport';
+import { nativeOfficeStyleIcons } from './office/native-command-icons';
+import { NativeOfficeToolGlyph } from './office/NativeOfficeToolGlyph';
 
 export type NativeOfficeStyleInspectorProps = {
   documentId: string; viewId: string; format: NativeOfficeFormat; category: OfficeToolboxCategory; state?: NativeOfficeState; busy?: boolean; request?: NativeOfficeRequest;
   onApply(target: NativeOfficeStyleTarget, values: NativeOfficeStyleValues, source: NativeOfficeState): Promise<void>;
 };
 const names = { text: '文字', paragraph: '段落', cells: '单元格', shape: '对象' };
-const icons = { bold: Bold, italic: Italic, underline: Underline, strike: Strikethrough };
 type Draft = { identity: string; lease: string; values: Record<string, string | boolean> };
 
 function StyleTarget({ target, ...props }: NativeOfficeStyleInspectorProps & { target: NativeOfficeStyleTarget }) {
@@ -60,8 +61,9 @@ function StyleTarget({ target, ...props }: NativeOfficeStyleInspectorProps & { t
     const field = active?.data.fields[control.name], edited = changes?.values[control.name];
     const value = edited ?? field?.value, enabled = !!field?.available && !disabled;
     const mixed = field?.state === 'mixed' && edited === undefined, placeholder = mixed ? '混合' : field?.value === null ? '自动或未定义' : '';
-    const Icon = icons[control.name as keyof typeof icons];
-    if (control.kind === 'boolean') return <button key={control.name} type="button" className="native-office-icon icon-button" aria-label={control.label} title={field?.reason || control.label} aria-pressed={mixed ? 'mixed' : value === true} disabled={!enabled} onMouseDown={event => event.preventDefault()} onClick={() => change(control.name, value !== true)}>{Icon ? <Icon size={17} /> : <span>{control.label}</span>}</button>;
+    const glyph = nativeOfficeStyleIcons[control.name];
+    const reason = field?.reason || (!field?.available ? '当前目标不支持此属性。' : stale ? '目标或内容已变化，请重新读取。' : props.busy || pending ? '正在等待引擎回执…' : state?.pendingInput ? '请先完成正文中的输入。' : active?.lease !== lease ? '正在读取当前目标属性…' : undefined);
+    if (control.kind === 'boolean') return <button key={control.name} type="button" className={glyph ? 'native-office-icon native-office-tool icon-button' : 'native-office-action'} aria-label={control.label} title={control.label + (reason ? '\n' + reason : '')} aria-pressed={mixed ? 'mixed' : value === true} disabled={!enabled} onMouseDown={event => event.preventDefault()} onClick={() => change(control.name, value !== true)}>{glyph ? <NativeOfficeToolGlyph glyph={glyph} /> : <span>{control.label}</span>}</button>;
     return <label key={control.name} className="native-style-field"><span>{control.label}</span><span className="native-style-input">
       {control.kind === 'select' ? <select aria-label={names[target] + ' · ' + control.label} title={field?.reason} disabled={!enabled} value={typeof value === 'string' && control.options?.some(item => item[0] === value) ? value : ''} onChange={event => change(control.name, event.target.value)}><option value="" disabled>{placeholder || '请选择'}</option>{control.options?.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select> : <>
         {control.kind === 'color' && <span className="native-style-color" data-mixed={mixed || value === null || undefined} style={typeof value === 'string' && /^[0-9a-f]{6}$/i.test(value) ? { backgroundColor:'#'+value } : undefined}><input type="color" aria-label={'选择'+control.label} disabled={!enabled} value={typeof value==='string'&&/^[0-9a-f]{6}$/i.test(value)?'#'+value:'#000000'} onChange={event=>change(control.name,event.target.value.slice(1))}/></span>}
@@ -75,7 +77,7 @@ function StyleTarget({ target, ...props }: NativeOfficeStyleInspectorProps & { t
     {stale && <p className="native-office-note">目标或内容已变化。输入已保留，请重新读取后编辑。</p>}
     {dirty && !stale && <p className="native-office-note">输入尚未应用到正文。</p>}
     {active && error && <p className="native-office-error" role="alert">{error}</p>}
-    <div className="native-office-inline native-style-actions"><button type="button" className="native-office-action" disabled={!dirty||disabled||composing} onMouseDown={event=>event.preventDefault()} onClick={()=>void apply()}>{pending?'应用中…':'应用修改'}</button><button type="button" className="native-office-action" disabled={pending||props.busy||composing} onClick={()=>{setDraft(undefined);setRecord(undefined);setError('');setRefresh(value=>value+1);}}>{dirty?'放弃并重新读取':'重新读取'}</button></div>
+    <div className="native-office-inline native-style-actions"><button type="button" className="native-office-icon native-office-tool icon-button" aria-label={pending?'应用中…':'应用修改'} aria-busy={pending} title={'应用修改'+(pending||props.busy?'\n正在等待引擎回执…':composing?'\n请先完成输入。':stale?'\n目标或内容已变化，请重新读取。':!dirty?'\n请先修改属性。':disabled?'\n正在确认当前目标属性。':'')} disabled={!dirty||disabled||composing} onMouseDown={event=>event.preventDefault()} onClick={()=>void apply()}><Check size={17} aria-hidden="true"/></button><button type="button" className="native-office-icon native-office-tool icon-button" aria-label={dirty?'放弃并重新读取':'重新读取'} title={(dirty?'放弃并重新读取':'重新读取')+(pending||props.busy?'\n正在等待引擎回执…':composing?'\n请先完成输入。':'')} disabled={pending||props.busy||composing} onClick={()=>{setDraft(undefined);setRecord(undefined);setError('');setRefresh(value=>value+1);}}>{dirty?<RotateCcw size={17} aria-hidden="true"/>:<RefreshCw size={17} aria-hidden="true"/>}</button></div>
   </section>;
 }
 export function NativeOfficeStyleInspector(props: NativeOfficeStyleInspectorProps) {

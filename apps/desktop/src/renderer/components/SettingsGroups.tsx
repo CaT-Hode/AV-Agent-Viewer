@@ -1,5 +1,6 @@
 import { GlassSwitch, GlassRangeControl } from './GlassControls';
 import { GlassSegmentedControl } from './GlassSegmentedControl';
+import { DocumentPaperColorControl } from './DocumentPaperColorControl';
 import type { SettingDefinition, SettingsSnapshot, SettingValue } from '../../../../../packages/settings/src/index';
 
 function groupFor(definition: SettingDefinition) {
@@ -26,7 +27,7 @@ export function SettingsGroups({ definitions, snapshot, labels, onChange }: {
         <details className="setting-metadata"><summary>详细信息</summary><small>{definition.id} · {definition.effect === 'next-task' ? '下次任务生效' : definition.effect === 'reopen' ? '重新打开后生效' : definition.effect === 'restart' ? '重启后生效' : '立即生效'} · 应用设置</small></details>
       </div>
       <div className="setting-control" inert={!enabled}>
-        {definition.type === 'boolean' ? <GlassSwitch label={definition.label} checked={!!value} disabled={!enabled} onChange={next => onChange(definition.id, next)} /> : definition.type === 'select' ?
+        {definition.id === 'appearance.documentPaperColor' ? <DocumentPaperColorControl label={definition.label} value={String(value)} onChange={next => onChange(definition.id,next)} /> : definition.type === 'boolean' ? <GlassSwitch label={definition.label} checked={!!value} disabled={!enabled} onChange={next => onChange(definition.id, next)} /> : definition.type === 'select' ?
           <GlassSegmentedControl label={definition.label} value={String(value)} disabled={!enabled} options={(definition.options ?? []).map(option => ({ value: option, label: labels[option] ?? option }))} onChange={next => onChange(definition.id, next)} /> : definition.type === 'number' && definition.id === 'appearance.toolbarDelayMs' ?
             <GlassRangeControl label={definition.label} value={Number(value)} disabled={!enabled} min={definition.min!} max={definition.max!} step={definition.id.endsWith('Ms') ? 100 : 1} onChange={next => onChange(definition.id, next)} /> : definition.type === 'number' ?
               <input aria-label={definition.label} disabled={!enabled} type="number" min={definition.min} max={definition.max} value={Number(value)} onChange={event => { if (event.target.value !== '') onChange(definition.id, Number(event.target.value)); }} /> :

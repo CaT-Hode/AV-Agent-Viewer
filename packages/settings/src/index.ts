@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_DOCUMENT_PAPER_COLOR, normalizeDocumentPaperColor } from './document-paper';
 
 export type SettingValue = string | number | boolean;
 export type SettingDefinition = { id: string; group: string; section: string; label: string; description?: string; type: 'boolean' | 'number' | 'select' | 'text'; defaultValue: SettingValue; options?: string[]; min?: number; max?: number; effect?: 'immediate' | 'next-task' | 'reopen' | 'restart'; available?: boolean; unavailableReason?: string };
@@ -18,7 +19,9 @@ export const settingsRegistry: SettingDefinition[] = [
   s('appearance.theme','工作方式','外观与布局','主题','system',['system','light','dark']),
   s('appearance.density','工作方式','外观与布局','界面密度','standard',['compact','standard','comfortable']),
   s('appearance.glass','工作方式','外观与布局','玻璃效果','standard',['standard','enhanced','off']),
-  { ...s('appearance.documentBackground','工作方式','外观与布局','文档阅读背景','paper',['paper','mist','aurora','dusk','solid']), description: '只影响阅读画布与页面周围，不修改文档或导出内容。' },
+  { ...s('appearance.documentBackground','工作方式','外观与布局','文档阅读背景','paper',['paper','mist','aurora','dusk','spectrum','lagoon','iris','champagne','opal','solid']), description: '只影响阅读画布与页面周围，不修改文档或导出内容。' },
+  { id: 'appearance.documentPaperColor', group: '工作方式', section: '外观与布局', label: '正文纸面颜色', type: 'text', defaultValue: DEFAULT_DOCUMENT_PAPER_COLOR, description: '独立于外围背景与深浅主题；只改变默认纸面，不覆盖文件中明确设置的填色或图片。' },
+  { ...s('appearance.backgroundMotion','工作方式','外观与布局','炫彩背景动态','slow',['slow','still']), description: '缓慢漂移只作用于外围彩色画布；关闭或减少动效时保持静止。' },
   s('appearance.motion','工作方式','外观与布局','动效','standard',['standard','elegant','reduced','off']),
   b('appearance.reduceTransparency','工作方式','外观与布局','减少透明度',false),
   b('appearance.highContrast','工作方式','外观与布局','增强对比度',false),
@@ -84,7 +87,7 @@ export const settingsRegistry: SettingDefinition[] = [
 ];
 const activeSettings = new Set([
   'general.startPage',
-  'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs',
+  'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.documentPaperColor','appearance.backgroundMotion','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs',
   'translation.selectionAuto','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
   'ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart',
 ]);
@@ -101,7 +104,7 @@ export class SettingsService {
     try {
       const parsed = JSON.parse(await readFile(this.path, 'utf8')) as Partial<SettingsSnapshot>;
       for (const definition of settingsRegistry) if (parsed.values && definition.id in parsed.values) {
-        try { this.validate(definition.id, parsed.values[definition.id]); this.values[definition.id] = parsed.values[definition.id]; } catch { /* stale setting falls back to its default */ }
+        try { this.validate(definition.id, parsed.values[definition.id]); this.values[definition.id] = definition.id === 'appearance.documentPaperColor' ? normalizeDocumentPaperColor(parsed.values[definition.id])! : parsed.values[definition.id]; } catch { /* stale setting falls back to its default */ }
       }
       this.revision = Number.isSafeInteger(parsed.revision) ? Number(parsed.revision) : 0;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -114,9 +117,11 @@ export class SettingsService {
     if (definition.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value) || value < (definition.min ?? -Infinity) || value > (definition.max ?? Infinity))) throw new Error('设置值超出范围');
     if (definition.type === 'select' && (typeof value !== 'string' || !definition.options?.includes(value))) throw new Error('设置选项无效');
     if (definition.type === 'text' && typeof value !== 'string') throw new Error('设置值需要文本');
+    if (id === 'appearance.documentPaperColor' && !normalizeDocumentPaperColor(value)) throw new Error('纸面颜色需要 #RGB 或 #RRGGBB 格式');
   }
   async undo() { const last = this.history.pop(); if (!last) return this.snapshot(); return this.set(last.id, last.value, false); }
   async set(id: string, value: SettingValue, record = true) {
+    if (id === 'appearance.documentPaperColor') value = normalizeDocumentPaperColor(value) ?? value;
     this.validate(id, value); if (record && this.get(id) !== value) { this.history.push({ id, value: this.get(id) }); if (this.history.length > 100) this.history.shift(); } this.values[id] = value; this.revision++;
     const snapshot = this.snapshot();
     this.writing = this.writing.catch(() => {}).then(async () => {

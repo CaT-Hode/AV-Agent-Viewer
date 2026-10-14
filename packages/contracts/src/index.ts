@@ -19,7 +19,7 @@ export interface Slide { id: string; blocks: TextBlock[]; background?: string; n
 export interface WordPageLayout { width: number; height: number; orientation: 'portrait' | 'landscape'; margins: { top: number; right: number; bottom: number; left: number } }
 export interface DocumentModel {
   format: Format; text?: string; blocks?: TextBlock[]; sheets?: Sheet[]; slides?: Slide[];
-  pageCount?: number; url?: string; width?: number; height?: number; pageLayout?: WordPageLayout; pageLayouts?: WordPageLayout[]; unsupportedFeatures?: string[];
+  pageCount?: number; url?: string; width?: number; height?: number; pageLayout?: WordPageLayout; pageLayouts?: WordPageLayout[]; pageBackground?: string; unsupportedFeatures?: string[];
 }
 export interface DocumentInfo {
   id: string; title: string; path?: string; format: Format; revision: number; diskRevision: number; dirty: boolean;
@@ -30,7 +30,7 @@ export interface ReadingContext {
   quality: 'confirmed' | 'last-confirmed' | 'not-ready'; actor: Actor;
   locator: Locator; visibleText: string; selection: { kind: 'none' | 'text' | 'cells' | 'objects' | 'region'; text: string; locator?: Locator; rect?: Rect; pageRects?: (Rect & { pageIndex: number })[] };
   viewport?: { width: number; height: number; scrollX: number; scrollY: number; deviceScaleFactor: number; navigationId?: string; layoutRevision?: number };
-  nativeOffice?: { sessionId: string; engineEpoch: string; engineRevision: number; selectionEpoch?: number; selectionActions?: string[]; sheetName?: string; range?: string; visibleTextReady?: boolean; visibleTextTruncated?: boolean; visibleTextSource?: 'actual-a11y' | 'unavailable' };
+  nativeOffice?: { sessionId: string; engineEpoch: string; engineRevision: number; selectionEpoch?: number; selectionActions?: string[]; sheetName?: string; range?: string; visibleTextReady?: boolean; visibleTextTruncated?: boolean; visibleTextSource?: 'actual-a11y' | 'actual-model-projection' | 'unavailable' };
 }
 /** Ephemeral collaboration metadata, never a lock on human input. */
 export interface AgentViewState {

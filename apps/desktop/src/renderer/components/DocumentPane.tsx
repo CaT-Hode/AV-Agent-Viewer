@@ -7,7 +7,7 @@ import { call, desktop, windowId } from '../lib/transport';
 import type { DocumentInfo, EditOperation, ReadingContext, Rect, ViewInfo } from '../../../../../packages/contracts/src/index';
 import type { OfficeTarget, OfficeToolboxController } from './OfficeTools';
 import { OfficeDocument, type OfficeDraftController } from './OfficeDocument';
-import { NativeOfficeDocument } from './NativeOfficeDocument';
+import { EmbeddedOfficeDocument } from './EmbeddedOfficeDocument';
 import { officeNodeVisible, type OfficeNavigationRequest, type OfficeNavigationResult } from '../lib/office-navigation';
 import type { SharedOutlineItem } from '../lib/document-outline';
 import { createTrailingEmitter } from '../lib/trailing-emitter';
@@ -17,7 +17,7 @@ export type PdfToolsState = { note: string; highlight: boolean; ocrBusy: boolean
 type PdfToolCommand = { viewId: string; action: 'note' | 'highlight' | 'rotate' | 'add-page' | 'ocr' | 'clear-ocr'; text?: string };
 
 export function DocumentPane(props: Parameters<typeof LegacyDocumentPane>[0]) {
-  if (desktop && ['docx','pptx','xlsx'].includes(props.document.format)) return <NativeOfficeDocument {...props} />;
+  if (desktop && ['docx','pptx','xlsx'].includes(props.document.format)) return <EmbeddedOfficeDocument {...props} />;
   return <LegacyDocumentPane {...props} />;
 }
 function LegacyDocumentPane({ document, view, edit, onTextChange, reportError, onPdfToolsChange, onOfficeTargetChange, onOfficeDraftController, onOfficeDraftChange, onOfficeToolboxController, htmlOutline, navigationRequest, onOfficeNavigationResult, onReaderScroll, onZoomChange, obscured, annotations = [] }: { document: DocumentInfo; view: ViewInfo; edit(operation: EditOperation): Promise<void>; onTextChange(text: string): void; reportError(error: unknown): void; annotations?: {sourceRevision:number;selection:ReadingContext['selection']}[]; obscured?: boolean; htmlOutline?: readonly SharedOutlineItem[]; navigationRequest?: OfficeNavigationRequest; onOfficeNavigationResult?(result: OfficeNavigationResult): void; onReaderScroll?: (y: number) => void; onZoomChange?(factor: number): void; onPdfToolsChange?: (state: PdfToolsState) => void; onOfficeTargetChange?: (target: OfficeTarget) => void; onOfficeDraftController?(controller: OfficeDraftController | undefined): void; onOfficeDraftChange?(state: { viewId: string; dirty: boolean }): void; onOfficeToolboxController?(controller: OfficeToolboxController | undefined): void }) {

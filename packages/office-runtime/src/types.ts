@@ -49,7 +49,7 @@ export interface NativeOfficeState extends NativeOfficeBinding {
   /** Read from the actual native accessibility tree; never filled from the full file. */
   visibleText: string;
   visibleTextReady: boolean;
-  visibleTextSource: 'actual-a11y' | 'unavailable';
+  visibleTextSource: 'actual-a11y' | 'actual-model-projection' | 'unavailable';
   visibleTextTruncated: boolean;
   undo: { canUndo: boolean; canRedo: boolean; title?: string; count: number; token?: string };
   /** sidebar means expanded deck content, not a retained collapsed tab strip. */
@@ -88,6 +88,9 @@ export interface NativeOfficeRuntimeOptions {
   pythonPath?: string;
   requestTimeoutMs?: number;
   appearance?: NativeOfficeAppearance;
+  /** Tiled engine owns the LibreOffice core DLL and exposes no Office window. */
+  backend?: 'window' | 'kit';
+  adapterPath?: string;
 }
 export interface NativeOfficeEvent { type: 'changed' | 'selection' | 'closed' | 'diagnostic'; sessionId?: string; engineRevision?: number; code?: string }
 

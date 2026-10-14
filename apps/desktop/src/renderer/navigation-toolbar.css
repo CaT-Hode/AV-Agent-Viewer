@@ -7,9 +7,9 @@
   position: absolute;
   z-index: 6;
   top: 12px;
-  left: 50%;
-  width: max-content;
-  max-width: calc(100% - 24px);
+  left: var(--navigation-slot-left,50%);
+  width: var(--navigation-slot-width,max-content);
+  max-width: 100%;
   height: var(--navigation-height, 60px);
   min-height: var(--navigation-height, 60px);
   padding: 0;
@@ -34,9 +34,10 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap:var(--navigation-gap,7px);
   height: var(--navigation-height, 60px);
-  padding: 0 20px;
+  width:100%;
+  padding:0 var(--navigation-padding,16px);
   min-width: 0;
   max-width: 100%;
   border: 1px solid var(--glass-edge);
@@ -57,28 +58,60 @@
 .navigation-toolbar .navigation-module,
 .navigation-toolbar .capsule-divider { opacity: calc(1 - var(--navigation-hide-progress)); transition: opacity var(--navigation-hide-duration) var(--navigation-motion-easing); }
 :root[data-theme] .workbench .reader-format-web > .navigation-toolbar { display: flex; }
-.navigation-module { position: relative; z-index: 1; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.navigation-module { position: relative; z-index: 1; display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
 .navigation-dismiss { margin-left: 2px; }
-.navigation-toolbar .capsule-divider { position: relative; z-index: 1; flex-shrink: 0; height: 18px; width: 1px; margin: 0 4px; background: var(--glass-inset-hairline); }
+.navigation-toolbar .capsule-divider { position: relative; z-index: 1; flex-shrink: 0; height: 16px; width: 1px; margin: 0 2px; background: var(--glass-inset-hairline); }
 :root[data-theme] .navigation-capsule .icon-button { width: var(--navigation-button-size, 34px); height: var(--navigation-button-size, 34px); border-radius: calc(var(--navigation-button-size, 34px) / 2); flex-shrink: 0; }
 .navigation-capsule .view-modes { gap: 2px; }
-.navigation-capsule .view-modes button { font-size: 13px; border: 0; border-radius: 16px; padding: 8px 11px; }
+.navigation-capsule .view-modes button { font-size: 12px; border: 0; border-radius: 16px; padding: 6px 9px; }
 .navigation-capsule .capsule-text { font-size: 11px; padding: 5px; gap: 4px; color: var(--glass-ink); white-space: nowrap; }
-.navigation-capsule .capsule-document-title { font-size: 15px; font-weight: 600; min-width: 80px; max-width: 220px; padding: 0 10px; color: var(--glass-ink); }
-.navigation-capsule .address { flex: 1; flex-shrink: 1; width: clamp(140px, 22vw, 430px); min-width: 80px; max-width: 430px; }
-:root[data-theme] .navigation-capsule .address-input { width: 100%; height: 36px; padding: 0 12px; font-size: 15px; border: 0; border-radius: 18px; background: transparent; color: var(--glass-ink); box-shadow: none; }
+.navigation-capsule .capsule-document-title { flex:1 1 180px; font-size:13px; font-weight:600; min-width:0; max-width:220px; padding:0 4px; color:var(--glass-ink); }
+.navigation-capsule .capsule-document-title > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.navigation-capsule .capsule-document-title > svg { flex-shrink:0; width:16px; height:16px; }
+.navigation-capsule .address { flex: 1 1 240px; min-width: 0; max-width: 430px; }
+:root[data-theme] .navigation-capsule .address-input { width: 100%; min-width:0; height: 32px; padding: 0 6px; font-size: 13px; border: 0; border-radius: 18px; background: transparent; color: var(--glass-ink); box-shadow: none; }
 :root[data-theme] .workbench .reader-toolbar .navigation-capsule :is(button, .address-input, .capsule-document-title) { color: var(--navigation-ink, var(--glass-ink)); }
 
 /* A transparent source-derived optical gutter; no rectangular blur surface. */
 html.native-toolbar-root .workbench.native-toolbar { position: relative; display: block; height: 100vh; padding: 16px; background: transparent !important; clip-path: none; }
-html.native-toolbar-root[data-theme] .native-toolbar .reader-toolbar.navigation-toolbar { --navigation-offset-x: 0%; position: relative; top: auto; left: auto; width: 100%; max-width: none; }
+html.native-toolbar-root[data-theme] .native-toolbar .reader-toolbar.navigation-toolbar { --navigation-offset-x: 0%; position: relative; top: auto; left: auto; width:var(--navigation-slot-width,100%); max-width:100%; margin:0 auto; }
 html.native-toolbar-root[data-theme] .native-toolbar .navigation-capsule { width: 100%; max-width: none; }
+.navigation-toolbar[data-navigation-density="tight"] { --navigation-gap:5px; --navigation-padding:12px; }
+.navigation-toolbar[data-navigation-density="compact"] { --navigation-gap:3px; --navigation-padding:8px; }
+.navigation-toolbar[data-navigation-density="small"] { --navigation-gap:3px; --navigation-padding:8px; }
+.navigation-toolbar[data-navigation-density="minimal"] { --navigation-gap:4px; --navigation-padding:6px; }
+.navigation-toolbar[data-navigation-density="micro"] { --navigation-gap:0px; --navigation-padding:2px; }
+.navigation-toolbar:is([data-navigation-density="minimal"],[data-navigation-density="micro"]) .navigation-capsule { justify-content:center; }
+.navigation-toolbar:is([data-navigation-density="compact"],[data-navigation-density="small"]) .capsule-divider { margin:0; }
+.navigation-toolbar[data-navigation-density="small"] :is(.capsule-document-title,.address-input) { font-size:12px; padding-inline:2px; }
+.navigation-toolbar:is([data-navigation-density="small"],[data-navigation-density="minimal"]) .navigation-zoom-value input { width:30px; }
+.navigation-toolbar[data-navigation-density="minimal"] .navigation-dismiss { margin:0; }
+.navigation-capsule :is(.icon-button,.view-modes button,.capsule-text) { transition:background-color 160ms ease,color 160ms ease; }
+/* Secondary tools use the browser top layer, so neither a document nor a
+   native toolbar host can clip them. The capsule remains the sole optical bar. */
+.navigation-overflow-menu { position:fixed; inset:auto; margin:0; padding:12px; border:1px solid var(--glass-edge); border-radius:18px; background:transparent; color:var(--glass-ink); box-shadow:var(--glass-shadow); overflow:auto; z-index:100; isolation:isolate; pointer-events:auto; }
+.navigation-overflow-menu:popover-open { display:flex; flex-direction:column; gap:12px; }
+.navigation-overflow-menu::backdrop { background:transparent; }
+.navigation-overflow-menu > .navigation-module { max-width:100%; min-width:0; flex-wrap:wrap; }
+.navigation-overflow-menu :is(.address,.capsule-document-title) { width:100%; }
+.navigation-overflow-menu .address-input { width:100%; min-width:0; height:30px; background:var(--glass-soft-fill); border:0; border-radius:9px; color:inherit; font-size:12px; padding:0 8px; }
+.navigation-overflow-menu .capsule-document-title { font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.navigation-overflow-menu :is(.icon-button,.view-modes button,.capsule-text) { min-width:24px; height:28px; padding:5px; border-radius:10px; font-size:12px; color:inherit; }
+.navigation-overflow-menu .view-modes { flex-wrap:wrap; }
+.navigation-overflow-menu .capsule-text { display:flex; align-items:center; gap:5px; }
+.navigation-overflow-menu .view-modes button.selected { background:var(--glass-soft-fill); }
+.navigation-overflow-menu { opacity:0; transform:translateY(-6px) scale(.965); transform-origin:top right; transition:opacity var(--motion-duration,280ms) ease,transform var(--motion-duration,280ms) cubic-bezier(.18,1.12,.3,1),display var(--motion-duration,280ms) allow-discrete,overlay var(--motion-duration,280ms) allow-discrete; }
+.navigation-overflow-menu:popover-open { opacity:1; transform:none; }
+@starting-style { .navigation-overflow-menu:popover-open { opacity:0; transform:translateY(-6px) scale(.965); } }
+:root[data-motion="reduced"] .navigation-overflow-menu { transition-duration:80ms; transform:none; }
+:root[data-motion="off"] .navigation-overflow-menu { transition:none; transform:none; }
 :root[data-motion="reduced"] .navigation-toolbar { transition-duration: 80ms, 0s !important; }
 :root[data-motion="reduced"] .workbench .reader-toolbar.navigation-toolbar.is-hidden { transition-delay: 0s, 80ms; }
 :root[data-motion="off"] .workbench .reader-toolbar.navigation-toolbar { transition: none !important; }
 :root[data-motion="reduced"] .workbench .reader-toolbar.navigation-toolbar { transform: translateX(-50%); }
 html.native-toolbar-root[data-motion="reduced"] .native-toolbar .reader-toolbar.navigation-toolbar { transform: none; }
 @media (prefers-reduced-motion: reduce) {
+  .navigation-overflow-menu { transition-duration:80ms; transform:none; }
   :root[data-theme] .workbench .reader-toolbar.navigation-toolbar { transition-duration: 80ms, 0s !important; transform: translateX(-50%); }
   html.native-toolbar-root .native-toolbar .reader-toolbar.navigation-toolbar { transform: none; }
   :root[data-theme] .workbench .reader-toolbar.navigation-toolbar.is-hidden { transition-delay: 0s, 80ms; }

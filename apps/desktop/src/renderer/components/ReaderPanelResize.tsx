@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
-import { clampReaderPanelWidth, createReaderPanelLayoutStore, readerPanelDragWidth, readerPanelKeyWidth, readerPanelLimits, READER_PANEL_LAYOUT_KEY, type PanelResizeGesture, type ReaderPanelSide } from '../lib/reader-panel-layout';
+import { clampReaderPanelWidth, createReaderPanelLayoutStore, readerPanelDragWidth, readerPanelKeyWidth, readerPanelLimits, sharedReaderPanelLimits, READER_PANEL_LAYOUT_KEY, type PanelResizeGesture, type ReaderPanelSide } from '../lib/reader-panel-layout';
 
 let layoutStore: ReturnType<typeof createReaderPanelLayoutStore> | undefined;
 function readerPanelStore() {
@@ -24,7 +24,7 @@ export function ReaderPanelResizeHandle({ side, width, workbench, onCommit }: { 
   const previewWidth = useRef<number | undefined>(undefined);
   const latest = useRef({ width, onCommit }); latest.current = { width, onCommit };
   const [limits, setLimits] = useState(() => readerPanelLimits(side));
-  const measure = () => readerPanelLimits(side, workbench.current?.querySelector('.reader-panel')?.getBoundingClientRect().width);
+  const measure = () => sharedReaderPanelLimits(side,workbench.current?.querySelector('.reader-panel')?.getBoundingClientRect().width,!!workbench.current?.querySelector(`:scope > .floating-side-panel[data-side="${side === 'left' ? 'right' : 'left'}"]`));
   const preview = (next: number) => {
     const property = `--reader-${side}-width`, value = `${next}px`;
     workbench.current?.style.setProperty(property, value);
@@ -49,8 +49,8 @@ export function ReaderPanelResizeHandle({ side, width, workbench, onCommit }: { 
   useLayoutEffect(() => { if (!gesture.current) preview(width); }, [width]);
   useLayoutEffect(() => {
     const refresh = () => setLimits(previous => { const next = measure(); return previous.min === next.min && previous.max === next.max ? previous : next; });
-    refresh(); const observer = new ResizeObserver(refresh); if (workbench.current) observer.observe(workbench.current);
-    return () => observer.disconnect();
+    refresh(); const observer = new ResizeObserver(refresh), changes = new MutationObserver(refresh); if (workbench.current) { observer.observe(workbench.current); changes.observe(workbench.current,{childList:true}); }
+    return () => { observer.disconnect(); changes.disconnect(); };
   }, [side, workbench]);
   useEffect(() => { const cancel = () => finish.current(false), owner = handle.current?.ownerDocument.defaultView ?? window; owner.addEventListener('blur', cancel); return () => { owner.removeEventListener('blur', cancel); finish.current(false); }; }, []);
   useEffect(() => { if (gesture.current) finish.current(false); }, [width]);
@@ -68,7 +68,7 @@ export function ReaderPanelResizeHandle({ side, width, workbench, onCommit }: { 
       event.currentTarget.dataset.dragging = 'true'; if (workbench.current) workbench.current.dataset.panelResizing = side;
     }}
     onPointerMove={event => { if (gesture.current?.pointerId !== event.pointerId) return; event.preventDefault(); preview(readerPanelDragWidth(gesture.current, event.screenX, measure())); }}
-    onPointerUp={event => { if (gesture.current?.pointerId === event.pointerId) { preview(readerPanelDragWidth(gesture.current, event.screenX, measure())); retire(true); } }}
+    onPointerUp={event => { if (gesture.current?.pointerId === event.pointerId) { const moved = Math.abs(event.screenX - gesture.current.startX) >= .5; if (moved) preview(readerPanelDragWidth(gesture.current, event.screenX, measure())); retire(moved); } }}
     onPointerCancel={() => retire(false)} onLostPointerCapture={() => retire(false)}
     onKeyDown={event => {
       if (event.key === 'Escape' && gesture.current) { event.preventDefault(); event.stopPropagation(); retire(false); return; }

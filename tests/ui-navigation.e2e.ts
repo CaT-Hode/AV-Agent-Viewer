@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import type { WorkspaceState } from '../packages/contracts/src/index';
 import { NAVIGATION_METRICS } from '../apps/desktop/src/renderer/lib/navigation-optics';
+import { navigationControlMetrics, type NavigationDensity } from '../apps/desktop/src/renderer/lib/navigation-lane';
 import { REFRACTIVE_BLUR_LIMIT_PX } from '../apps/desktop/src/renderer/lib/glass-presets';
 
 const require = createRequire(import.meta.url);
@@ -119,7 +120,8 @@ try {
   assert.equal(localStyle.blur, NAVIGATION_METRICS.blur + 'px'); assert.equal(localStyle.refractionWidth, NAVIGATION_METRICS.bezelWidth + 'px');
   assert.match(localStyle.opticalFilter, /url\(/, 'document glass uses the source SVG optical pipeline');
   assert.equal(localStyle.gaussianBlur, Math.min(NAVIGATION_METRICS.blur, REFRACTIVE_BLUR_LIMIT_PX));
-  assert.equal(localStyle.height, NAVIGATION_METRICS.height); assert.equal(localStyle.radius, NAVIGATION_METRICS.radius + 'px'); await noOuterMask(page);
+  const density = await page.locator('.navigation-toolbar').getAttribute('data-navigation-density') as NavigationDensity, metrics = navigationControlMetrics(density);
+  assert.equal(localStyle.height, metrics.height); assert.equal(localStyle.radius, metrics.radius + 'px'); await noOuterMask(page);
   await page.screenshot({ path: join(qa, 'document-navigation.png'), scale: 'css' });
 
   // Real document history is exercised through the same common controls.

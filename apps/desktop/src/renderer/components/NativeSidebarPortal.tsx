@@ -1,6 +1,7 @@
-import { cloneElement, useLayoutEffect, useState, type CSSProperties, type ReactElement } from 'react';
+import { cloneElement, useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 import { desktop } from '../lib/transport';
+import { NativePanelHeightContext } from '../lib/native-panel-height';
 
 type Attributes = Record<string, unknown> & { style?: CSSProperties };
 type Props = Attributes & { enabled: boolean; viewId?: string; side: 'left' | 'right'; children: ReactElement<Attributes> };
@@ -9,6 +10,12 @@ type Props = Attributes & { enabled: boolean; viewId?: string; side: 'left' | 'r
  * only hosts its DOM above a WebContentsView / native HWND; it runs no App. */
 export function NativeSidebarPortal({ enabled, viewId, side, children, ...presence }: Props) {
   const [container, setContainer] = useState<HTMLElement>();
+  const anchor = useRef<HTMLDivElement>(null), height = useRef<number | undefined>(undefined);
+  const syncHeight = useCallback((value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return;
+    height.current = value;
+    anchor.current?.style.setProperty('--adaptive-panel-height', value.toFixed(3) + 'px');
+  }, []);
   useLayoutEffect(() => {
     if (container) container.ownerDocument.documentElement.style.setProperty('--reader-panel-presence-duration', String(presence.style?.['--motion-duration' as keyof CSSProperties] ?? '220ms'));
   }, [container, presence.style]);
@@ -43,5 +50,5 @@ export function NativeSidebarPortal({ enabled, viewId, side, children, ...presen
   if (!desktop || !enabled || !viewId) return element;
   // Static parent geometry avoids applying the presence transform twice. The
   // actual DOM in the popup keeps its animation, inert state and React events.
-  return <><div className={String(children.props.className ?? '') + ' reader-panel-anchor'} data-side={side} data-panel-anchor="true" data-panel-source="native" data-panel-view={viewId} data-motion-phase={presence['data-motion-phase'] as string | undefined} aria-hidden="true" style={{ ...style, visibility: 'hidden', pointerEvents: 'none', transform: 'none', translate: 'none', scale: '1', transition: 'none' }} />{container && createPortal(cloneElement(element, { className: String(element.props.className ?? '') + ' reader-panel-ported' }), container)}</>;
+  return <><div ref={anchor} className={String(children.props.className ?? '') + ' reader-panel-anchor'} data-side={side} data-panel-anchor="true" data-panel-adaptive="true" data-panel-source="native" data-panel-view={viewId} data-motion-phase={presence['data-motion-phase'] as string | undefined} aria-hidden="true" style={{ ...style, '--adaptive-panel-height': (height.current ?? Math.min(420, Math.max(160, window.innerHeight - 72))) + 'px', visibility: 'hidden', pointerEvents: 'none', transform: 'none', translate: 'none', scale: '1', transition: 'none' } as CSSProperties} />{container && <NativePanelHeightContext.Provider value={syncHeight}>{createPortal(cloneElement(element, { className: String(element.props.className ?? '') + ' reader-panel-ported' }), container)}</NativePanelHeightContext.Provider>}</>;
 }

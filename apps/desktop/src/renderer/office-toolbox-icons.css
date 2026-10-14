@@ -1,0 +1,42 @@
+/* Office commands share the quiet, lightweight material of their sidebar. */
+.native-office-tools .native-office-command-grid { gap:6px; }
+.native-office-tools .native-office-tool {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  flex:0 0 32px;
+  width:32px;
+  min-width:32px;
+  height:32px;
+  padding:0;
+  border:1px solid transparent;
+  border-radius:9px;
+  background:transparent;
+  color:inherit;
+  cursor:pointer;
+  transition:background-color 160ms ease,color 160ms ease,border-color 160ms ease;
+}
+.native-office-tools .native-office-tool:not(:disabled):hover {
+  border-color:color-mix(in srgb,var(--line,#cbd3de) 55%,transparent);
+  background:var(--surface-hover,rgba(130,150,165,.12));
+}
+.native-office-tools .native-office-tool[aria-pressed=true] {
+  color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 12%,transparent);
+  border-color:color-mix(in srgb,var(--accent) 22%,transparent);
+}
+.native-office-tools .native-office-tool[aria-pressed=mixed] {
+  border:1px dashed color-mix(in srgb,var(--accent) 45%,var(--line));
+}
+.native-office-tool-glyph { position:relative; display:flex; align-items:center; justify-content:center; width:20px; height:20px; }
+.native-office-tool-glyph[data-compound=true] > svg:first-child { transform:translate(-1.5px,-1.5px); }
+.native-office-tool-glyph .native-office-tool-badge { position:absolute; right:-1px; bottom:-1px; stroke-width:2.5; }
+.native-office-tools .native-style-booleans { gap:5px; }
+.native-office-tools .native-style-booleans .native-office-tool { width:32px; padding:0; }
+.native-office-tools .native-style-actions { gap:5px; }
+.native-office-tools .native-office-command-detail > .native-office-tool { align-self:flex-start; }
+:root[data-motion=off] .native-office-tools .native-office-tool,
+:root[data-motion=reduced] .native-office-tools .native-office-tool { transition:none; }
+@media (prefers-reduced-motion:reduce) {
+  .native-office-tools .native-office-tool { transition:none; }
+}

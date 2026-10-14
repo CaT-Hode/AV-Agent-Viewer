@@ -6,6 +6,8 @@ import type { NativeOfficeAppearance } from '../../../../packages/office-runtime
 import type { NativeOfficeDriver, NativeOfficeState, NativeOfficeFormat, NativeOfficeNavigateTarget, NativeOfficeExportFormat, Rect, NativeOfficeQuery, NativeOfficeExecuteRequest, BrowserAction } from '../../../../packages/contracts/src/index';
 import type { ViewerCore } from '../../../../packages/document-core/src/index';
 import type { NativeBackdropSource } from './web-toolbar';
+import { OFFICE_SURFACE_METHODS, isOfficeSurfaceState, type OfficeSurfaceState } from '../../../../packages/contracts/src/office-surface';
+import { validateOfficeSurfaceRequest } from '../../../../packages/office-runtime/src/surface-protocol';
 
 type Layout = { owner: BrowserWindow; bounds: Rect; visible: boolean };
 /** Only the trusted main process translates document views into native HWNDs. */
@@ -26,7 +28,13 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   private timer: ReturnType<typeof setInterval>;
   get exited() { return this.workerExited; }
   constructor(private core: ViewerCore, appRoot: string, dataDir: string, private windowFor: (viewId: string) => BrowserWindow | undefined, private changed: (owner: BrowserWindow, viewId: string) => void, appearance?: NativeOfficeAppearance) {
-    this.runtime = new NativeOfficeRuntime({ appRoot, dataDir, appearance });
+    this.runtime = new NativeOfficeRuntime({ appRoot, dataDir, appearance, backend: 'kit' });
+    this.runtime.on('surface', (event: any) => {
+      const viewId = event.viewId ?? event.state?.viewId, entry = this.views.get(viewId), owner = entry?.layout?.owner;
+      if (!entry || !owner || owner.isDestroyed() || owner.webContents.isDestroyed() || (event.sessionId ?? event.state?.sessionId) !== entry.sessionId) return;
+      owner.webContents.send('agentviewer:toolbar', { ...event, type: undefined });
+      if (event.action === 'office-surface-state' && isOfficeSurfaceState(event.state)) this.accept(event.state);
+    });
     this.runtime.on('changed', () => { void this.poll(); });
     this.runtime.on('selection', () => { void this.poll(); });
     this.runtime.on('viewport', () => { void this.poll(); });
@@ -62,6 +70,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     if (state.viewId && entry?.layout?.visible && owner && !owner.isDestroyed() && !owner.webContents.isDestroyed()) {
       const key=JSON.stringify(state), previous=this.published.get(state.viewId), now=Date.now();
       if(previous?.key!==key)owner.webContents.send('agentviewer:toolbar',{action:'office-state',state});
+      if(previous?.key!==key && isOfficeSurfaceState(state)) owner.webContents.send('agentviewer:toolbar',{action:'office-surface-state',state});
       if(!previous||now-previous.heartbeatAt>=900)owner.webContents.send('agentviewer:toolbar',{action:'office-state-heartbeat',viewId:state.viewId});
       this.published.set(state.viewId,{key,heartbeatAt:!previous||now-previous.heartbeatAt>=900?now:previous.heartbeatAt});
     }
@@ -75,6 +84,33 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     return state;
   }
   async state(sessionId: string, viewId?: string) { const state = await this.runtime.state(sessionId, viewId); this.accept(state); return state; }
+  async surfaceRequest(owner: BrowserWindow, method: string, raw: unknown) {
+    const value = validateOfficeSurfaceRequest(method, raw) as any;
+    const view = this.core.getView(value.viewId);
+    if (this.windowFor(view.id) !== owner || !['docx','pptx','xlsx'].includes(this.core.getDocument(view.documentId).info.format)) throw new Error('AUTH_SCOPE_DENIED');
+    let entry = this.views.get(view.id);
+    if (!entry) { await this.core.openNativeOffice(view.id); entry = this.views.get(view.id); }
+    if (!entry || entry.state?.status === 'failed') throw new Error('NATIVE_SESSION_EXPIRED');
+    if (value.sessionId && (value.sessionId !== entry.sessionId || value.engineEpoch !== entry.state?.engineEpoch)) throw new Error('NATIVE_SESSION_EXPIRED');
+    let result: any;
+    if (method === OFFICE_SURFACE_METHODS.state) result = await this.state(entry.sessionId, view.id);
+    else if (method === OFFICE_SURFACE_METHODS.layout) {
+      const b = value.boundsCss, content = owner.getContentBounds();
+      if (b.x < 0 || b.y < 0 || b.width < 1 || b.height < 1 || b.x+b.width > content.width+2 || b.y+b.height > content.height+2) throw new Error('INVALID_NATIVE_LAYOUT');
+      const layout = { owner, bounds: b, visible: value.visible }; this.layouts.set(view.id, layout); entry.layout = layout;
+      result = await this.runtime.surfaceLayout(entry.sessionId, value);
+    } else if (method === OFFICE_SURFACE_METHODS.tiles) result = await this.runtime.surfaceTiles(entry.sessionId, value);
+    else if (method === OFFICE_SURFACE_METHODS.input) result = await this.runtime.surfaceInput(entry.sessionId, value);
+    else if (method === OFFICE_SURFACE_METHODS.windowPaint) result = await this.runtime.surfaceWindowPaint(value);
+    else if (method === OFFICE_SURFACE_METHODS.windowInput) result = await this.runtime.surfaceWindowInput(value);
+    else if (method === OFFICE_SURFACE_METHODS.windowClose) result = await this.runtime.surfaceWindowClose(value);
+    else if (method === OFFICE_SURFACE_METHODS.windowClipboard) result = await this.runtime.surfaceWindowClipboard(value);
+    else throw new Error('UNKNOWN_OFFICE_SURFACE_METHOD');
+    const state = result.state ?? result;
+    if (!isOfficeSurfaceState(state) || state.viewId !== view.id || state.documentId !== view.documentId || state.sessionId !== entry.sessionId) throw new Error('INVALID_OFFICE_SURFACE_REPLY');
+    this.accept(state); this.core.updateNativeOfficeContext(state);
+    return result;
+  }
   snapshot(sessionId:string) { return this.runtime.snapshot(sessionId); }
   commands(sessionId:string,viewId:string) { return this.runtime.commands(sessionId,viewId); }
   commandStatus(sessionId:string,viewId:string,commands:string[]) { return Promise.all(commands.map(command => this.runtime.commandStatus(sessionId,viewId,command))); }
@@ -158,7 +194,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     }
   }
   source(viewId:string) { const entry=this.views.get(viewId),layout=this.layouts.get(viewId);if(!entry?.state||entry.state.status==='failed'||!layout?.visible)return; return {entry,layout}; }
-  backdrop(viewId:string):NativeBackdropSource|undefined {const source=this.source(viewId);if(!source)return;const {entry,layout}=source,state=entry.state!;
+  backdrop(viewId:string):NativeBackdropSource|undefined {const source=this.source(viewId);if(!source||isOfficeSurfaceState(source.entry.state))return;const {entry,layout}=source,state=entry.state!;
     const key=JSON.stringify([state.engineRevision,state.selectionEpoch,state.visibleText,state.viewport,layout.bounds]);let version=this.versions.get(viewId);if(version?.key!==key){version={key,version:(version?.version??0)+1};this.versions.set(viewId,version);}
     const revision=state.engineRevision,epoch=state.engineEpoch,sessionId=entry.sessionId;
     return {bounds:{...layout.bounds},navigationId:epoch+':'+sessionId+':'+viewId,layoutRevision:version!.version,revision,sourceId:state.nativePid??0,capture:async rect=>{const result=await this.capture(viewId,rect);if(result.metadata.engineEpoch!==epoch||result.metadata.engineRevision!==revision||result.metadata.sessionId!==sessionId){void this.poll();throw new Error('STALE_NATIVE_CAPTURE');}return {image:result.image,rect:result.metadata.rect};},attach:window=>this.overlayOwner(viewId,window)};

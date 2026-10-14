@@ -31,9 +31,9 @@ export interface NativeOfficeState {
   /** Content has changed since the last validated application save. A native temporary save must not clear this history. */
   unsavedContentChanges?: boolean;
   nativeHwnd?: string; nativePid?: number; visible?: boolean; focused?: boolean; zoom?: number;
-  viewport?: { width: number; height: number; deviceScaleFactor: number; bounds: Rect; screenBounds: Rect; visibleRange?: string; layoutRevision?: number };
+  viewport?: { width: number; height: number; deviceScaleFactor: number; bounds: Rect; screenBounds: Rect; visibleRange?: string; layoutRevision?: number; scrollX?: number; scrollY?: number };
   selection?: { kind: 'none' | 'text' | 'cells' | 'objects'; text: string; rect?: Rect; locator?: Locator; pageIndex?: number; sheetIndex?: number; sheetName?: string; range?: string; slideIndex?: number; objectNames?: string[] };
-  visibleText?: string; visibleTextTruncated?: boolean; visibleTextReady?: boolean; visibleTextSource?: 'actual-a11y' | 'unavailable';
+  visibleText?: string; visibleTextTruncated?: boolean; visibleTextReady?: boolean; visibleTextSource?: 'actual-a11y' | 'actual-model-projection' | 'unavailable';
   undo?: { canUndo: boolean; canRedo: boolean; title?: string; count: number; token?: string };
   nativeUi?: { menus: boolean; toolbars: boolean; statusbar: boolean; sidebar?: boolean; deckId?: string };
   supportedOperations?: string[]; selectionActions?: string[]; warnings?: string[];
