@@ -1,6 +1,55 @@
 .embedded-office-document { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+/* Calc owns one bounded sheet frame. The renderer supplies the actual safe
+   pane edges; grid and sheet tabs share its width. The formula editor belongs
+   to the shared navigation, so no duplicate header consumes sheet height. */
+:root[data-theme] .embedded-office-document.embedded-office-xlsx {
+  top:var(--office-sheet-top-inset,86px);
+  right:var(--office-sheet-right-inset,12px);
+  bottom:12px;
+  left:var(--office-sheet-left-inset,12px);
+  width:auto;
+  height:auto;
+  min-width:0;
+  min-height:0;
+  border-radius:18px;
+  background:var(--document-paper,#fff);
+  outline:1px solid color-mix(in srgb,var(--document-paper-ink,#24303b) 12%,transparent);
+  box-shadow:none;
+  overflow:hidden;
+}
+:root[data-theme] .embedded-office-xlsx > .embedded-office-content {
+  margin:0;
+  min-width:0;
+  min-height:0;
+  border-radius:0;
+  overflow:auto;
+  scrollbar-gutter:stable;
+  background:var(--document-paper,#fff);
+}
+:root[data-theme] .embedded-office-xlsx > .embedded-office-sheet-tabs {
+  margin-inline:0;
+  padding-inline:8px;
+  border-top:1px solid var(--document-paper-rule,#dfe3e7);
+  border-radius:0;
+  background:var(--document-paper-soft,#f6f7f8);
+  color:var(--document-paper-ink,#24303b);
+}
+:root[data-theme] .embedded-office-xlsx > .embedded-office-sheet-tabs button {
+  color:var(--document-paper-muted,#52606d);
+}
+:root[data-theme] .embedded-office-xlsx > .embedded-office-sheet-tabs button[aria-selected="true"] {
+  color:var(--document-paper-ink,#24303b);
+  background:color-mix(in srgb,var(--document-paper-ink,#24303b) 8%,var(--document-paper,#fff));
+}
 .embedded-office-content { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 0 !important; overflow: auto; background: transparent; overscroll-behavior: contain; }
 .embedded-office-pptx > .embedded-office-content { margin-inline: var(--office-presentation-left-inset,12px) var(--office-presentation-right-inset,12px); margin-top: var(--office-presentation-top-inset,84px); margin-bottom:12px; }
+.embedded-office-pptx[data-office-fit-mode="manual"] > .embedded-office-content { margin-inline:12px; margin-bottom:24px; }
+.embedded-office-pptx[data-office-fit-mode="manual"] > .embedded-office-content::-webkit-scrollbar:horizontal { height:0; }
+.office-horizontal-scrollbar { position:absolute; bottom:3px; left:var(--office-controls-left-inset,12px); right:var(--office-controls-right-inset,12px); height:14px; border-radius:7px; background:color-mix(in srgb,var(--text-secondary) 9%,transparent); touch-action:none; z-index:5; outline:none; }
+.office-horizontal-scrollbar-thumb { position:absolute; top:3px; height:8px; min-width:28px; border-radius:4px; background:color-mix(in srgb,var(--text-secondary) 45%,transparent); }
+.office-horizontal-scrollbar:is(:hover,:focus-visible) .office-horizontal-scrollbar-thumb { background:color-mix(in srgb,var(--text-primary) 65%,transparent); }
+.office-horizontal-scrollbar[aria-disabled="true"] { opacity:.28; }
+.office-horizontal-scrollbar:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .embedded-office-stage { position: relative; min-width: 100%; min-height: 100%; isolation: isolate; }
 .embedded-office-paper-base { position: absolute; z-index: 0; background: var(--document-paper, #fff); pointer-events: none; }
 .embedded-office-canvas { position: sticky; top: 0; left: 0; z-index: 1; display: block; pointer-events: none; max-width: none; }

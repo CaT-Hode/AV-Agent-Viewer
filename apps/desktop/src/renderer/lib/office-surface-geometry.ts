@@ -2,7 +2,14 @@ import type { Rect } from '../../../../../packages/contracts/src/index';
 import type { OfficeSurfaceState, OfficeSurfaceTileSpec } from '../../../../../packages/contracts/src/office-surface';
 
 export const OFFICE_TWIPS_PER_CSS_PIXEL = 15;
-export type OfficeSurfaceGeometry = { zoom: number; scrollX: number; scrollY: number; offsetX: number; offsetY: number; viewport: Rect };
+export type OfficeSurfaceGeometry = { zoom: number; scrollX: number; scrollY: number; offsetX: number; offsetY: number; viewport: Rect; stageSize?:{width:number;height:number}; safeViewport?:Rect };
+/** A bounded spreadsheet viewport owns its own scrolling. Keep the last cell,
+ * cursor and selection handle away from both native scrollbar edges without
+ * changing the sheet's model extent, populated range or paint coordinates. */
+export function officeSheetCanvasLayout(sheetCss:{width:number;height:number},viewport:{width:number;height:number},gap=12){
+  const offsetX=gap+Math.max(0,(viewport.width-2*gap-sheetCss.width)/2),offsetY=gap;
+  return {offsetX,offsetY,stageSize:{width:Math.max(viewport.width,offsetX+sheetCss.width+gap),height:Math.max(viewport.height,offsetY+sheetCss.height+gap)},safeViewport:{x:gap,y:gap,width:Math.max(1,viewport.width-2*gap),height:Math.max(1,viewport.height-2*gap)}};
+}
 const finite = (n: number) => Number.isFinite(n);
 export function officeCssScale(zoom: number) { if (!finite(zoom) || zoom <= 0) throw new Error('Office 缩放比例无效。'); return zoom / OFFICE_TWIPS_PER_CSS_PIXEL; }
 export function officeDocumentPoint(clientX: number, clientY: number, geometry: OfficeSurfaceGeometry) {

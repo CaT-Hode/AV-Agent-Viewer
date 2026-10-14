@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {officePresentationFit,OfficePresentationFitController} from '../apps/desktop/src/renderer/lib/office-presentation-fit';
+import {officePresentationFit,OfficePresentationFitController,officePresentationManualLayout} from '../apps/desktop/src/renderer/lib/office-presentation-fit';
 const page={width:19200,height:10800};
 test('a landscape or portrait slide fits its real safe viewport without changing its aspect or engine zoom limits',()=>{
   assert.equal(officePresentationFit(page,{width:976,height:616}),.75);
@@ -8,6 +8,15 @@ test('a landscape or portrait slide fits its real safe viewport without changing
   assert.equal(officePresentationFit(page,{width:124,height:616}),.25);
   assert.equal(officePresentationFit({width:15,height:15},{width:976,height:616}),4);
   assert.equal(officePresentationFit(page,{width:NaN,height:616}),undefined);
+});
+test('manual slide scrolling can uncover both pane-covered page edges without narrowing its real viewport',()=>{
+  for(const pageWidth of [320,900,1600,3400]){
+    const viewport={width:1100,height:700},gaps={left:260,right:380},layout=officePresentationManualLayout({width:pageWidth,height:900},viewport,gaps),maximum=layout.stageSize.width-viewport.width;
+    assert.ok(layout.offsetX>=gaps.left,'at scroll zero the left document edge is in the unobstructed lane');
+    assert.ok(layout.offsetX+pageWidth-maximum<=viewport.width-gaps.right,'at maximum scroll the right document edge is in the unobstructed lane');
+    assert.equal(layout.safeViewport.width,viewport.width-gaps.left-gaps.right);assert.ok(maximum>=0);
+    if(pageWidth>layout.safeViewport.width)assert.ok(layout.offsetX-maximum<gaps.left,'intermediate scrolling is allowed underneath a floating pane');
+  }
 });
 test('fit requests wait for their real zoom acknowledgement and height changes do not issue redundant native zooms',()=>{
   const fit=new OfficePresentationFitController();assert.equal(fit.request(page,{width:976,height:616},1),.75);

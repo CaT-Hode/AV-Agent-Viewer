@@ -2,6 +2,7 @@ import { nativeOfficeWorkerSource } from './worker-source';
 import { nativeOfficeStyleSource } from './native-style-source';
 import { nativeOfficeAppearanceSource } from './appearance-source';
 import { officeKitAbiSource } from './kit-abi-source';
+import { officeKitBootstrapSource } from './kit-bootstrap-source';
 
 /** Trusted shared definitions only: never execute the HWND worker's top level. */
 export const officeKitSharedDefinitions = [
@@ -30,6 +31,7 @@ sessions={};epoch=str(uuid.uuid4());quitting=False;output_lock=threading.RLock()
 def emit(value):
     with output_lock:sys.stdout.write(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n');sys.stdout.flush()
 def fail(code,message):raise RuntimeError(code+'|'+message)
+${officeKitBootstrapSource}
 try:
     if config['rpc'].get('host')!='127.0.0.1':fail('OFFICE_KIT_RPC_HOST','Office 私有连接必须在本机。')
     rpc=socket.create_connection(('127.0.0.1',int(config['rpc']['port'])),timeout=15);rpc.settimeout(None);rpc.sendall((json.dumps({'type':'auth','token':config['rpc']['token']})+'\n').encode());config['rpc'].pop('token',None)
@@ -41,7 +43,7 @@ try:
     emit({'type':'diagnostic','code':'OFFICE_KIT_DLL_LOADED'})
     if adapter.av_kit_windows_install()!=0:fail('OFFICE_KIT_NATIVE_ADAPTER_UNAVAILABLE','Office 本机渲染适配器与引擎版本不匹配。')
     emit({'type':'diagnostic','code':'OFFICE_KIT_ADAPTER_INSTALLED'})
-    profile=pathlib.Path(tempfile.gettempdir())/('av-kit-profile-'+uuid.uuid4().hex[:12]);profile.mkdir();dll.libreofficekit_hook_2.argtypes=[C.c_char_p,C.c_char_p];dll.libreofficekit_hook_2.restype=C.c_void_p;office=dll.libreofficekit_hook_2(str(PROGRAM).encode(),profile.as_uri().encode())
+    bootstrap_context=prepare_bootstrap_profile();profile=bootstrap_context['profile'];dll.libreofficekit_hook_2.argtypes=[C.c_char_p,C.c_char_p];dll.libreofficekit_hook_2.restype=C.c_void_p;office=dll.libreofficekit_hook_2(str(PROGRAM).encode(),profile.as_uri().encode())
     if not office:fail('OFFICE_KIT_INIT_FAILED','Office 内置排版引擎初始化失败。')
     emit({'type':'diagnostic','code':'OFFICE_KIT_HOOK_INITIALIZED'})
 except BaseException as error:
@@ -170,7 +172,7 @@ def kit_callback(session,view):
             elif kind==6:
                 rectangle=parse_rect(text);view['graphicSelection']={'rect':rectangle,'draggable':True,'resizable':True,'rotatable':True} if rectangle else None
             elif kind==7:emit({'type':'application-action','action':'open-url',**event_identity(session,view),'url':text})
-            elif kind==13:view['layoutRevision']+=1;invalidate(session,view)
+            elif kind==13:session['partGeometryGeneration']=session.get('partGeometryGeneration',0)+1;view['layoutRevision']+=1;invalidate(session,view)
             elif kind==17:view['cellCursor']=parse_rect(text)
             elif kind==19:view['formula']=text
             elif kind==18:view['mousePointer']=text
@@ -187,17 +189,33 @@ def kit_callback(session,view):
         except:emit({'type':'diagnostic','code':'OFFICE_KIT_CALLBACK_PAYLOAD'})
     callback_refs.append(callback);return callback
 def parts_state(session):
-    count=doc_call(session,'getParts',I)();output=[]
+    count=doc_call(session,'getParts',I)();key=(session['engineRevision'],session.get('partGeometryGeneration',0),count);cache=session.get('partsProjection')
+    if cache and cache['key']==key:return cache['parts']
+    output=[]
     for index in range(min(count,10000)):
         name=kit_string(doc_call(session,'getPartName',P,I)(index));item={'index':index,'name':name or ('第 '+str(index+1)+' 页')}
         if session['format']=='pptx':
             page=session['doc'].getDrawPages().getByIndex(index);item['sizeTwips']={'width':round(page.Width*1440/2540),'height':round(page.Height*1440/2540)}
         output.append(item)
+    session['partsProjection']={'key':key,'parts':output}
     return output
 def page_rectangles(session):
     text=kit_string(doc_call(session,'getPartPageRectangles',P)())
     return parse_rects(text)
 def project_visible_text(session,view):
+    visible=view.get('visibleTwips')
+    if not visible or not view.get('visible'):view.pop('visibleProjection',None);return '',False,False
+    key=visible_projection_key(session,view);cache=view.get('visibleProjection')
+    if not native_input_pending(session,view) and cache and cache['key']==key:return cache['result']
+    result=read_visible_text(session,view)
+    if result[2] and not native_input_pending(session,view) and key==visible_projection_key(session,view):view['visibleProjection']={'key':key,'result':result}
+    else:view.pop('visibleProjection',None)
+    return result
+
+def visible_projection_key(session,view):
+    return (session['engineRevision'],view.get('partIndex',0),view.get('eventSequence',0),view.get('zoom',1),view.get('deviceScaleFactor',1),tuple(view.get('visibleTwips',{}).get(k,0) for k in ['x','y','width','height']))
+
+def read_visible_text(session,view):
     visible=view.get('visibleTwips');result=[];truncated=False
     if not visible or not view.get('visible'):return '',False,False
     try:
@@ -251,14 +269,17 @@ def writer_visible_paragraphs(session,view,visible):
         pages=page_rectangles(session)
         if not pages:fail('OFFICE_KIT_SEMANTIC_GEOMETRY_UNAVAILABLE','原生页面几何尚未就绪。')
         if not cache or cache['revision']!=session['engineRevision'] or cache['pages']!=pages:
-            doc_call(session,'setView',None,I)(probe['kitViewId']);cursor=probe['controller'].getViewCursor();paragraphs=native_paragraphs(session['doc'].Text);items=[];factor=1440/2540
+            doc_call(session,'setView',None,I)(probe['kitViewId']);cursor=probe['controller'].getViewCursor();paragraphs=native_paragraphs(session['doc'].Text);items=[];factor=1440/2540;page_styles=session['doc'].StyleFamilies.getByName('PageStyles');style_geometry={}
             for index,paragraph in enumerate(paragraphs[:2000]):
-                cursor.gotoRange(paragraph.getStart(),False);page=max(0,cursor.getPage()-1);start=cursor.getPosition();style=session['doc'].StyleFamilies.getByName('PageStyles').getByName(cursor.PageStyleName);left=style.LeftMargin*factor;top=style.TopMargin*factor;height=max(1,float(cursor.CharHeight)*20)
+                cursor.gotoRange(paragraph.getStart(),False);page=max(0,cursor.getPage()-1);start=cursor.getPosition();style_name=cursor.PageStyleName
+                if style_name not in style_geometry:
+                    style=page_styles.getByName(style_name);style_geometry[style_name]={'left':style.LeftMargin*factor,'top':style.TopMargin*factor,'right':style.RightMargin*factor}
+                metrics=style_geometry[style_name];left=metrics['left'];top=metrics['top'];height=max(1,float(cursor.CharHeight)*20)
                 cursor.gotoRange(paragraph.getEnd(),False);end=cursor.getPosition()
                 # Official SwXTextViewCursor::getPosition subtracts the current
                 # page margins and DOCUMENTBORDER from the real char rectangle.
                 # Page geometry supplies the rendered document's border origin.
-                rectangle={'x':pages[0]['x']+left,'y':start.Y*factor+top+pages[0]['y'],'width':max(1,pages[page]['width']-left-style.RightMargin*factor) if page<len(pages) else 1,'height':max(height,(end.Y-start.Y)*factor+height)}
+                rectangle={'x':pages[0]['x']+left,'y':start.Y*factor+top+pages[0]['y'],'width':max(1,pages[page]['width']-left-metrics['right']) if page<len(pages) else 1,'height':max(height,(end.Y-start.Y)*factor+height)}
                 items.append({'rect':rectangle,'text':paragraph.String,'page':page})
             cache={'revision':session['engineRevision'],'pages':pages,'items':items,'truncated':len(paragraphs)>2000};session['paragraphProjection']=cache
         return {'text':[item['text'] for item in cache['items'] if item['text'] and overlaps(item['rect'],visible)],'truncated':cache['truncated']}
@@ -280,11 +301,11 @@ def surface_size(session,view):
 def state(session,view):
     activate(session,view);selected=selection(session,view);update_selection_epoch(session,view,selected);native_dirty=refresh_content_dirtiness(session);size=surface_size(session,view)
     visible,truncated,ready=project_visible_text(session,view);activate(session,view)
-    bounds=view.get('bounds',{'x':0,'y':0,'width':0,'height':0});visibleArea=view.get('visibleTwips',{'x':0,'y':0,'width':0,'height':0});viewport=view.get('viewportCss',{'width':0,'height':0})
+    bounds=view.get('bounds',{'x':0,'y':0,'width':0,'height':0});visibleArea=view.get('visibleTwips',{'x':0,'y':0,'width':0,'height':0});viewport=view.get('viewportCss',{'width':0,'height':0});scrollGeometry=surface_scroll_geometry(session,view);scroll=scrollGeometry['scroll'] if scrollGeometry else {axis:visibleArea[axis]*view.get('zoom',1)/15 for axis in ['x','y']}
     if selected['kind']!='none' and view.get('selectionRects'):
         rectangle=view['selectionRects'][0];factor=view.get('zoom',1)/15;origin=view.get('documentOriginCss',{'x':max(0,(viewport['width']-size['width']*factor)/2)-visibleArea['x']*factor,'y':-visibleArea['y']*factor});selected['rect']={'x':rectangle['x']*factor+origin['x'],'y':rectangle['y']*factor+origin['y'],'width':rectangle['width']*factor,'height':rectangle['height']*factor}
     supported=['office.formatText','office.setTextStyle','word.setBlock','word.setParagraphFormat','word.insertParagraph','word.deleteParagraph','word.insertTable','word.setPageLayout'] if session['format']=='docx' else ['slides.setText','slides.setShapeBounds','slides.setShapeStyle','slides.addTextShape','slides.deleteShape','slides.addSlide','slides.deleteSlide','slides.duplicateSlide','slides.setBackground','slides.setNotes','office.formatText','office.setTextStyle'] if session['format']=='pptx' else ['sheets.setCell','sheets.setRangeValues','sheets.setCellFormat','sheets.setRangeFormat','sheets.mergeCells','sheets.unmergeCells','sheets.insertRows','sheets.deleteRows','sheets.insertColumns','sheets.deleteColumns','sheets.setColumnWidth','sheets.setRowHeight','sheets.addWorksheet','sheets.renameWorksheet','sheets.deleteWorksheet','sheets.setFreeze','sheets.setAutoFilter','sheets.sortRange']
-    result=dict(sessionId=session['sessionId'],documentId=session['documentId'],viewId=view['viewId'],format=session['format'],revision=session['revision'],status='ready',surfaceKind='tiled',engineEpoch=epoch,engineRevision=session['engineRevision'],selectionEpoch=view['selectionEpoch'],dirty=native_dirty,unsavedContentChanges=bool(session['unsavedContentChanges']),supportedOperations=supported,selectionActions=selection_actions(session,view,selected),nativeHwnd='0',nativePid=os.getpid(),nativeGeometry=bool(view.get('layoutReady')),visible=bool(view.get('visible')),focused=bool(view.get('focused')),pendingInput=native_input_pending(session,view),actor=view.get('actor',session.get('actor','human')),zoom=view.get('zoom',1),viewport={'width':viewport['width'],'height':viewport['height'],'deviceScaleFactor':view_scale(view),'bounds':bounds,'screenBounds':bounds,'layoutRevision':view['layoutRevision'],'scrollX':visibleArea['x']*view.get('zoom',1)/15,'scrollY':visibleArea['y']*view.get('zoom',1)/15},selection=selected,visibleText=visible,visibleTextReady=ready,visibleTextSource='actual-model-projection' if ready else 'unavailable',visibleTextTruncated=truncated,undo=undo_state(session),nativeUi={'menus':False,'toolbars':False,'statusbar':False,'sidebar':False},sizeTwips=size,parts=parts_state(session),partIndex=doc_call(session,'getPart',I)(),pages=page_rectangles(session),layoutRevision=view['layoutRevision'],renderGeneration=view['renderGeneration'],eventSequence=view['eventSequence'],selectionRects=view.get('selectionRects',[]),windows=list(view['windows'].values()),warnings=['XLSX_NATIVE_COLUMN_WIDTH_METRICS'] if session['format']=='xlsx' else [])
+    result=dict(sessionId=session['sessionId'],documentId=session['documentId'],viewId=view['viewId'],format=session['format'],revision=session['revision'],status='ready',surfaceKind='tiled',engineEpoch=epoch,engineRevision=session['engineRevision'],selectionEpoch=view['selectionEpoch'],dirty=native_dirty,unsavedContentChanges=bool(session['unsavedContentChanges']),supportedOperations=supported,selectionActions=selection_actions(session,view,selected),nativeHwnd='0',nativePid=os.getpid(),nativeGeometry=bool(view.get('layoutReady')),visible=bool(view.get('visible')),focused=bool(view.get('focused')),pendingInput=native_input_pending(session,view),actor=view.get('actor',session.get('actor','human')),zoom=view.get('zoom',1),viewport={'width':viewport['width'],'height':viewport['height'],'deviceScaleFactor':view_scale(view),'bounds':bounds,'screenBounds':bounds,'layoutRevision':view['layoutRevision'],'scrollX':scroll['x'],'scrollY':scroll['y']},selection=selected,visibleText=visible,visibleTextReady=ready,visibleTextSource='actual-model-projection' if ready else 'unavailable',visibleTextTruncated=truncated,undo=undo_state(session),nativeUi={'menus':False,'toolbars':False,'statusbar':False,'sidebar':False},sizeTwips=size,parts=parts_state(session),partIndex=doc_call(session,'getPart',I)(),pages=page_rectangles(session),layoutRevision=view['layoutRevision'],renderGeneration=view['renderGeneration'],eventSequence=view['eventSequence'],selectionRects=view.get('selectionRects',[]),windows=list(view['windows'].values()),warnings=['XLSX_NATIVE_COLUMN_WIDTH_METRICS'] if session['format']=='xlsx' else [])
     for name in ['caret','caretVisible','selectionStart','selectionEnd','graphicSelection','cellCursor','cellSelection','cellAutoFill','mousePointer','focusedParagraph','formula']:
         if view.get(name) is not None:result[name]=view[name]
     return result
@@ -303,6 +324,18 @@ def layout_view(view,args):
         if origin is not None:
             if not all(isinstance(origin.get(k),(int,float)) and not isinstance(origin[k],bool) and math.isfinite(origin[k]) for k in ['x','y']):fail('INVALID_OFFICE_SURFACE_LAYOUT','Office 内容原点无效。')
             view['documentOriginCss']={'x':float(origin['x']),'y':float(origin['y'])}
+        geometry_names=['canvasOffsetCss','scrollCss','scrollExtentCss','safeViewportCss'];geometry_count=sum(name in args for name in geometry_names)
+        if geometry_count not in [0,len(geometry_names)]:fail('INVALID_OFFICE_SURFACE_LAYOUT','Office 实际滚动几何不完整。')
+        if geometry_count:
+            geometry={name:dict(args[name]) for name in geometry_names}
+            if not all(isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>=0 for item in geometry.values() for value in item.values()):fail('INVALID_OFFICE_SURFACE_LAYOUT','Office 实际滚动几何无效。')
+            for axis in ['x','y']:
+                if geometry['scrollCss'][axis]>geometry['scrollExtentCss'][axis]+1 or abs(geometry['canvasOffsetCss'][axis]-geometry['scrollCss'][axis]-view['documentOriginCss'][axis])>.5:fail('INVALID_OFFICE_SURFACE_LAYOUT','Office 实际滚动与内容原点不一致。')
+            safe=geometry['safeViewportCss']
+            if safe['width']<=0 or safe['height']<=0 or safe['x']+safe['width']>viewport['width']+1 or safe['y']+safe['height']>viewport['height']+1:fail('INVALID_OFFICE_SURFACE_LAYOUT','Office 安全阅读视口无效。')
+            view.update(geometry);view['scrollGeometryPartIndex']=part
+        else:
+            for name in geometry_names+['scrollGeometryPartIndex']:view.pop(name,None)
         pixelWidth=max(1,round(viewport['width']*density));pixelHeight=max(1,round(viewport['height']*density));twipWidth=max(1,round(viewport['width']*15/zoom));twipHeight=max(1,round(viewport['height']*15/zoom))
         doc_call(session,'setClientZoom',None,I,I,I,I)(pixelWidth,pixelHeight,twipWidth,twipHeight);doc_call(session,'setClientVisibleArea',None,I,I,I,I)(*(round(rectangle[k]) for k in ['x','y','width','height']))
     else:
@@ -454,10 +487,10 @@ def open_session(args):
     existing=next((s for s in sessions.values() if s['documentId']==args['documentId']),None)
     if existing:
         if existing['sessionId']!=args['sessionId']:fail('NATIVE_DUPLICATE_WRITER','此文档已经由另一 Office 会话编辑。')
-        if args['viewId'] in existing['views']:view=existing['views'][args['viewId']];layout_view(view,args);return state(existing,view)
+        if args['viewId'] in existing['views']:view=existing['views'][args['viewId']];layout_view(view,args);return view
         previous=model_controllers(existing['doc']);identifier=doc_call(existing,'createView',I)();new=[c for c in model_controllers(existing['doc']) if all(c!=p for p in previous)]
         if len(new)!=1:fail('OFFICE_KIT_VIEW_UNAVAILABLE','Office 没有创建独立的同模型视图。')
-        view=attach_kit_view(existing,new[0],args,identifier);return state(existing,view)
+        view=attach_kit_view(existing,new[0],args,identifier);return view
     format=args['format']
     if format not in ['docx','xlsx','pptx']:fail('NATIVE_FORMAT_UNSUPPORTED','Office 文档格式不受支持。')
     data=base64.b64decode(args['bytes'],validate=True)
@@ -476,7 +509,7 @@ def open_session(args):
     sessions[session['sessionId']]=session;listener=Modified(session);session['modifyListener']=listener;doc.addModifyListener(listener)
     events=DocumentEvents(session);session['documentEvents']=events;doc.addDocumentEventListener(events)
     identifier=doc_call(session,'getView',I)();view=attach_kit_view(session,doc.getCurrentController(),args,identifier)
-    return state(session,view)
+    return view
 def close_session(session,discard=False):
     if not discard and any(state(session,view)['pendingInput'] for view in session['views'].values()):fail('NATIVE_PENDING_INPUT','Office 文档仍有未提交的实际编辑输入。')
     if refresh_content_dirtiness(session) and not discard:fail('NATIVE_UNSAVED_CHANGES','请先保存或建立恢复快照，再关闭 Office 文档。')
@@ -552,10 +585,31 @@ def paint_window(session,view,args):
 
 const lifecycle = String.raw`
 def surface_origin_css(session,view,visible):
+    if view.get('scrollGeometryPartIndex')==view.get('partIndex',0) and 'canvasOffsetCss' in view and 'scrollCss' in view:
+        return {axis:view['canvasOffsetCss'][axis]-view['scrollCss'][axis] for axis in ['x','y']}
     size=surface_size(session,view);scale=view.get('zoom',1)/15;viewport=view['viewportCss']
     # Match the DOM canvas origin: all formats centre horizontally; only
     # Impress centres a page that is shorter than its real safe viewport.
     return {'x':max(0,(viewport['width']-size['width']*scale)/2)-visible['x']*scale,'y':(max(0,(viewport['height']-size['height']*scale)/2) if session['format']=='pptx' else 0)-visible['y']*scale}
+
+def surface_scroll_geometry(session,view):
+    if view.get('scrollGeometryPartIndex')!=view.get('partIndex',0) or not all(name in view for name in ['canvasOffsetCss','scrollCss','scrollExtentCss','safeViewportCss']):return None
+    extent=dict(view['scrollExtentCss'])
+    if session['format']=='xlsx':
+        # A newly revealed real cell grows only the view spacer. Preserve its
+        # actual DOM origin and existing padding while allowing that extension.
+        size=surface_size(session,view);scale=view.get('zoom',1)/15
+        for axis,dimension in [('x','width'),('y','height')]:extent[axis]=max(extent[axis],view['canvasOffsetCss'][axis]+size[dimension]*scale-view['viewportCss'][dimension],0)
+    return {'offset':view['canvasOffsetCss'],'scroll':view['scrollCss'],'extent':extent,'safe':view['safeViewportCss']}
+
+def update_surface_scroll(session,view,scroll):
+    scale=view.get('zoom',1)/15;size=surface_size(session,view);viewport=view['viewportCss'];view['scrollCss']=dict(scroll)
+    origin={axis:view['canvasOffsetCss'][axis]-scroll[axis] for axis in ['x','y']};visible={}
+    for axis,dimension in [('x','width'),('y','height')]:
+        start=max(0,min(size[dimension],-origin[axis]/scale));end=max(start,min(size[dimension],(viewport[dimension]-origin[axis])/scale));visible[axis]=start;visible[dimension]=end-start
+    view['documentOriginCss']=origin;view['visibleTwips']=visible;view['layoutRevision']+=1
+    doc_call(session,'setClientVisibleArea',None,I,I,I,I)(*(round(visible[k]) for k in ['x','y','width','height']))
+    emit({'type':'surface','action':'office-surface-scroll',**event_identity(session,view),'partIndex':view.get('partIndex',0),'layoutRevision':view['layoutRevision'],'rectTwips':visible,'scrollCss':dict(scroll)})
 
 def native_input(session,view,args):
     expected(session,view,args);action=args['action'];kind=action['kind'];mod={k:k in action.get('modifiers',[]) for k in ['shift','control','alt','meta']}
@@ -581,9 +635,13 @@ def native_input(session,view,args):
             for index in range(1,steps+1):post_input_event(session,view,{**event,'phase':'move','pointTwips':{k:start[k]+(end[k]-start[k])*index/steps for k in ['x','y']}})
             post_input_event(session,view,{**event,'phase':'up','pointTwips':end})
         elif kind=='scroll':
-            point(action);visible=dict(view['visibleTwips']);size=surface_size(session,view);visible['x']=max(0,min(size['width']-visible['width'],visible['x']+action.get('deltaX',0)*15/view.get('zoom',1)));visible['y']=max(0,min(size['height']-visible['height'],visible['y']+action.get('deltaY',0)*15/view.get('zoom',1)));view['visibleTwips']=visible;view['layoutRevision']+=1
-            view['documentOriginCss']=surface_origin_css(session,view,visible)
-            doc_call(session,'setClientVisibleArea',None,I,I,I,I)(*(round(visible[k]) for k in ['x','y','width','height']));emit({'type':'surface','action':'office-surface-scroll',**event_identity(session,view),'partIndex':view.get('partIndex',0),'layoutRevision':view['layoutRevision'],'rectTwips':visible,'scrollCss':{'x':visible['x']*view.get('zoom',1)/15,'y':visible['y']*view.get('zoom',1)/15}})
+            point(action);geometry=surface_scroll_geometry(session,view)
+            if geometry:
+                scroll={axis:max(0,min(geometry['extent'][axis],geometry['scroll'][axis]+action.get('delta'+axis.upper(),0))) for axis in ['x','y']};update_surface_scroll(session,view,scroll)
+            else:
+                visible=dict(view['visibleTwips']);size=surface_size(session,view);visible['x']=max(0,min(size['width']-visible['width'],visible['x']+action.get('deltaX',0)*15/view.get('zoom',1)));visible['y']=max(0,min(size['height']-visible['height'],visible['y']+action.get('deltaY',0)*15/view.get('zoom',1)));view['visibleTwips']=visible;view['layoutRevision']+=1
+                view['documentOriginCss']=surface_origin_css(session,view,visible)
+                doc_call(session,'setClientVisibleArea',None,I,I,I,I)(*(round(visible[k]) for k in ['x','y','width','height']));emit({'type':'surface','action':'office-surface-scroll',**event_identity(session,view),'partIndex':view.get('partIndex',0),'layoutRevision':view['layoutRevision'],'rectTwips':visible,'scrollCss':{'x':visible['x']*view.get('zoom',1)/15,'y':visible['y']*view.get('zoom',1)/15}})
         else:fail('INVALID_NATIVE_INPUT','Office 输入动作不受支持。')
         yield
         view['actor']=actor;return {'state':state(session,view)}
@@ -594,6 +652,17 @@ def reveal_native_target(session,view,rectangle):
     if session['format']=='xlsx':
         extent=view.setdefault('sheetExtents',{}).setdefault(view.get('partIndex',0),{'width':0,'height':0})
         for axis,dimension in [('x','width'),('y','height')]:extent[dimension]=max(extent[dimension],rectangle[axis]+rectangle[dimension]+24/scale)
+    geometry=surface_scroll_geometry(session,view)
+    if geometry:
+        scroll=dict(geometry['scroll']);safe=geometry['safe']
+        for axis,dimension in [('x','width'),('y','height')]:
+            margin=min(24,safe[dimension]/6);start=geometry['offset'][axis]+rectangle[axis]*scale;end=start+rectangle[dimension]*scale
+            if rectangle[dimension]*scale+2*margin>safe[dimension] or start-scroll[axis]<safe[axis]+margin:position=start-safe[axis]-margin
+            elif end-scroll[axis]>safe[axis]+safe[dimension]-margin:position=end-safe[axis]-safe[dimension]+margin
+            else:position=scroll[axis]
+            scroll[axis]=max(0,min(geometry['extent'][axis],position))
+        if any(abs(scroll[axis]-geometry['scroll'][axis])>=.5 for axis in ['x','y']):update_surface_scroll(session,view,scroll)
+        return
     size=surface_size(session,view)
     original={'x':visible['x'],'y':visible['y']}
     for axis,extent in [('x','width'),('y','height')]:
@@ -668,13 +737,20 @@ def execute_request(session,view,args,identifier):
 def handle_request(request):
     method=request.get('method');args=request.get('args',{});identifier=request.get('id')
     if method=='ping':return {'engineEpoch':epoch,'sessions':len(sessions),'surfaceKind':'tiled'}
+    if method=='initializeBootstrapSeed':
+        try:publish_docless_bootstrap_seed(bootstrap_context)
+        except (OSError,ValueError,TypeError,KeyError):emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_CACHE_UNAVAILABLE'})
+        return None
+    if method=='bootstrapSeed':
+        if sessions or desktop.getComponents().createEnumeration().hasMoreElements() or not bootstrap_context.get('ready'):fail('OFFICE_BOOTSTRAP_SEED_UNAVAILABLE','仅能导出未加载任何文档的内置初始化缓存。')
+        return {'directory':str(bootstrap_context['seedDirectory']),'manifest':bootstrap_context['manifest']}
     if method=='appearance':
         result=apply_native_appearance(args)
         for session in sessions.values():
             for view in session['views'].values():invalidate(session,view)
         return result
     if method=='open':
-        result=open_session(args);yield;return state(sessions[args['sessionId']],sessions[args['sessionId']]['views'][args['viewId']])
+        open_session(args);yield;return state(sessions[args['sessionId']],sessions[args['sessionId']]['views'][args['viewId']])
     if method=='shutdown':
         for session in list(sessions.values()):close_session(session,args.get('discard',False))
         global quitting;quitting=True;return {'closed':True}
@@ -779,6 +855,7 @@ try:
     office_call('setOptionalFeatures',None,C.c_ulonglong)(1<<2)
     ctx=uno.getComponentContext();sm=ctx.ServiceManager;desktop=sm.createInstanceWithContext('com.sun.star.frame.Desktop',ctx);dispatcher=sm.createInstanceWithContext('com.sun.star.frame.DispatchHelper',ctx);transformer=sm.createInstanceWithContext('com.sun.star.util.URLTransformer',ctx);async_service=sm.createInstanceWithContext('com.sun.star.awt.AsyncCallback',ctx)
     verify_shared_globals();pump=RpcPump()
+    request_queue.put({'id':'initial-bootstrap','method':'initializeBootstrapSeed','args':{}})
     request_queue.put({'id':'initial-appearance','method':'appearance','args':config.get('appearance',{'theme':'light','canvasColor':0xf7f5f2})});async_service.addCallback(pump,None)
     emit({'type':'ready','engineEpoch':epoch,'engine':'LibreOfficeKit','surfaceKind':'tiled','workerPid':os.getpid(),'officeClassSize':abi_table(office,OfficeTable).nSize,'documentClassSize':C.sizeof(DocumentTable)})
     threading.Thread(target=receive_rpc,daemon=True).start();shutdown_event.wait()

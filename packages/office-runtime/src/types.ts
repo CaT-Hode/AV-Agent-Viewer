@@ -91,6 +91,8 @@ export interface NativeOfficeRuntimeOptions {
   /** Tiled engine owns the LibreOffice core DLL and exposes no Office window. */
   backend?: 'window' | 'kit';
   adapterPath?: string;
+  /** App-provided docless registration seed; never a user Office profile. */
+  bootstrapSeedPath?: string;
 }
 export interface NativeOfficeEvent { type: 'changed' | 'selection' | 'closed' | 'diagnostic'; sessionId?: string; engineRevision?: number; code?: string }
 

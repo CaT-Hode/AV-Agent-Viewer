@@ -27,7 +27,8 @@
     "engines:verify": "node scripts/verify-engines.mjs",
     "engines:prepare": "node scripts/prepare-engines.mjs",
     "engines:stage": "node scripts/stage-engines.mjs",
-    "package:portable": "npm run build && npm run engines:prepare && npm run engines:stage && electron-builder --win --x64 --dir --publish never",
+    "engines:bootstrap": "tsx scripts/generate-office-bootstrap-seed.ts",
+    "package:portable": "npm run build && npm run engines:prepare && npm run engines:stage && npm run engines:bootstrap && electron-builder --win --x64 --dir --publish never",
     "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1",
     "mcp": "tsx apps/local-service/src/mcp.ts",
     "cli": "tsx packages/sdk/src/cli.ts"

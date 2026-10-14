@@ -41,6 +41,12 @@ export type OfficeSurfaceLayoutRequest = {
   viewportCss: { width: number; height: number };
   /** Document (0,0) inside the viewport, including centered paper and real scroll offsets. */
   documentOriginCss: { x: number; y: number };
+  /** Actual DOM geometry, supplied together. Clipped visibleTwips cannot represent padded scrolling. */
+  canvasOffsetCss?: { x: number; y: number };
+  scrollCss?: { x: number; y: number };
+  scrollExtentCss?: { x: number; y: number };
+  /** Viewport-local region not occluded by floating tools; native reveal uses this region. */
+  safeViewportCss?: Rect;
   /** The real DOM scroll viewport, in the owning renderer's CSS coordinates. */
   boundsCss: Rect;
   zoom: number;

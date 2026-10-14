@@ -20,9 +20,22 @@ const event = z.discriminatedUnion('kind', [pointer, ...eventCommon, z.object({ 
 const windowEvent = z.discriminatedUnion('kind', [pointer.omit({ pointTwips: true }).extend({ pointCss: point }).strict(), ...eventCommon]);
 const view = z.object({ viewId: identity }).strict();
 const windowIdentity = view.extend({ sessionId: identity, engineEpoch: identity, windowId: z.number().int().positive(), windowInstanceId: identity }).strict();
+const canvasPoint = z.object({x:z.number().finite().nonnegative().max(100000000),y:z.number().finite().nonnegative().max(100000000)}).strict();
+const surfaceLayout = view.extend({ layoutRevision: revision, partIndex: revision, visibleTwips: rect, documentOriginCss: point, canvasOffsetCss:canvasPoint.optional(), scrollCss:canvasPoint.optional(),scrollExtentCss:canvasPoint.optional(),safeViewportCss:rect.optional(), viewportCss: z.object({ width: positive.max(20000), height: positive.max(20000) }).strict(), boundsCss: rect, zoom: z.number().finite().min(.25).max(4), deviceScaleFactor: positive.max(8), visible: z.boolean(), focused: z.boolean() }).strict().superRefine((value,ctx)=>{
+  const fields=[value.canvasOffsetCss,value.scrollCss,value.scrollExtentCss,value.safeViewportCss],count=fields.filter(field=>field!==undefined).length;
+  const invalid=(message:string)=>ctx.addIssue({code:z.ZodIssueCode.custom,message});
+  if(count!==0&&count!==fields.length){invalid('Actual Office geometry must be provided together.');return;}
+  if(!value.canvasOffsetCss||!value.scrollCss||!value.scrollExtentCss||!value.safeViewportCss)return;
+  for(const axis of ['x','y'] as const){
+    if(value.scrollCss[axis]>value.scrollExtentCss[axis]+1)invalid('Office scroll exceeds its actual extent.');
+    if(Math.abs(value.canvasOffsetCss[axis]-value.scrollCss[axis]-value.documentOriginCss[axis])>.5)invalid('Office origin is inconsistent with actual scroll.');
+  }
+  const safe=value.safeViewportCss;
+  if(safe.x<0||safe.y<0||safe.width<=0||safe.height<=0||safe.x+safe.width>value.viewportCss.width+.5||safe.y+safe.height>value.viewportCss.height+.5)invalid('Office safe viewport lies outside the actual viewport.');
+});
 const schemas = {
   [OFFICE_SURFACE_METHODS.state]: view,
-  [OFFICE_SURFACE_METHODS.layout]: view.extend({ layoutRevision: revision, partIndex: revision, visibleTwips: rect, documentOriginCss: point, viewportCss: z.object({ width: positive.max(20000), height: positive.max(20000) }).strict(), boundsCss: rect, zoom: z.number().finite().min(.25).max(4), deviceScaleFactor: positive.max(8), visible: z.boolean(), focused: z.boolean() }).strict(),
+  [OFFICE_SURFACE_METHODS.layout]: surfaceLayout,
   [OFFICE_SURFACE_METHODS.tiles]: view.extend({ layoutRevision: revision, renderGeneration: revision, partIndex: revision, tiles: z.array(z.object({ key: identity, rectTwips: rect, pixelWidth: positive.int().max(4096), pixelHeight: positive.int().max(4096) }).strict()).min(1).max(12) }).strict().superRefine((value,ctx) => { if(value.tiles.reduce((n,t)=>n+t.pixelWidth*t.pixelHeight*4,0)>64*1024*1024)ctx.addIssue({code:z.ZodIssueCode.custom,message:'Office tile batch exceeds the memory budget.'}); }),
   [OFFICE_SURFACE_METHODS.input]: view.extend({ streamId: identity, sequence: revision, layoutRevision: revision, expectedPartIndex: revision, event }).strict(),
   [OFFICE_SURFACE_METHODS.windowPaint]: windowIdentity.extend({ generation: revision, width: positive.int().max(8192), height: positive.int().max(8192), deviceScaleFactor: positive.max(8) }).strict().refine(value=>value.width*value.height*4<=64*1024*1024),

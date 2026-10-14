@@ -30,7 +30,9 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): 
 for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE']) delete (env as Record<string, string>)[key];
 const scale = Number(process.env.AGENTVIEWER_QA_SCALE ?? 1), token = randomUUID().slice(0, 8), marker = 'Kit人类编辑-' + token;
 const calcOnly = process.env.AGENTVIEWER_QA_ONLY === 'calc';
-const pptOnly = process.env.AGENTVIEWER_QA_ONLY === 'ppt';
+const pptDialogs=process.env.AGENTVIEWER_QA_ONLY==='ppt-dialog';
+const pptOnly = process.env.AGENTVIEWER_QA_ONLY === 'ppt'||pptDialogs;
+const renderOnly=process.env.AGENTVIEWER_QA_ONLY==='render';
 const app = await electron.launch({ executablePath: executable, args: [...(releaseExecutable ? [] : ['.']), '--force-device-scale-factor=' + scale], cwd: resolve('.'), env, timeout: 60000 });
 const main = await app.firstWindow(), primary = app.process(), mcp = new Client({ name: 'agentviewer-embedded-office-ui', version: '1.0' });
 const mcpTransport = new StdioClientTransport({ command: process.execPath, args: ['plugins/agent-viewer/server/launch.mjs'], env, cwd: resolve('.') });
@@ -47,9 +49,12 @@ await app.evaluate(({ipcMain})=>{
     const method=request.method,args=request.args;
     const isInput=method==='office-surface-input';
     const item:any={method,at:Date.now(),viewId:args?.viewId,args:isInput?{streamId:args.streamId,sequence:args.sequence,layoutRevision:args.layoutRevision,expectedPartIndex:args.expectedPartIndex,event:{kind:args.event?.kind,phase:args.event?.phase,key:args.event?.key,code:args.event?.code,button:args.event?.button,buttons:args.event?.buttons,textLength:args.event?.text?.length,pointTwips:args.event?.pointTwips}}:['office-surface-layout','office-layout','office-surface-window-paint','zoom'].includes(method)?args:undefined};
-    const observed=isInput||['office-surface-layout','office-layout','office-surface-state','office-surface-window-paint','office-flush','zoom'].includes(method);
+    const isTile=method==='office-surface-tiles',observed=isInput||isTile||['office-surface-layout','office-layout','office-surface-state','office-surface-window-paint','office-flush','zoom'].includes(method);
     try {
       const result=await original!(event,request);
+      // Only delay genuine read-only replies. Native buffers and all mutation
+      // arguments/results remain unchanged; the UI must survive slow delivery.
+      if(isTile&&(ipcMain as any).__officeQaTileDelay)await new Promise(done=>setTimeout(done,Math.min(2000,(ipcMain as any).__officeQaTileDelay)));
       if(observed){
         const state=result?.state??result;
         item.result={viewId:state?.viewId,sessionId:state?.sessionId,nativeGeometry:state?.nativeGeometry,visible:state?.visible,layoutRevision:state?.layoutRevision,eventSequence:state?.eventSequence,engineRevision:state?.engineRevision,pendingInput:state?.pendingInput,caretVisible:state?.caretVisible,formulaLength:state?.formula?.length,selection:state?.selection?{kind:state.selection.kind,range:state.selection.range,textLength:state.selection.text?.length}:undefined,ackSequence:result?.ackSequence,composing:result?.composing,discarded:result?.discarded,windows:state?.windows?.map((window:any)=>({id:window.id,generation:window.generation,width:window.width,height:window.height}))};
@@ -58,6 +63,13 @@ await app.evaluate(({ipcMain})=>{
       return result;
     } catch(cause){if(observed){item.error=String(cause);trace.push(item);}throw cause;}
   });
+});
+// Observe the actual runtime's bootstrap receipt before the first Office load.
+// This hook only records allowlisted diagnostic codes and preserves emit's result.
+await app.evaluate(()=>{
+  const emitter=(process.getBuiltinModule('node:events') as unknown as {EventEmitter:{prototype:{emit:(type:string,...args:unknown[])=>boolean}}}).EventEmitter.prototype,original=emitter.emit;
+  const receipts:{code:string;at:number}[]=[];(globalThis as any).__officeQaBootstrap=receipts;
+  emitter.emit=function(this:unknown,type:string,...args:unknown[]){const message=args[0] as {code?:unknown}|undefined;if(type==='diagnostic'&&typeof message?.code==='string'&&message.code.startsWith('OFFICE_KIT_BOOTSTRAP_'))receipts.push({code:message.code,at:Date.now()});return original.call(this,type,...args);};
 });
 const until = async (check: () => Promise<boolean>, label: string, timeout = 30000) => { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (await check()) return; await new Promise(done => setTimeout(done, 90)); } throw new Error('Embedded Office acceptance timed out: ' + label); };
 const invoke = <T = unknown>(method: string, args: Record<string, unknown> = {}) => main.evaluate(value => window.agentViewer!.call(value.method, value.args), { method, args }) as Promise<T>;
@@ -109,22 +121,72 @@ const verifyToolIcons=async(format:string,category:string)=>{
   const pane=main.locator(`.native-office-tools[data-native-office-format="${format}"][data-office-category="${category}"]`);await pane.locator('.native-office-command-grid [data-uno-command]').first().waitFor();
   const commands=await pane.locator('.native-office-command-grid [data-uno-command]').evaluateAll(nodes=>nodes.map(node=>{const button=node as HTMLButtonElement,box=button.getBoundingClientRect();return {command:button.dataset.unoCommand,label:button.getAttribute('aria-label'),title:button.getAttribute('title'),text:button.innerText.trim(),svg:!!button.querySelector('svg'),width:box.width,height:box.height};}));
   assert.ok(commands.length>0);for(const command of commands){assert.equal(command.text,'','common tool presents its glyph rather than a visible text label');assert.equal(command.svg,true);assert.ok(command.label?.trim());assert.ok(command.title?.trim());assert.ok(Math.abs(command.width-32)<.6&&Math.abs(command.height-32)<.6,`${format} ${command.command} remains 32px`);}
-  const enabled=pane.locator('.native-office-command-grid [data-uno-command]:not(:disabled)').first();await enabled.waitFor();const label=await enabled.getAttribute('aria-label');await enabled.hover();const tip=main.getByRole('tooltip');await tip.waitFor();await until(async()=>!!await tip.textContent().then(text=>text?.includes(label!)),'icon tool retains its actual hover description');assert.equal(await tip.locator('[data-glass-effect="frosted"]').count(),1);await main.screenshot({path:join(evidence,`${format}-${category}-icon-tooltip.png`),scale:'css'});await main.mouse.move(700,480);
+  const enabled=pane.locator('.native-office-command-grid [data-uno-command]:not(:disabled)').first();await enabled.waitFor();const label=await enabled.getAttribute('aria-label');
+  // A pane can reuse the previous physical pointer position, and Playwright's
+  // hover may scroll it into view after pointerover. A real subsequent pointer
+  // entry is needed after that scroll has finished (scroll correctly dismisses
+  // the application's tooltip). Do not synthesize DOM hover/focus events.
+  await enabled.scrollIntoViewIfNeeded();await main.mouse.move(700,25);
+  let previousBox='',stableBoxes=0;await until(async()=>{const box=await enabled.boundingBox(),serialized=JSON.stringify(box);stableBoxes=serialized===previousBox?stableBoxes+1:0;previousBox=serialized;return !!box&&stableBoxes>=2;},'icon finishes its actual scrolling and pane motion');
+  await main.evaluate(()=>{const trace:any[]=[];(globalThis as any).__officeQaHover=trace;(globalThis as any).__officeQaHoverRecord=(event:Event)=>{const element=event.target instanceof Element?event.target.closest('[data-uno-command]'):null;trace.push({type:event.type,at:performance.now(),command:element?.getAttribute('data-uno-command'),target:(event.target as Element)?.tagName});if(trace.length>80)trace.shift();};for(const type of ['pointerover','pointerout','scroll'])document.addEventListener(type,(globalThis as any).__officeQaHoverRecord,true);(globalThis as any).__officeQaHoverCleanup=()=>{for(const type of ['pointerover','pointerout','scroll'])document.removeEventListener(type,(globalThis as any).__officeQaHoverRecord,true);};});
+  const tip=main.getByRole('tooltip');
+  try {
+    for(let attempt=0;attempt<2;attempt++){
+      if(attempt){await main.mouse.move(700,25);await main.waitForTimeout(90);}
+      const box=(await enabled.boundingBox())!,point={x:box.x+box.width/2,y:box.y+box.height/2};
+      assert.equal(await enabled.evaluate((button,point)=>{const hit=document.elementFromPoint(point.x,point.y);return hit===button||button.contains(hit);},point),true,'visible tool glyph owns the actual pointer target');
+      await main.mouse.move(point.x,point.y,{steps:3});
+      try{await tip.waitFor({timeout:2000});break;}catch(cause){if(attempt===1)throw cause;}
+    }
+    await until(async()=>!!await tip.textContent().then(text=>text?.includes(label!)),'icon tool retains its actual hover description');assert.equal(await tip.locator('[data-glass-effect="frosted"]').count(),1);await main.screenshot({path:join(evidence,`${format}-${category}-icon-tooltip.png`),scale:'css'});
+  } finally {
+    const trace=await main.evaluate(()=>{(globalThis as any).__officeQaHoverCleanup?.();return (globalThis as any).__officeQaHover;});
+    (results.toolHoverTrace??=[] as unknown[]);(results.toolHoverTrace as unknown[]).push({format,category,label,trace,tooltipCount:await tip.count(),tooltipText:await tip.textContent().catch(()=>null),button:await enabled.evaluate(node=>({box:node.getBoundingClientRect().toJSON(),title:node.getAttribute('title'),describedBy:node.getAttribute('aria-describedby')}))});
+  }
+  await main.mouse.move(700,480);
   (results.toolIcons??=[] as unknown[]);(results.toolIcons as unknown[]).push({format,category,commands,tooltipLabel:label,retainedPropertyInputs:await pane.locator('input,select').count()});
 };
-const verifySheetControlLane=async()=>{
+const verifySheetControlLane=async(view:ViewInfo,sheetName:string)=>{
   const read=()=>main.locator('.embedded-office-document').evaluate(host=>{
-    const content=host.querySelector('.embedded-office-content')!.getBoundingClientRect(),panes=[...host.closest('.workbench')!.querySelectorAll<HTMLElement>(':scope > .floating-side-panel')].map(pane=>({side:pane.dataset.side,box:pane.getBoundingClientRect().toJSON()}));
-    const rows=[...host.querySelectorAll<HTMLElement>(':scope > .native-office-formula-bar,:scope > .embedded-office-sheet-tabs')].map(row=>({name:row.className,box:row.getBoundingClientRect().toJSON()}));
-    return {content:content.toJSON(),panes,rows};
+    const content=host.querySelector('.embedded-office-content')!.getBoundingClientRect(),panes=[...host.closest('.workbench')!.querySelectorAll<HTMLElement>(':scope > .floating-side-panel')].map(pane=>({side:pane.dataset.side,box:pane.getBoundingClientRect().toJSON()})),reader=host.closest('.reader-panel')!.getBoundingClientRect();
+    const rows=[...host.querySelectorAll<HTMLElement>(':scope > .embedded-office-sheet-tabs')].map(row=>({name:row.className,box:row.getBoundingClientRect().toJSON()}));
+    return {frame:host.getBoundingClientRect().toJSON(),radius:parseFloat(getComputedStyle(host).borderTopLeftRadius),reader:reader.toJSON(),content:content.toJSON(),panes,rows};
   });
   const samples:unknown[]=[],baseline=await read();
-  const check=async()=>{const actual=await read();samples.push(actual);assert.equal(actual.content.width,baseline.content.width,'pane changes leave the document viewport full width');for(const row of actual.rows)for(const pane of actual.panes){if(pane.box.bottom<=row.box.top||pane.box.top>=row.box.bottom)continue;assert.ok(pane.side==='left'?row.box.left>=pane.box.right+5:row.box.right<=pane.box.left-5,'actual sheet controls avoid each live pane');}};
+  const check=async()=>{const actual=await read();samples.push(actual);assert.ok(actual.radius>=14,'Calc has its own rounded, bounded sheet frame');assert.ok(actual.frame.left>=actual.reader.left&&actual.frame.right<=actual.reader.right+.5,'the entire sheet frame stays between the thin rails');for(const pane of actual.panes)assert.ok(pane.side==='left'?actual.frame.left>=pane.box.right+5:actual.frame.right<=pane.box.left-5,'the entire sheet frame avoids each actual expanded pane');for(const row of actual.rows){assert.ok(row.box.left>=actual.frame.left-.5&&row.box.right<=actual.frame.right+.5);assert.ok(row.box.height<=32,'sheet tabs share the bounded frame without a tall footer');}};
+  await navigate(view,{kind:'cell',sheetName,address:'Z50'});
+  const bar=main.locator('.native-office-formula-bar'),field=bar.locator('input[aria-label="单元格内容或公式"]');
+  await until(async()=>await field.inputValue().then(value=>value.includes('SUM')),'navigation formula loads the actual selected cell');
+  assert.equal(await bar.count(),1,'there is exactly one actual formula editor');assert.equal(await main.locator('.navigation-toolbar [data-navigation-module="formula"] > .native-office-formula-bar').count(),1,'the actual cell draft is inside the shared navigation');
+  const nodeToken=randomUUID();await field.evaluate((input,token)=>input.setAttribute('data-qa-formula-node',token),nodeToken);await field.click();await main.keyboard.press('Control+a');await main.keyboard.insertText('=SUM(18,24)');
+  const draft=async()=>{assert.equal(await field.getAttribute('data-qa-formula-node'),nodeToken,'layout changes preserve the exact mounted formula input');assert.equal(await field.inputValue(),'=SUM(18,24)','layout changes retain the real pending draft');assert.equal(await bar.getAttribute('data-dirty'),'true');};
+  await draft();await check();
+  await main.getByRole('button',{name:'开始',exact:true}).click();await main.locator('.floating-side-panel[data-side="left"]').waitFor({state:'hidden'});await check();const closed=await read();assert.ok(closed.frame.width>baseline.frame.width+100,'closing the tools restores sheet width');await draft();
+  await leftCategory('开始','home');await main.waitForTimeout(120);await check();await draft();const reopened=await read();assert.ok(reopened.frame.width<closed.frame.width-100,'opening tools narrows the dedicated sheet viewport');
   await check();await invoke('settings-set',{id:'appearance.motion',value:'elegant'});await main.locator('.ai-rail > button').nth(1).click();await main.locator('#ai-tools').waitFor();
-  for(let frame=0;frame<6;frame++){await main.waitForTimeout(90);await check();}
-  const resize=main.getByRole('separator',{name:'调整左侧工具栏宽度',exact:true});await resize.focus();await resize.press('ArrowRight');await main.waitForTimeout(90);await check();
-  await main.getByRole('button',{name:'关闭 AI 抽屉',exact:true}).click();for(let frame=0;frame<6;frame++){await main.waitForTimeout(90);await check();}await main.locator('#ai-tools').waitFor({state:'hidden'});await invoke('settings-set',{id:'appearance.motion',value:'off'});await check();
+  for(let frame=0;frame<6;frame++){await main.waitForTimeout(90);await check();await draft();}
+  const resize=main.getByRole('separator',{name:'调整左侧工具栏宽度',exact:true});await resize.focus();await resize.press('ArrowRight');await main.waitForTimeout(90);await check();await draft();
+  await main.getByRole('button',{name:'关闭 AI 抽屉',exact:true}).click();for(let frame=0;frame<6;frame++){await main.waitForTimeout(90);await check();await draft();}await main.locator('#ai-tools').waitFor({state:'hidden'});await invoke('settings-set',{id:'appearance.motion',value:'off'});await check();
+  await main.getByRole('button',{name:'关闭导航栏',exact:true}).click();await main.locator('.navigation-toolbar.is-hidden').waitFor({state:'attached'});await draft();
+  // CtrlS must commit this hidden, still mounted owner draft before writing the
+  // file. Check disk immediately so a later MCP save cannot mask a broken UI.
+  await main.keyboard.press('Control+s');await until(async()=>await bar.getAttribute('data-dirty').then(value=>value==='false'),'hidden navigation formula draft commits on actual CtrlS');
+  await until(async()=>{const state=await workspace();return state.documents.find(item=>item.id===view.documentId)?.dirty===false&&!(await status(view)).pendingInput;},'hidden formula is saved after its native model receipt');
+  const disk=await createRegistry().resolve('xlsx').open(new Uint8Array(await readFile(join(directory,names.xlsx))),'xlsx'),cell=disk.sheets!.find(sheet=>sheet.name===sheetName)!.rows[49][25];assert.equal(cell.formula,'SUM(18,24)');assert.equal(Number(cell.value),42);
+  const reader=(await read()).reader;await main.mouse.move(reader.x+reader.width/2,reader.y+1);await until(async()=>!await main.locator('.navigation-toolbar').getAttribute('class').then(value=>value?.includes('is-hidden')),'reading edge reveals the same navigation formula');assert.equal(await field.getAttribute('data-qa-formula-node'),nodeToken);
   const hit=await main.locator('.embedded-office-sheet-tabs [role="tab"]').nth(1).evaluate(button=>{const box=button.getBoundingClientRect(),top=document.elementFromPoint(box.x+box.width/2,box.y+box.height/2);return top===button||button.contains(top);});assert.equal(hit,true,'the real tab is the native mouse hit target');results.sheetControlLane=samples;
+  results.navigationFormula={nodeToken,closed,reopened,diskFormula:cell.formula,diskValue:cell.value};
+};
+const verifyCalcScrollEndpoints=async(view:ViewInfo,sheetName:string)=>{
+  const read=async()=>{const native=await status(view),layout=await app.evaluate(({ipcMain},viewId)=>(ipcMain as any).__officeQaTrace.findLast((entry:any)=>entry.method==='office-surface-layout'&&entry.viewId===viewId&&!entry.error)?.args,view.id);assert.ok(layout?.canvasOffsetCss,'native sheet uses the actual DOM layout tuple');return main.locator('.embedded-office-content').evaluate((host,value)=>{const stage=host.querySelector('.embedded-office-stage')!.getBoundingClientRect(),width=value.size.width*value.zoom/15,height=value.size.height*value.zoom/15;return {box:host.getBoundingClientRect().toJSON(),stage:stage.toJSON(),x:host.scrollLeft,y:host.scrollTop,maxX:host.scrollWidth-host.clientWidth,maxY:host.scrollHeight-host.clientHeight,width:host.clientWidth,height:host.clientHeight,paper:{left:stage.left+value.offset.x,top:stage.top+value.offset.y,right:stage.left+value.offset.x+width,bottom:stage.top+value.offset.y+height},sizeTwips:value.size,offset:value.offset};},{size:native.sizeTwips,zoom:native.zoom??1,offset:layout.canvasOffsetCss as {x:number;y:number}});};
+  const before=await status(view);await tool('office_input',{viewId:view.id,...version(before),expectedLayoutRevision:before.layoutRevision,idempotencyKey:randomUUID(),action:{kind:'scroll',x:before.viewport!.width/2,y:before.viewport!.height/2,deltaX:1000000,deltaY:1000000}});
+  await until(async()=>{const actual=await read();return Math.abs(actual.x-actual.maxX)<1&&Math.abs(actual.y-actual.maxY)<1;},'actual sheet scroll reaches both bounded DOM endpoints');
+  const end=await read();assert.ok(end.box.x+end.width-end.paper.right>=10&&end.box.y+end.height-end.paper.bottom>=10,'native sheet bounds keep the actual trailing scrollbar clearance');
+  await navigate(view,{kind:'cell',sheetName,address:'AA50'});await until(async()=>{const box=await main.locator('.embedded-office-cell-cursor').boundingBox(),actual=await read();return !!box&&box.x>=actual.box.left+5&&box.x+box.width<=actual.box.x+actual.width-5&&box.y>=actual.box.top+5&&box.y+box.height<=actual.box.y+actual.height-5;},'actual AA50 cursor is revealed inside the bounded sheet frame');
+  const selected=await status(view);assert.equal(selected.selection?.text,marker);const source=await read(),sourceCursor=(await main.locator('.embedded-office-cell-cursor').boundingBox())!,deltaX=Math.round(sourceCursor.x-source.box.left-Math.min(200,source.width*.3));
+  await tool('office_input',{viewId:view.id,...version(selected),expectedLayoutRevision:selected.layoutRevision,idempotencyKey:randomUUID(),action:{kind:'scroll',x:selected.viewport!.width/2,y:selected.viewport!.height/2,deltaX,deltaY:0}});await main.waitForTimeout(180);
+  const visible=await read(),cursor=await main.locator('.embedded-office-cell-cursor').boundingBox();assert.ok(cursor&&cursor.x>=visible.box.left&&cursor.x+cursor.width<=visible.box.x+visible.width-120,'the actual grid can scroll the long selected value away from the right clipping edge');
+  results.calcScrollEndpoints={end,visible,state:await status(view),cursor,pixels:await screenshot('calc-bounded-frame-scroll')};
 };
 const verifyPresentationViewport=async(view:ViewInfo)=>{
   const read=()=>main.locator('.embedded-office-document').evaluate(host=>{
@@ -136,7 +198,8 @@ const verifyPresentationViewport=async(view:ViewInfo)=>{
   const samples:unknown[]=[];
   const safe=async()=>{
     const actual=await read();samples.push(actual);assert.ok(actual.content.left>=actual.reader.left&&actual.content.right<=actual.reader.right+.5,'the presentation stays between the actual thin rails');
-    for(const pane of actual.panes){if(pane.box.bottom<=actual.content.top||pane.box.top>=actual.content.bottom)continue;assert.ok(pane.side==='left'?actual.content.left>=pane.box.right+5:actual.content.right<=pane.box.left-5,'the real editable presentation viewport avoids the live expanded panes');}
+    if(actual.mode==='page')for(const pane of actual.panes){if(pane.box.bottom<=actual.content.top||pane.box.top>=actual.content.bottom)continue;assert.ok(pane.side==='left'?actual.content.left>=pane.box.right+5:actual.content.right<=pane.box.left-5,'automatic fit avoids each live expanded pane');}
+    else{const bar=await main.getByRole('scrollbar',{name:'幻灯片横向滚动',exact:true}).boundingBox();assert.ok(bar);for(const pane of actual.panes)assert.ok(pane.side==='left'?bar.x>=pane.box.right+5:bar.x+bar.width<=pane.box.left-5,'manual scroll controls stay in the unoccluded lane');}
     if(actual.navigation)assert.ok(actual.content.top>=actual.navigation.bottom+5,'the slide starts below the actual navigation capsule');return actual;
   };
   const fitted=async()=>{
@@ -180,6 +243,54 @@ const verifyPresentationViewport=async(view:ViewInfo)=>{
   const zoomField=main.getByRole('spinbutton',{name:'正文缩放比例',exact:true});await zoomField.fill('100');await zoomField.press('Enter');await until(async()=>(await workspace()).views.find(item=>item.id===view.id)!.zoom===1,'native presentation accepts the explicit navigation zoom');
   assert.equal((await read()).mode,'manual');await invoke('settings-set',{id:'appearance.motion',value:'off'});results.presentationViewport=samples;
 };
+const verifyContinuousZoomFrames=async(view:ViewInfo,format:string)=>{
+  await ready(view);await app.evaluate(({ipcMain})=>{(ipcMain as any).__officeQaTileDelay=250;});
+  await main.evaluate(()=>{
+    const target=new OffscreenCanvas(64,48),context=target.getContext('2d',{willReadFrequently:true})!,state={samples:[] as {at:number;ink:number;alpha:number;zoom:string|null;reused:string|null}[],stopped:false,frame:0,tick:undefined as (()=>void)|undefined};
+    (window as any).__officeQaFrames=state;
+    state.tick=()=>{
+      if(state.stopped)return;const canvas=document.querySelector<HTMLCanvasElement>('.embedded-office-canvas');
+      if(canvas?.width&&canvas.height){context.clearRect(0,0,64,48);context.drawImage(canvas,0,0,64,48);const pixels=context.getImageData(0,0,64,48).data;let ink=0,alpha=0;
+        for(let i=0;i<pixels.length;i+=4)if(pixels[i+3]>180){alpha++;if(pixels[i]<253||pixels[i+1]<253||pixels[i+2]<253)ink++;}
+        if(state.samples.length<1200)state.samples.push({at:performance.now(),ink,alpha,zoom:canvas.dataset.officeFrameZoom??null,reused:canvas.dataset.officeFrameReused??null});
+      }
+      state.frame=requestAnimationFrame(state.tick!);
+    };state.frame=requestAnimationFrame(state.tick);
+  });
+  const point=await main.locator('.embedded-office-content').evaluate(host=>{const box=host.getBoundingClientRect();let left=box.left,right=box.right;for(const panel of host.closest('.workbench')!.querySelectorAll<HTMLElement>(':scope > .floating-side-panel')){const bounds=panel.getBoundingClientRect();if(panel.dataset.side==='left')left=Math.max(left,bounds.right);else right=Math.min(right,bounds.left);}return {x:(left+right)/2,y:box.top+box.height*.3};});
+  await main.mouse.move(point.x,point.y);assert.equal(await main.evaluate(point=>!!document.elementFromPoint(point.x,point.y)?.closest('.embedded-office-content'),point),true);
+  await main.keyboard.down('Control');for(const delta of [-70,90,-80,95,-110,90]){await main.mouse.wheel(0,delta);await main.waitForTimeout(150);}await main.keyboard.up('Control');await main.waitForTimeout(800);
+  const samples=await main.evaluate(()=>{const state=(window as any).__officeQaFrames;state.stopped=true;cancelAnimationFrame(state.frame);return state.samples;}) as {at:number;ink:number;alpha:number;zoom:string|null;reused:string|null}[];
+  await app.evaluate(({ipcMain})=>{(ipcMain as any).__officeQaTileDelay=0;});
+  assert.ok(samples.length>=15,'sample actual Canvas RGBA over continuous real Ctrlwheel gestures');assert.ok(new Set(samples.map(sample=>sample.zoom)).size>=3,'the compositor actually presents several native zoom levels');
+  assert.ok(samples.some(sample=>sample.reused==='true'),'same-content native pixels are used during delayed tile delivery');
+  assert.ok(samples.every(sample=>sample.ink>0&&sample.alpha>0),'no sampled Canvas frame loses all real content while zooming');
+  await until(async()=>{const actual=(await workspace()).views.find(item=>item.id===view.id)!;return main.locator('.embedded-office-canvas').evaluate((canvas,zoom)=>canvas.getAttribute('data-office-frame-reused')==='false'&&Math.abs(Number(canvas.getAttribute('data-office-frame-zoom'))-zoom)<.0001,actual.zoom??1);},'the final visible native tiles replace the retained zoom frame',15000);
+  (results.zoomFrames??=[] as unknown[]);(results.zoomFrames as unknown[]).push({format,samples,slowReadOnlyTileReplyMs:250});await screenshot(format+'-continuous-zoom');
+};
+const verifyManualSlideScrolling=async(view:ViewInfo)=>{
+  await leftCategory('开始','home');await main.locator('.ai-rail > button').nth(1).click();await main.locator('#ai-tools').waitFor();await main.waitForTimeout(250);
+  await main.getByRole('spinbutton',{name:'正文缩放比例',exact:true}).fill('200');await main.getByRole('spinbutton',{name:'正文缩放比例',exact:true}).press('Enter');
+  await until(async()=>(await workspace()).views.find(item=>item.id===view.id)?.zoom===2,'manual slide zoom extends the real canvas');
+  const bar=main.getByRole('scrollbar',{name:'幻灯片横向滚动',exact:true});await bar.waitFor();
+  const read=()=>main.locator('.embedded-office-content').evaluate(host=>{const box=host.getBoundingClientRect(),paper=host.querySelector('.embedded-office-paper-base')!.getBoundingClientRect(),reader=host.closest('.reader-panel')!.getBoundingClientRect();return {box:box.toJSON(),paper:paper.toJSON(),reader:reader.toJSON(),x:host.scrollLeft,maximum:host.scrollWidth-host.clientWidth,panes:[...host.closest('.workbench')!.querySelectorAll<HTMLElement>(':scope > .floating-side-panel')].map(panel=>({side:panel.dataset.side,box:panel.getBoundingClientRect().toJSON()}))};});
+  await bar.focus();await bar.press('Home');let first=await read();assert.ok(first.maximum>0);assert.equal(first.x,0);assert.ok(first.box.left<first.panes.find(pane=>pane.side==='left')!.box.right,'manual canvas genuinely extends underneath the floating left tools');assert.ok(first.paper.left>=first.panes.find(pane=>pane.side==='left')!.box.right+5,'Home uncovers the left page edge');
+  await bar.press('End');const last=await read();assert.ok(Math.abs(last.x-last.maximum)<=1);assert.ok(last.paper.right<=last.panes.find(pane=>pane.side==='right')!.box.left-5,'End uncovers the right page edge');
+  await bar.press('Home');const thumb=main.locator('.office-horizontal-scrollbar-thumb'),thumbBox=(await thumb.boundingBox())!,barBox=(await bar.boundingBox())!;
+  assert.equal(await thumb.evaluate(node=>{const box=node.getBoundingClientRect();return node.contains(document.elementFromPoint(box.x+box.width/2,box.y+box.height/2));}),true,'the thumb is an actual unobstructed mouse hit target');
+  await main.mouse.move(thumbBox.x+thumbBox.width/2,thumbBox.y+thumbBox.height/2);await main.mouse.down();await main.mouse.move(barBox.x+barBox.width*.72,barBox.y+barBox.height/2,{steps:10});await main.mouse.up();const dragged=await read();assert.ok(dragged.x>0&&dragged.x<dragged.maximum,'actual pointer dragging changes DOM scrollLeft');
+  await bar.press('Home');const before=await status(view);await tool('office_input',{viewId:view.id,...version(before),expectedLayoutRevision:before.layoutRevision,idempotencyKey:randomUUID(),action:{kind:'scroll',x:first.box.width/2,y:first.box.height/2,deltaX:100,deltaY:0}});await until(async()=>Math.abs((await read()).x-100)<=1,'MCP can scroll inside leading space whose clipped visibleTwips starts at zero');
+  const state=await status(view);assert.ok(Math.abs((state.viewport?.scrollX??-1)-100)<=1,'MCP state reports the actual padded DOM scroll');
+  const captured=await mcp.callTool({name:'office_capture',arguments:{viewId:view.id,expectedEngineEpoch:state.engineEpoch,expectedEngineRevision:state.engineRevision,expectedLayoutRevision:state.layoutRevision}});assert.notEqual(captured.isError,true);const image=(captured.content as {type:string;data?:string}[]).find(item=>item.type==='image');assert.ok(image?.data);await writeFile(join(evidence,'impress-manual-padded-capture.png'),Buffer.from(image.data,'base64'));
+  const current=await read(),opaque=await app.evaluate(({nativeImage},data)=>{const image=nativeImage.createFromBuffer(Buffer.from(data,'base64')),size=image.getSize(),pixels=image.toBitmap();let left=size.width,top=size.height;for(let y=0;y<size.height;y++)for(let x=0;x<size.width;x++)if(pixels[(y*size.width+x)*4+3]>245){left=Math.min(left,x);top=Math.min(top,y);}return {...size,left,top};},image.data);
+  assert.ok(Math.abs(opaque.left/scale-Math.max(0,current.paper.left-current.box.left))<2&&Math.abs(opaque.top/scale-Math.max(0,current.paper.top-current.box.top))<2,'actual MCP capture preserves the padded scroll origin');
+  const queried=await tool<{data:{unit:string;objects:{name:string;text:string;bounds:{x:number;y:number;width:number;height:number}}[]}}>('office_query',{viewId:view.id,target:{kind:'shapes',slideIndex:0}}),title=queried.data.objects.find(shape=>shape.text.trim())!;assert.equal(queried.data.unit,'1/100mm');
+  const twipsPerHmm=1440/2540,point={x:current.paper.left-current.box.left+(title.bounds.x*twipsPerHmm+Math.min(2200,title.bounds.width*twipsPerHmm/4))*2/15,y:current.paper.top-current.box.top+(title.bounds.y+title.bounds.height/2)*twipsPerHmm*2/15},beforeClick=await status(view);
+  await tool('office_input',{viewId:view.id,...version(beforeClick),expectedLayoutRevision:beforeClick.layoutRevision,idempotencyKey:randomUUID(),action:{kind:'click',...point}});const clicked=await status(view);assert.ok(clicked.selection?.objectNames?.includes(title.name)||clicked.selection?.text===title.text,'MCP click uses the same actual padded origin');
+  const beforeEscape=await status(view);await tool('office_input',{viewId:view.id,...version(beforeEscape),idempotencyKey:randomUUID(),action:{kind:'press',key:'Escape'}});await settleInput(view);
+  results.manualSlideScrolling={first,last,dragged,mcp:current,state,opaque,click:{point,state:clicked}};
+  await main.getByRole('button',{name:'关闭 AI 抽屉',exact:true}).click();await main.locator('#ai-tools').waitFor({state:'hidden'});
+};
 const saveViaHumanShortcut = async (view: ViewInfo) => {
   const diagnostics = { viewId:view.id, before:await status(view), focus:await main.evaluate(()=>({tag:document.activeElement?.tagName,className:document.activeElement?.className})), feedback:[] as string[] };
   (results.saveShortcuts ??= [] as unknown[]); (results.saveShortcuts as unknown[]).push(diagnostics);
@@ -214,7 +325,8 @@ try {
   await invoke('settings-set', { id: 'appearance.autoHideToolbar', value: false }); await invoke('settings-set', { id: 'appearance.motion', value: 'off' }); await invoke('settings-set', { id: 'appearance.theme', value: 'light' }); await invoke('settings-set', { id: 'appearance.documentPaperColor', value: '#ffffff' });
 
   let word!: ViewInfo;
-  if (!calcOnly && !pptOnly) {
+  if(renderOnly){const word=await open('docx');await verifyContinuousZoomFrames(word,'docx');const slides=await open('pptx');await verifyContinuousZoomFrames(slides,'pptx');await verifyManualSlideScrolling(slides);}
+  if (!calcOnly && !pptOnly&&!renderOnly) {
   word = await open('docx'); results.writerInitial = { state: await status(word), pixels: await screenshot('writer-light-white') };
   await navigate(word, { kind: 'paragraph', paragraphIndex: 0 }); await humanFocus(word); await main.keyboard.press('Control+Home'); await main.keyboard.press('Shift+End');
   await until(async () => { const context = await tool<ReadingContext>('reader_get_context', { viewId: word.id }); return context.actor === 'human' && context.quality === 'confirmed' && !!context.selection.text && !!context.selection.rect; }, 'human Writer selection lease');
@@ -248,18 +360,20 @@ try {
   console.log('Embedded Office actual UI: Writer input, IME, selection, left tools, scroll, zoom, paper + save/reopen PASS');
   }
 
-  if (!pptOnly) {
+  if (!pptOnly&&!renderOnly) {
   let calc = await open('xlsx'); const sheet = (await status(calc)).parts[0]; await navigate(calc, { kind: 'cell', sheetName: sheet.name, address: 'Z50' }); await humanFocus(calc, 'cell'); await main.keyboard.press('F2'); const nativeFormulaInput='=SUM(20;22)';results.nativeFormulaInput=nativeFormulaInput;await main.keyboard.insertText(nativeFormulaInput); await main.keyboard.press('Enter');
   await until(async () => { try { const result = await tool<{ data: { values: unknown[][]; formulas: string[][] } }>('office_query', { viewId: calc.id, target: { kind: 'cell-range', sheetName: sheet.name, range: 'Z50' } });results.calcFormulaReadback=result; return result.data.values?.[0]?.[0] === 42 && result.data.formulas?.[0]?.[0].includes('SUM(20,22)'); } catch(cause) { if(!String(cause).includes('STALE_NATIVE_QUERY'))throw cause;return false; } }, 'native Canvas Calc formula calculates 42');
   await navigate(calc, { kind: 'cell', sheetName: sheet.name, address: 'AA50' }); await humanFocus(calc, 'cell'); await main.keyboard.press('F2'); await main.keyboard.insertText(marker); await saveViaHumanShortcut(calc);
   assert.ok(await main.locator('.native-office-formula-bar').isVisible());await leftCategory('开始','home');await verifyToolIcons('xlsx','home'); const tabs = await main.locator('.embedded-office-sheet-tabs').boundingBox(); assert.ok(tabs && tabs.height <= 32); const calcBefore = await status(calc);
-  if (calcBefore.parts.length > 1) { await verifySheetControlLane();await main.locator('.embedded-office-sheet-tabs [role="tab"]').nth(1).click(); await until(async () => (await status(calc)).partIndex === calcBefore.parts[1].index, 'compact sheet tabs navigate actual part'); }
+  await verifySheetControlLane(calc,sheet.name);await verifyCalcScrollEndpoints(calc,sheet.name);await verifyContinuousZoomFrames(calc,'xlsx');
+  if (calcBefore.parts.length > 1) { await main.locator('.embedded-office-sheet-tabs [role="tab"]').nth(1).click(); await until(async () => (await status(calc)).partIndex === calcBefore.parts[1].index, 'compact sheet tabs navigate actual part'); }
   results.calc = { state: await status(calc), pixels: await screenshot('calc-canvas'), tabHeight: tabs.height };
-  const calcSaved = await saveReopen(calc, 'xlsx', value => { const parsed = value.sheets!.find(item => item.name === sheet.name)!; assert.equal(parsed.rows[49][25].formula, 'SUM(20,22)'); assert.equal(Number(parsed.rows[49][25].value), 42); assert.equal(parsed.rows[49][26].value, marker); }); calc = calcSaved.view; results.calcSaved = calcSaved;
+  const calcSaved = await saveReopen(calc, 'xlsx', value => { const parsed = value.sheets!.find(item => item.name === sheet.name)!; assert.equal(parsed.rows[49][25].formula, 'SUM(18,24)'); assert.equal(Number(parsed.rows[49][25].value), 42); assert.equal(parsed.rows[49][26].value, marker); }); calc = calcSaved.view; results.calcSaved = calcSaved;
+  await navigate(calc,{kind:'cell',sheetName:sheet.name,address:'A1'});await leftCategory('开始','home');await ready(calc);await until(async()=>main.locator('.embedded-office-canvas').getAttribute('data-office-frame-reused').then(value=>value==='false'),'actual first-cell grid finishes its native tiles');results.calcFirstCells={state:await status(calc),pixels:await screenshot('calc-frame-firstcells')};
   console.log('Embedded Office actual UI: Calc cell text/formula, human save barrier, parts + reopened bytes PASS');
   }
 
-  if (!calcOnly) {
+  if (!calcOnly&&!renderOnly) {
   let slides = await open('pptx');await verifyPresentationViewport(slides); const shapes = await tool<{ data: { objects: { name: string; text?: string }[] } }>('office_query', { viewId: slides.id, target: { kind: 'shapes', slideIndex: 0 } });results.impressInitialShapes=shapes;const shape = shapes.data.objects.find(value => !!value.text?.trim())!; assert.ok(shape?.name);
   await navigate(slides, { kind: 'shape', slideIndex: 0, name: shape.name }); await humanFocus(slides, 'object'); await main.keyboard.press('F2');await until(async()=>{const state=await status(slides);results.impressEditEntry=state;return state.pendingInput===true;},'native F2 enters actual Impress text edit',4000);await main.keyboard.press('Control+Home'); await main.keyboard.press('Control+Shift+End'); await main.keyboard.insertText(marker); await saveViaHumanShortcut(slides);
   await until(async () => { const value = await tool<{ data: { text: string } }>('office_query', { viewId: slides.id, target: { kind: 'shape', slideIndex: 0, name: shape.name } });results.impressTextReadback=value;return value.data.text === marker; }, 'Canvas Impress editing commits to same named model');
@@ -269,7 +383,8 @@ try {
   const slidesSaved = await saveReopen(slides, 'pptx', value => assert.ok(value.slides?.some(slide => slide.blocks.some(block => block.text === marker)))); slides = slidesSaved.view; results.impressSaved = slidesSaved;
   console.log('Embedded Office actual UI: Impress text mode, native commit, left slides + save/reopen PASS');
 
-  if (!pptOnly) {
+  if ((!pptOnly||pptDialogs)&&!renderOnly) {
+  if(pptDialogs)word=await open('docx');
   await main.getByRole('button',{name:names.docx,exact:true}).click();await ready(word);
   // Writer's official InsertTable path converts selected text immediately.
   // Clear the real selection first so the native insertion dialog is requested.
@@ -285,9 +400,11 @@ try {
   }
   }
   const owned = await processes(); assert.ok([...workerPids].every(pid => owned.some(item => item.ProcessId === pid)), 'tested document writers belong to this isolated reader'); assert.ok(owned.every(item => !/^soffice(?:\.bin|\.exe)?$/i.test(item.Name)), 'no dedicated Office executable is spawned'); assert.equal(workerPids.size, 1, 'documents share one direct DLL worker'); results.processes = owned;
+  const bootstrap=await app.evaluate(()=>(globalThis as any).__officeQaBootstrap) as {code:string;at:number}[];results.bootstrapDiagnostics=bootstrap;
+  if(releaseExecutable)assert.ok(bootstrap.some(receipt=>receipt.code==='OFFICE_KIT_BOOTSTRAP_SEED_REUSED'),'the staged built-in docless bootstrap seed is actually validated and reused');
   for (const name of Object.values(names)) assert.deepEqual(await readFile(resolve('examples/moon-tide', name)), originals.get(name), 'authored source stays unchanged');
   assert.deepEqual(errors, []); assert.doesNotMatch(stderr.join(''), /Object has been destroyed|UnhandledPromiseRejection|Uncaught (?:Exception|TypeError|Error)/i);
-  passed = true; await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed, directory, evidence, scale, port, testScope:calcOnly?'calc':pptOnly?'impress':'writer,calc,impress,native-dialog', ...results, errors, rendererScreenshotsIncludeActualEnginePixels: true, imeCoverage:calcOnly||pptOnly?'not tested':'Chromium CDP composition, not OS Pinyin' }, null, 2)); console.log(calcOnly?'Real Calc-only human input / save / disk + reopen: PASS':pptOnly?'Real Impress-only human input / save / disk + reopen: PASS':'Real Embedded Office Electron / native DLL tiles / stdio MCP / human Canvas input + Chromium IME / selection + styles / native dialog / save + reopen: PASS', evidence);
+  passed = true; await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed, directory, evidence, scale, port, testScope:renderOnly?'native-rendering,paddedscroll,mcp':calcOnly?'calc':pptDialogs?'impress,native-dialog':pptOnly?'impress':'writer,calc,impress,native-dialog', ...results, errors, rendererScreenshotsIncludeActualEnginePixels: true, imeCoverage:calcOnly||pptOnly||renderOnly?'not tested':'Chromium CDP composition, not OS Pinyin' }, null, 2)); console.log(renderOnly?'Real slow-tile Office zoom frames + manual slide scrolling: PASS':calcOnly?'Real Calc-only human input / save / disk + reopen: PASS':pptOnly?'Real Impress human input / save / disk + reopen / scoped dialog: PASS':'Real Embedded Office Electron / native DLL tiles / stdio MCP / human Canvas input + Chromium IME / selection + styles / native dialog / save + reopen: PASS', evidence);
 } catch (cause) {
   results.ipcTrace=await app.evaluate(({ipcMain})=>(ipcMain as any).__officeQaTrace).catch(()=>undefined);results.lastState = await workspace().catch(() => undefined); await main.screenshot({ path: join(evidence, 'failure.png'), scale: 'css' }).catch(() => {}); await writeFile(join(evidence, 'failure.json'), JSON.stringify({ passed: false, cause: String(cause), directory, evidence, scale, results, errors, stderr: stderr.join('').slice(-20000) }, null, 2)); console.error('Embedded Office actual UI evidence:', evidence); throw cause;
 } finally {

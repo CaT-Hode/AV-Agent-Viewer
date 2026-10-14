@@ -78,7 +78,7 @@ export class NativeOfficeRuntime extends EventEmitter {
         const adapterPath = this.options.adapterPath ?? join(this.options.appRoot, 'dist', 'main', 'office-kit-windows.dll');
         if (!existsSync(adapterPath)) throw new NativeOfficeError('OFFICE_KIT_ADAPTER_UNAVAILABLE', '内嵌 Office 绘制适配器缺失，请修复应用安装。');
         const endpoint = await this.createKitEndpoint();
-        Object.assign(env, { PYTHONHOME: dirname(dirname(python)), PYTHONPATH: program, PATH: program + ';' + (process.env.PATH ?? ''), AGENTVIEWER_OFFICE_KIT_CONFIG: JSON.stringify({ directory: this.workerDirectory, program, appearance: startupAppearance, adapterPath, rpc: endpoint }) });
+        Object.assign(env, { PYTHONHOME: dirname(dirname(python)), PYTHONPATH: program, PYTHONDONTWRITEBYTECODE:'1', PATH: program + ';' + (process.env.PATH ?? ''), AGENTVIEWER_OFFICE_KIT_CONFIG: JSON.stringify({ directory: this.workerDirectory, program, appearance: startupAppearance, adapterPath, bootstrapSeedPath:this.options.bootstrapSeedPath ?? join(dirname(adapterPath),'office-kit-bootstrap'), rpc: endpoint }) });
       }
       const worker = this.options.createWorker?.(python, args) ?? spawn(python, args, { windowsHide: true, stdio: 'pipe', env });
       this.worker = worker; worker.stdout.setEncoding('utf8'); worker.stdout.on('data', chunk => { try { reader.feed(String(chunk)); } catch (error) { this.failPending(error); } });
@@ -179,6 +179,8 @@ export class NativeOfficeRuntime extends EventEmitter {
     try { return await update; } finally { if (this.appearanceUpdate === update) this.appearanceUpdate = undefined; }
   }
   state(sessionId: string, viewId?: string) { return this.request<NativeOfficeState>('state', { sessionId, viewId }); }
+  /** Explicit developer packaging step; never invoked by renderer/MCP or normal startup. */
+  bootstrapSeed() { return this.request<{ directory:string;manifest:{schemaVersion:number;engineBuildId:string;mergedloSha256:string;registrationCatalogSha256:string;pathMode:string;files:{path:string;blob:string;bytes:number;sha256:string}[]} }>('bootstrapSeed',{}); }
   async snapshot(sessionId: string, viewId?: string): Promise<NativeOfficeSnapshot> {
     const result = await this.request<any>('snapshot', { sessionId, viewId }); const bytes = new Uint8Array(Buffer.from(result.bytes, 'base64'));
     const hash = createHash('sha256').update(bytes).digest('hex');

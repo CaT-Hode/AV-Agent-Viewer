@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
-import { advanceSidebarSpring, sidebarSpringPresentation, sidebarSpringSettled } from './sidebar-presence';
+import { advanceSidebarSpring, sidebarExitFinished, sidebarSpringPresentation, sidebarSpringSettled } from './sidebar-presence';
 import type { MotionMode } from './motion-policy';
 import type { PresenceState } from './presence-state';
 
@@ -18,7 +18,7 @@ export function useSidebarPresence(show: boolean, identity: unknown, side: strin
       if (ticket !== generation.current) return;
       const seconds = Math.max(0, Math.min(.064, (now - previous) / 1000)); previous = now;
       axis.current = advanceSidebarSpring(axis.current, show, seconds, mode);
-      const settled = sidebarSpringSettled(axis.current, show) || now - started > 2500;
+      const settled = (show ? sidebarSpringSettled(axis.current, true) : sidebarExitFinished(axis.current)) || now - started > 2500;
       if (settled) axis.current = { value: show ? 1 : 0, velocity: 0 };
       setState({ present: show || !settled, phase: show ? settled ? 'open' : 'enter' : 'exit', identity, progress: axis.current.value });
       if (!settled) frame = requestAnimationFrame(tick);

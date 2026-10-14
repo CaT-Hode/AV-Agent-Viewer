@@ -17,7 +17,15 @@ export function NativeSidebarPortal({ enabled, viewId, side, children, ...presen
     anchor.current?.style.setProperty('--adaptive-panel-height', value.toFixed(3) + 'px');
   }, []);
   useLayoutEffect(() => {
-    if (container) container.ownerDocument.documentElement.style.setProperty('--reader-panel-presence-duration', String(presence.style?.['--motion-duration' as keyof CSSProperties] ?? '220ms'));
+    if (!container) return;
+    container.ownerDocument.documentElement.style.setProperty('--reader-panel-presence-duration', String(presence.style?.['--motion-duration' as keyof CSSProperties] ?? '220ms'));
+    // The raw bitmap is a sibling behind the portalled material. It must not
+    // remain an opaque rectangle while the actual tools and rim disappear.
+    for (const name of ['--sidebar-spring-alpha','--sidebar-spring-x','--sidebar-spring-scale-x','--sidebar-spring-scale-y']) {
+      const value = presence.style?.[name as keyof CSSProperties];
+      if (value === undefined) container.style.removeProperty(name);
+      else container.style.setProperty(name, String(value));
+    }
   }, [container, presence.style]);
   useLayoutEffect(() => {
     if (!desktop || !enabled || !viewId) { setContainer(undefined); return; }

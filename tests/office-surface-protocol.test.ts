@@ -24,3 +24,13 @@ test('document input must carry a frozen part index while native windows retain 
   const window={viewId:'view',sessionId:'session',engineEpoch:'epoch',windowId:1,windowInstanceId:'instance',streamId:'stream',sequence:1,event:{kind:'barrier'}};
   assert.deepEqual(validateOfficeSurfaceRequest(methods.windowInput,window),window);
 });
+test('padded Office layout carries actual scroll, origin, extent and safe viewport as a consistent bounded group',()=>{
+  const legacy={viewId:'view',layoutRevision:2,partIndex:0,visibleTwips:{x:0,y:0,width:10000,height:6000},documentOriginCss:{x:400,y:30},viewportCss:{width:1100,height:700},boundsCss:{x:73,y:84,width:1100,height:700},zoom:1,deviceScaleFactor:1,visible:true,focused:false};
+  const valid={...legacy,canvasOffsetCss:{x:700,y:30},scrollCss:{x:300,y:0},scrollExtentCss:{x:1200,y:0},safeViewportCss:{x:260,y:0,width:460,height:700}};
+  assert.deepEqual(validateOfficeSurfaceRequest(methods.layout,legacy),legacy);assert.deepEqual(validateOfficeSurfaceRequest(methods.layout,valid),valid);
+  for(const key of ['canvasOffsetCss','scrollCss','scrollExtentCss','safeViewportCss']){const incomplete={...valid};delete (incomplete as any)[key];assert.throws(()=>validateOfficeSurfaceRequest(methods.layout,incomplete));}
+  assert.throws(()=>validateOfficeSurfaceRequest(methods.layout,{...valid,scrollCss:{x:1300,y:0}}));
+  assert.throws(()=>validateOfficeSurfaceRequest(methods.layout,{...valid,documentOriginCss:{x:0,y:0}}));
+  assert.throws(()=>validateOfficeSurfaceRequest(methods.layout,{...valid,safeViewportCss:{x:900,y:0,width:460,height:700}}));
+  assert.throws(()=>validateOfficeSurfaceRequest(methods.layout,{...valid,canvasOffsetCss:{x:NaN,y:30}}));
+});

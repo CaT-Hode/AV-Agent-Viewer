@@ -1,4 +1,10 @@
 export type OfficeFitSize = { width: number; height: number };
+/** Manual zoom uses a full viewport, with real scrollable space to uncover both pane-covered edges. */
+export function officePresentationManualLayout(pageCss:OfficeFitSize,viewport:OfficeFitSize,gaps:{left:number;right:number}){
+  const left=Math.max(0,gaps.left),right=Math.max(0,gaps.right),safeWidth=Math.max(1,viewport.width-left-right);
+  const offsetX=left+Math.max(0,(safeWidth-pageCss.width)/2),offsetY=Math.max(0,(viewport.height-pageCss.height)/2);
+  return {offsetX,offsetY,stageSize:{width:Math.max(viewport.width,offsetX+pageCss.width+right),height:Math.max(viewport.height,offsetY+pageCss.height)},safeViewport:{x:left,y:0,width:safeWidth,height:viewport.height}};
+}
 export function officePresentationFit(pageTwips: OfficeFitSize, viewportCss: OfficeFitSize): number | undefined {
   if (![pageTwips.width,pageTwips.height,viewportCss.width,viewportCss.height].every(value=>Number.isFinite(value)&&value>0)) return;
   const width=Math.max(1,viewportCss.width-16),height=Math.max(1,viewportCss.height-16);

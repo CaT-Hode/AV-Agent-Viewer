@@ -9,7 +9,7 @@ const program = join(process.cwd(), 'release', 'win-unpacked', 'resources', 'eng
 const core = existsSync(program) ? readdirSync(program).find(name => /^python-core-\d/.test(name)) : undefined;
 const python = core ? join(program, core, 'bin', 'python.exe') : 'python';
 function scenario(body: string) {
-  const script = `import ast,json,math,ctypes as C\nsource=json.loads(input())\nmodule=ast.parse(source)\ncompile(module,'kit-worker.py','exec')\nnodes=[n for n in module.body if isinstance(n,ast.FunctionDef) and n.name in ['reveal_native_target','surface_size','surface_origin_css','clip_capture_geometry','native_input']]\nassert len(nodes)==5\nexec(compile(ast.Module(body=nodes,type_ignores=[]),'reveal-regression','exec'))\n${body}\nprint('PASS')`;
+  const script = `import ast,json,math,ctypes as C\nsource=json.loads(input())\nmodule=ast.parse(source)\ncompile(module,'kit-worker.py','exec')\nnodes=[n for n in module.body if isinstance(n,ast.FunctionDef) and n.name in ['reveal_native_target','surface_size','surface_origin_css','surface_scroll_geometry','update_surface_scroll','clip_capture_geometry','native_input']]\nassert len(nodes)==7\nexec(compile(ast.Module(body=nodes,type_ignores=[]),'reveal-regression','exec'))\n${body}\nprint('PASS')`;
   assert.equal(execFileSync(python, ['-c', script], { input: JSON.stringify(officeKitWorkerSource) + '\n', encoding: 'utf8', timeout: 15000, env: { ...process.env, PATH: core ? program + ';' + process.env.PATH : process.env.PATH, ...(core ? { PYTHONHOME: join(program, core) } : {}), PYTHONUTF8: '1' } }).trim(), 'PASS');
 }
 const setup = String.raw`
@@ -127,5 +127,38 @@ for format in ['docx','xlsx']:
     session={'format':format};assert surface_origin_css(session,view,{'x':0,'y':0})=={'x':200,'y':0}
 session={'format':'pptx'};kit_size=lambda s:{'width':30000,'height':18000}
 assert surface_origin_css(session,view,{'x':7500,'y':6000})=={'x':-500,'y':-400}
+`);
+});
+
+test('manual PPT scrolling preserves real leading padding even when clipped visibleTwips cannot encode the scroll', () => {
+  scenario(setup + String.raw`
+session={'format':'pptx'};kit_size=lambda s:{'width':12000,'height':6000}
+view.update(scrollGeometryPartIndex=2,canvasOffsetCss={'x':340,'y':200},scrollCss={'x':200,'y':0},scrollExtentCss={'x':330,'y':0},safeViewportCss={'x':340,'y':0,'width':470,'height':800},documentOriginCss={'x':140,'y':200},visibleTwips={'x':0,'y':0,'width':12000,'height':6000})
+expected=lambda *args:None;state=lambda s,v:dict(v)
+list(native_input(session,view,{'expectedLayoutRevision':7,'action':{'kind':'scroll','x':400,'y':300,'deltaX':100,'deltaY':180}}))
+assert view['scrollCss']=={'x':300,'y':0} and events[-1]['scrollCss']==view['scrollCss']
+assert view['documentOriginCss']=={'x':40,'y':200}
+assert view['visibleTwips']['x']==0,'a clipped native visible area is not a DOM scroll offset'
+inputs=[];post_input_event=lambda s,v,event:inputs.append(event)
+list(native_input(session,view,{'expectedLayoutRevision':8,'action':{'kind':'click','x':400,'y':300}}))
+assert all(event['pointTwips']=={'x':5400,'y':1500} for event in inputs)
+assert surface_origin_css(session,view,{'x':9999,'y':9999})=={'x':40,'y':200}
+`);
+});
+
+test('manual PPT reveal uses its true safe lane and keeps oversize shapes anchored without rewriting the document', () => {
+  scenario(setup + String.raw`
+session={'format':'pptx'};kit_size=lambda s:{'width':12000,'height':6000}
+view.update(scrollGeometryPartIndex=2,canvasOffsetCss={'x':340,'y':200},scrollCss={'x':0,'y':0},scrollExtentCss={'x':330,'y':0},safeViewportCss={'x':340,'y':0,'width':470,'height':800},documentOriginCss={'x':340,'y':200},visibleTwips={'x':0,'y':0,'width':12000,'height':6000})
+reveal_native_target(session,view,{'x':11700,'y':1500,'width':300,'height':600})
+assert view['scrollCss']=={'x':330,'y':0}
+assert view['documentOriginCss']=={'x':10,'y':200}
+assert 340<=11700/15+view['documentOriginCss']['x']<=810
+assert events[-1]['scrollCss']=={'x':330,'y':0}
+reveal_native_target(session,view,{'x':0,'y':1500,'width':11000,'height':600})
+assert view['scrollCss']['x']==0 and view['documentOriginCss']['x']==340
+assert set(session)=={'format'},'reveal must not write document content or styles'
+view['partIndex']=3
+assert surface_scroll_geometry(session,view) is None,'previous slide geometry cannot retarget another slide'
 `);
 });

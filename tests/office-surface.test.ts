@@ -2,8 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { OfficePendingScroll } from '../apps/desktop/src/renderer/lib/office-pending-scroll';
 import { OfficeTileCache } from '../apps/desktop/src/renderer/lib/office-tile-cache';
-import { officeCurrentPage, officeDocumentPoint, officeSurfaceClipRects, officeTileBatches, officeVisibleTiles, officeVisibleTwips, officeViewportRect } from '../apps/desktop/src/renderer/lib/office-surface-geometry';
+import { officeCurrentPage, officeDocumentPoint, officeSheetCanvasLayout, officeSurfaceClipRects, officeTileBatches, officeVisibleTiles, officeVisibleTwips, officeViewportRect } from '../apps/desktop/src/renderer/lib/office-surface-geometry';
 import type { OfficeSurfaceState } from '../packages/contracts/src/office-surface';
+
+test('bounded Calc frame can fully reveal each sheet edge at scroll endpoints without changing native cell coordinates',()=>{
+  for(const viewport of [{width:1284,height:781},{width:920,height:740},{width:488,height:640}])for(const zoom of [.25,1,2,4]){
+    const sheet={width:57735*zoom/15,height:37530*zoom/15},layout=officeSheetCanvasLayout(sheet,viewport),maximum={x:layout.stageSize.width-viewport.width,y:layout.stageSize.height-viewport.height};
+    assert.ok(layout.offsetX>=12);assert.equal(layout.offsetY,12);
+    assert.ok(layout.offsetX+sheet.width-maximum.x<=viewport.width-12);
+    assert.ok(layout.offsetY+sheet.height-maximum.y<=viewport.height-12);
+    const geometry={...layout,zoom,scrollX:maximum.x,scrollY:maximum.y,viewport:{x:330,y:130,...viewport}},point={x:57720,y:37515,width:15,height:15},screen=officeViewportRect(point,geometry),native=officeDocumentPoint(screen.x,screen.y,geometry);
+    assert.ok(Math.abs(native.x-point.x)<1e-8&&Math.abs(native.y-point.y)<1e-8,'frame shrink and scroll cannot change a native cell target');
+  }
+});
 
 test('Office document/viewport coordinates round trip across zoom, horizontal scroll and centered paper', () => {
   for (const zoom of [.25, .75, 1, 1.5, 2, 4]) for (const offsetX of [0, 137.5]) {
@@ -53,6 +64,12 @@ test('Office tile cache evicts oldest unpinned resources, never exceeds budget a
   const ticket = cache.begin('late', rect, 0); cache.clear(); assert.equal(cache.admit(ticket, 'late', 100), false);
   assert.equal(cache.put('too big', 'oversized', 301, rect, 0), false); assert.equal(cache.byteLength, 0);
   assert.equal(new Set(released).size, released.length);
+});
+test('cache presentation revision tracks pixel replacement while harmless LRU reads remain reusable',()=>{
+  const cache=new OfficeTileCache<string>(1024),rect={x:0,y:0,width:100,height:100};cache.put('tile','pixels',100,rect,0);const revision=cache.version;
+  cache.get('tile');cache.has('tile');cache.pin(new Set(['tile']));assert.equal(cache.version,revision);
+  cache.invalidate(0,{x:200,y:200,width:5,height:5});assert.equal(cache.version,revision,'an unrelated invalidation cannot trigger a full raster redraw');
+  cache.put('tile','updated pixels',100,rect,0);assert.ok(cache.version>revision);
 });
 test('a real sheet reveal waits for expanded DOM extent rather than losing its target to an old-stage clamp',()=>{
   const source={viewId:'view',sessionId:'session',engineEpoch:'engine'},scroll=new OfficePendingScroll();

@@ -81,7 +81,7 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   onHover?(): void; onLeave?(): void; onFocus?(): void; onBlur?(): void;
 }) {
   const contribution = contributions[state.format as keyof typeof contributions] ?? contributions.document;
-  const Identity = contribution.identity, hidden = progress >= 1;
+  const Identity = contribution.identity, hidden = progress >= 1, isSheet = state.format === 'xlsx';
   const nav = useRef<HTMLElement>(null), menu = useRef<HTMLDivElement>(null), more = useRef<HTMLButtonElement>(null);
   const [lane,setLane] = useState<NavigationLane>({left:0,right:availableWidth ?? 820,width:availableWidth ?? 820,center:(availableWidth ?? 820)/2});
   useLayoutEffect(() => {
@@ -89,12 +89,13 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     if (!reader) { const width = availableWidth ?? 820; setLane({left:0,right:width,width,center:width/2}); return; }
     return observeNavigationLane(reader,beforePaint => { const next = readNavigationLane(reader), apply = () => setLane(old => JSON.stringify(old) === JSON.stringify(next) ? old : next); if (beforePaint) flushSync(apply); else apply(); });
   },[availableWidth]);
-  const animatedWidth = useGlassSpringValue(preferredNavigationWidth(lane.width),KUBE_GLASS_SPRINGS.lensShape);
+  const animatedWidth = useGlassSpringValue(isSheet ? Math.min(lane.width,1060) : preferredNavigationWidth(lane.width),KUBE_GLASS_SPRINGS.lensShape);
   const animatedCenter = useGlassSpringValue(lane.center,KUBE_GLASS_SPRINGS.lensShape);
   const fitted = boundedNavigationPresentation(lane,animatedWidth,animatedCenter), density = navigationDensity(fitted.width);
   const wide = density === 'wide', tight = density === 'tight', compact = density === 'compact', minimal = density === 'minimal', micro = density === 'micro';
-  const showIdentity = !minimal && !micro, showHistory = !minimal && !micro, showForward = wide || tight || compact, showReload = wide || tight, showSteps = wide || tight || compact, showUndo = wide || tight;
-  const isWeb = state.format === 'web', isText = state.format === 'markdown' || state.format === 'html', hasMore = !wide;
+  const showIdentity = !minimal && !micro && (!isSheet || wide), showHistory = !minimal && !micro && (!isSheet || wide), showForward = (wide || tight || compact) && (!isSheet || wide), showReload = (wide || tight) && !isSheet, showSteps = (wide || tight || compact) && !isSheet, showUndo = (wide || tight) && !isSheet;
+  const isWeb = state.format === 'web', isText = state.format === 'markdown' || state.format === 'html', hasMore = isSheet || !wide;
+  const showZoom = !micro && (!isSheet || wide || tight), showEditing = !isWeb && !micro && (!isSheet || wide || tight);
   const [addressDraft,setAddressDraft] = useState(state.address ?? ''), [zoomDraft,setZoomDraft] = useState(String(Math.round((state.zoom ?? 1)*100))), [menuOpen,setMenuOpen] = useState(false);
   useEffect(() => setAddressDraft(state.address ?? ''),[state.address]);
   useEffect(() => setZoomDraft(String(Math.round((state.zoom ?? 1)*100))),[state.zoom]);
@@ -166,9 +167,12 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
       <NavigationGlass backdropImage={backdropImage} backdropSample={backdropSample} capsuleBounds={capsuleBounds} onSurface={setSurface} />
       {showHistory && <><HistoryModule {...moduleProps} forward={showForward} reload={showReload} /><Divider /></>}
       {showIdentity && <><Identity {...moduleProps} /><Divider /></>}
-      {!micro && <ZoomModule {...moduleProps} steps={showSteps} />}
+      {/* The existing cell draft editor is portalled here by its document owner.
+          Density/hide changes must never unmount or duplicate this host. */}
+      {isSheet && <div className="navigation-module navigation-formula-slot" data-navigation-module="formula" role="group" aria-label="单元格内容与公式" />}
+      {showZoom && <ZoomModule {...moduleProps} steps={showSteps} />}
       {wide && isText && <ModeModule {...moduleProps} />}
-      {!isWeb && !micro && <EditModule {...moduleProps} undo={showUndo} />}
+      {showEditing && <EditModule {...moduleProps} undo={showUndo} />}
       {wide && isWeb && <WebPageModule {...moduleProps} />}
       {hasMore && <div className="navigation-module"><button ref={more} className="icon-button" aria-label="更多导航工具" title="更多导航工具" aria-expanded={menuOpen} onClick={() => { if (menuOpen) closeMenu(); else void openMenu(); }}><MoreHorizontal size={17} /></button></div>}
       {!minimal && !micro && <div className="navigation-module navigation-dismiss"><button className="icon-button" aria-label="关闭导航栏" title="关闭导航栏 · 鼠标移至阅读区顶部可重新显示" onClick={() => dispatch({ type: 'dismiss' })}><X size={16} /></button></div>}
@@ -177,9 +181,9 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
       <LiquidGlassSurface variant="panel" />
       {!showIdentity && <Identity {...overflowProps} />}
       {(!showHistory || !showForward || !showReload) && <HistoryModule {...overflowProps} back={!showHistory} forward={!showForward} reload={!showReload} />}
-      {!showSteps && <ZoomModule {...overflowProps} value={micro} />}
+      {!showSteps && <ZoomModule {...overflowProps} value={!showZoom} />}
       {isText && <ModeModule {...overflowProps} />}
-      {!isWeb && !showUndo && <EditModule {...overflowProps} save={micro} />}
+      {!isWeb && !showUndo && <EditModule {...overflowProps} save={!showEditing} />}
       {isWeb && <WebPageModule {...overflowProps} />}
       {(minimal || micro) && <button className="capsule-text" onClick={() => overflowProps.dispatch({type:'dismiss'})}><X size={15} />关闭导航栏</button>}
     </div>

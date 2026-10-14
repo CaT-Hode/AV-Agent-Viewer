@@ -10,6 +10,10 @@ export function advanceSidebarSpring(axis: SpringAxis, show: boolean, seconds: n
   return stepGlassSpring(axis, show ? 1 : 0, seconds, sidebarSpringParameters(mode));
 }
 export function sidebarSpringSettled(axis: SpringAxis, show: boolean) { return Math.abs(axis.value - (show ? 1 : 0)) < .0005 && Math.abs(axis.velocity) < .008; }
+/** The first closing crossing is fully invisible. Retaining an underdamped
+ * tail after that point would let its material/shadow reappear without content.
+ * An interrupted close before the crossing still carries its exact velocity. */
+export function sidebarExitFinished(axis: SpringAxis) { return axis.value <= 0 && axis.velocity <= 0 || sidebarSpringSettled(axis, false); }
 /** Opacity is independent of the physical overshoot, so a tiny bounce cannot
  * produce negative alpha or temporarily dim an already readable panel. */
 export function sidebarSpringPresentation(progress: number, side: string) {

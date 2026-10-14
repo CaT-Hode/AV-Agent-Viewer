@@ -28,6 +28,8 @@ npm.cmd start
 
 Windows 源码构建还需要 Visual Studio Build Tools 的 MSVC x64 C++ 工具链，用于编译内嵌 Office 光栅适配器；构建脚本通过 `vswhere` 发现工具链并校验缓存。发布包包含编译好的适配器，运行应用不需要安装编译工具。
 
+Windows 打包会通过 `engines:bootstrap` 生成并内置经过校验的 Office 初始化缓存；也可在引擎准备后单独运行该命令。普通前端构建和阅读非 Office 文件不会预启动内核。缓存仅包含尚未加载文档时生成的内置扩展注册数据与安装完成标记，每个工作进程仍使用独立配置目录。
+
 数据默认位于 `%APPDATA%\AgentViewer`，HTTP 仅监听 `127.0.0.1:3210`。新文件须选定保存位置；源文件被其他程序修改时会拒绝覆盖。复杂 Office 文件建议另存副本。
 
 ## 阅读界面、设置与翻译
