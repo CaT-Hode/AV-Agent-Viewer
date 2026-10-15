@@ -18,7 +18,7 @@ export type NavigationState = {
   format: string; title?: string; titleIcon?: ReactNode; address?: string;
   mode?: 'read' | 'source' | 'split'; canUndo?: boolean; busy?: boolean; translated?: boolean; zoom?: number;
 };
-type ModuleProps = { state: NavigationState; dispatch(action: NavigationAction): void; addressDraft?: string; setAddressDraft?(value: string): void; zoomDraft?: string; setZoomDraft?(value: string): void };
+type ModuleProps = { state: NavigationState; dispatch(action: NavigationAction): void; addressDraft?: string; setAddressDraft?(value: string): void; zoomDraft?: string; setZoomDraft?(value: string): void; setZoomEditing?(value: boolean): void };
 
 function Divider() { return <span className="capsule-divider" aria-hidden="true" />; }
 function HistoryModule({ dispatch, forward = true, reload = true, back = true }: ModuleProps & { forward?: boolean; reload?: boolean; back?: boolean }) {
@@ -49,13 +49,13 @@ function EditModule({ state, dispatch, undo = true, save = true }: ModuleProps &
     {save && <button className="icon-button" title="保存" aria-label="保存" onClick={() => dispatch({ type: 'save' })}><Save size={16} /></button>}
   </div>;
 }
-function ZoomModule({ state, dispatch, zoomDraft: draft = '100', setZoomDraft: setDraft, steps = true, value = true }: ModuleProps & { steps?: boolean; value?: boolean }) {
+function ZoomModule({ state, dispatch, zoomDraft: draft = '100', setZoomDraft: setDraft, setZoomEditing, steps = true, value = true }: ModuleProps & { steps?: boolean; value?: boolean }) {
   const percentage = Math.round((state.zoom ?? 1) * 100);
   const cancelBlur = useRef(false);
   const commit = () => { if (cancelBlur.current) { cancelBlur.current = false; return; } const next = Number(draft); if (Number.isFinite(next) && next >= 25 && next <= 400) dispatch({ type: 'zoom', factor: next / 100 }); else setDraft?.(String(percentage)); };
   return <div className="navigation-module navigation-zoom" data-navigation-module="zoom">
     {steps && <button className="icon-button" aria-label="缩小正文" title="缩小正文 · Ctrl+滚轮" disabled={percentage <= 25} onClick={() => dispatch({ type: 'zoom', factor: Math.max(.25, (percentage - 10) / 100) })}><Minus size={14} /></button>}
-    {value && <label className="navigation-zoom-value"><input aria-label="正文缩放比例" title="输入 25–400；双击恢复 100%" type="number" min={25} max={400} value={draft} onChange={event => setDraft?.(event.target.value)} onBlur={commit} onDoubleClick={() => dispatch({ type: 'zoom', factor: 1 })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } if (event.key === 'Escape') { event.preventDefault(); cancelBlur.current = true; setDraft?.(String(percentage)); event.currentTarget.blur(); } }} /><span>%</span></label>}
+    {value && <label className="navigation-zoom-value"><input aria-label="正文缩放比例" title="输入 25–400；双击恢复 100%" type="number" min={25} max={400} value={draft} onFocus={() => setZoomEditing?.(true)} onChange={event => setDraft?.(event.target.value)} onBlur={() => { commit(); setZoomEditing?.(false); }} onDoubleClick={() => dispatch({ type: 'zoom', factor: 1 })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } if (event.key === 'Escape') { event.preventDefault(); cancelBlur.current = true; setDraft?.(String(percentage)); event.currentTarget.blur(); } }} /><span>%</span></label>}
     {steps && <button className="icon-button" aria-label="放大正文" title="放大正文 · Ctrl+滚轮" disabled={percentage >= 400} onClick={() => dispatch({ type: 'zoom', factor: Math.min(4, (percentage + 10) / 100) })}><Plus size={14} /></button>}
   </div>;
 }
@@ -108,10 +108,12 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   const showIdentity = !minimal && !micro && (!isSheet || wide), showHistory = !minimal && !micro && (!isSheet || wide), showForward = (wide || tight || compact) && (!isSheet || wide), showReload = (wide || tight) && !isSheet, showSteps = (wide || tight || compact) && !isSheet, showUndo = (wide || tight) && !isSheet;
   const isWeb = state.format === 'web', isText = state.format === 'markdown' || state.format === 'html', hasMore = isSheet || !wide;
   const showZoom = !micro && (!isSheet || wide || tight), showEditing = !isWeb && !micro && (!isSheet || wide || tight);
-  const [addressDraft,setAddressDraft] = useState(state.address ?? ''), [zoomDraft,setZoomDraft] = useState(String(Math.round((state.zoom ?? 1)*100))), [menuOpen,setMenuOpen] = useState(false);
+  const [addressDraft,setAddressDraft] = useState(state.address ?? ''), [zoomDraft,setZoomDraft] = useState(String(Math.round((state.zoom ?? 1)*100))), [zoomEditing,setZoomEditing] = useState(false), [menuOpen,setMenuOpen] = useState(false);
   useEffect(() => setAddressDraft(state.address ?? ''),[state.address]);
-  useEffect(() => setZoomDraft(String(Math.round((state.zoom ?? 1)*100))),[state.zoom]);
-  const moduleProps = {state,dispatch,addressDraft,setAddressDraft,zoomDraft,setZoomDraft};
+  // Native automatic-fit receipts may arrive while the user types an explicit
+  // percentage. Keep that focused draft intact until they commit or cancel it.
+  useEffect(() => { if (!zoomEditing) setZoomDraft(String(Math.round((state.zoom ?? 1)*100))); },[state.zoom,zoomEditing]);
+  const moduleProps = {state,dispatch,addressDraft,setAddressDraft,zoomDraft,setZoomDraft,setZoomEditing};
   const overflowHandler = useRef(onOverflowChange); overflowHandler.current = onOverflowChange;
   const positionMenu = () => {
     const popup = menu.current, button = more.current; if (!popup || !button) return;

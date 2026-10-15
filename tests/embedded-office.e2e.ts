@@ -94,7 +94,15 @@ const stableStatus = async (view: ViewInfo) => {
   let previous: OfficeSurfaceState | undefined;
   await until(async () => {
     const next = await status(view);
-    const stable = !!previous && next.layoutRevision === previous.layoutRevision && next.eventSequence === previous.eventSequence;
+    // A DOM Home/End or scrollbar drag emits `scroll` before the renderer's
+    // serialized surface layout reaches the native session. Two identical
+    // status receipts alone can therefore still describe the previous
+    // scroll position. Wait until the native viewport agrees with the live
+    // DOM scroll offsets as well, then keep the existing revision guard.
+    const domScroll = await main.locator(`.embedded-office-content[data-office-surface="${view.id}"]`).evaluate(node => ({ x: node.scrollLeft, y: node.scrollTop }));
+    const nativeScroll = next.viewport ? { x: next.viewport.scrollX, y: next.viewport.scrollY } : undefined;
+    const sameScroll = typeof nativeScroll?.x === 'number' && typeof nativeScroll.y === 'number' && Math.abs(nativeScroll.x - domScroll.x) <= 1 && Math.abs(nativeScroll.y - domScroll.y) <= 1;
+    const stable = !!previous && next.layoutRevision === previous.layoutRevision && next.eventSequence === previous.eventSequence && sameScroll;
     previous = next;
     return stable;
   }, 'native Office layout settles before coordinate input', 10000);
@@ -379,12 +387,20 @@ const verifyManualSlideScrolling=async(view:ViewInfo)=>{
   const read=()=>main.locator('.embedded-office-content').evaluate(host=>{const box=host.getBoundingClientRect(),paper=host.querySelector('.embedded-office-paper-base')!.getBoundingClientRect(),reader=host.closest('.reader-panel')!.getBoundingClientRect();return {box:box.toJSON(),paper:paper.toJSON(),reader:reader.toJSON(),x:host.scrollLeft,maximum:host.scrollWidth-host.clientWidth,panes:[...host.closest('.workbench')!.querySelectorAll<HTMLElement>(':scope > .floating-side-panel')].map(panel=>({side:panel.dataset.side,box:panel.getBoundingClientRect().toJSON()}))};});
   await bar.focus();await bar.press('Home');let first=await read();assert.ok(first.maximum>0);assert.equal(first.x,0);assert.ok(first.box.left<first.panes.find(pane=>pane.side==='left')!.box.right,'manual canvas genuinely extends underneath the floating left tools');assert.ok(first.paper.left>=first.panes.find(pane=>pane.side==='left')!.box.right+5,'Home uncovers the left page edge');
   await bar.press('End');const last=await read();assert.ok(Math.abs(last.x-last.maximum)<=1);assert.ok(last.paper.right<=last.panes.find(pane=>pane.side==='right')!.box.left-5,'End uncovers the right page edge');
-  await bar.press('Home');const thumb=main.locator('.office-horizontal-scrollbar-thumb'),thumbBox=(await thumb.boundingBox())!,barBox=(await bar.boundingBox())!;
+  await bar.press('Home');assert.equal(await bar.getAttribute('aria-valuenow'),'0','Home updates the rendered thumb in the same input transaction');const thumb=main.locator('.office-horizontal-scrollbar-thumb'),thumbBox=(await thumb.boundingBox())!,barBox=(await bar.boundingBox())!;
   assert.equal(await thumb.evaluate(node=>{const box=node.getBoundingClientRect();return node.contains(document.elementFromPoint(box.x+box.width/2,box.y+box.height/2));}),true,'the thumb is an actual unobstructed mouse hit target');
-  await main.mouse.move(thumbBox.x+thumbBox.width/2,thumbBox.y+thumbBox.height/2);await main.mouse.down();await main.mouse.move(barBox.x+barBox.width*.72,barBox.y+barBox.height/2,{steps:10});await main.mouse.up();const dragged=await read();assert.ok(dragged.x>0&&dragged.x<dragged.maximum,'actual pointer dragging changes DOM scrollLeft');
+  // At 100% the thumb can occupy more than half of the track. Dragging to a
+  // fixed 72% track coordinate then correctly reaches the right endpoint;
+  // use the actual thumb travel to exercise a true intermediate position.
+  const thumbTravel=await bar.evaluate((node,thumbWidth)=>node.clientWidth-thumbWidth,thumbBox.width),dragDistance=thumbTravel/2;
+  await main.mouse.move(thumbBox.x+thumbBox.width/2,thumbBox.y+thumbBox.height/2);await main.mouse.down();await main.mouse.move(thumbBox.x+thumbBox.width/2+dragDistance,barBox.y+barBox.height/2,{steps:10});await main.mouse.up();const dragged=await read();results.scrollbarPointer={thumbBox,barBox,dragDistance,dragged};assert.ok(dragged.x>0&&dragged.x<dragged.maximum,'actual pointer dragging changes DOM scrollLeft');assert.ok(Math.abs(dragged.x-dragged.maximum/2)<=1+dragged.maximum/thumbTravel,'half the actual thumb travel reaches the scroll midpoint within one pointer pixel');
   await bar.press('Home');const before=await stableStatus(view);await tool('office_input',{viewId:view.id,...version(before),expectedLayoutRevision:before.layoutRevision,idempotencyKey:randomUUID(),action:{kind:'scroll',x:first.box.width/2,y:first.box.height/2,deltaX:100,deltaY:0}});await until(async()=>Math.abs((await read()).x-100)<=1,'MCP can scroll inside leading space whose clipped visibleTwips starts at zero');
-  const state=await status(view);assert.ok(Math.abs((state.viewport?.scrollX??-1)-100)<=1,'MCP state reports the actual padded DOM scroll');
-  const captured=await mcp.callTool({name:'office_capture',arguments:{viewId:view.id,expectedEngineEpoch:state.engineEpoch,expectedEngineRevision:state.engineRevision,expectedLayoutRevision:state.layoutRevision}});assert.notEqual(captured.isError,true);const image=(captured.content as {type:string;data?:string}[]).find(item=>item.type==='image');assert.ok(image?.data);await writeFile(join(evidence,'impress-manual-padded-capture.png'),Buffer.from(image.data,'base64'));
+  // First paint intentionally precedes the initial full-document mirror. Join
+  // that real read before taking a coordinate lease: its deferred Impress
+  // export can legitimately emit layout callbacks while capture is queued.
+  await model(view);
+  const state=await stableStatus(view);assert.ok(Math.abs((state.viewport?.scrollX??-1)-100)<=1,'MCP state reports the actual padded DOM scroll');
+  const captured=await mcp.callTool({name:'office_capture',arguments:{viewId:view.id,expectedEngineEpoch:state.engineEpoch,expectedEngineRevision:state.engineRevision,expectedLayoutRevision:state.layoutRevision}}),captureMessage=(captured.content as {type:string;text?:string}[]).filter(item=>item.type==='text').map(item=>item.text??'').join('\n');assert.notEqual(captured.isError,true,'office_capture: '+captureMessage);const image=(captured.content as {type:string;data?:string}[]).find(item=>item.type==='image');assert.ok(image?.data);await writeFile(join(evidence,'impress-manual-padded-capture.png'),Buffer.from(image.data,'base64'));
   const current=await read(),opaque=await app.evaluate(({nativeImage},data)=>{const image=nativeImage.createFromBuffer(Buffer.from(data,'base64')),size=image.getSize(),pixels=image.toBitmap();let left=size.width,top=size.height;for(let y=0;y<size.height;y++)for(let x=0;x<size.width;x++)if(pixels[(y*size.width+x)*4+3]>245){left=Math.min(left,x);top=Math.min(top,y);}return {...size,left,top};},image.data);
   assert.ok(Math.abs(opaque.left/scale-Math.max(0,current.paper.left-current.box.left))<2&&Math.abs(opaque.top/scale-Math.max(0,current.paper.top-current.box.top))<2,'actual MCP capture preserves the padded scroll origin');
   const queried=await tool<{data:{unit:string;objects:{name:string;text:string;bounds:{x:number;y:number;width:number;height:number}}[]}}>('office_query',{viewId:view.id,target:{kind:'shapes',slideIndex:0}}),title=queried.data.objects.find(shape=>shape.text.trim())!;assert.equal(queried.data.unit,'1/100mm');

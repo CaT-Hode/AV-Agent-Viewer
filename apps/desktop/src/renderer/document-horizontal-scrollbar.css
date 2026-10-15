@@ -1,0 +1,5 @@
+.document-horizontal-scrollbar { position:absolute; bottom:3px; left:var(--office-controls-left-inset,12px); right:var(--office-controls-right-inset,12px); height:16px; border:1px solid color-mix(in srgb,var(--muted,#768395) 24%,transparent); border-radius:8px; background:color-mix(in srgb,var(--muted,#768395) 16%,transparent); touch-action:none; z-index:5; outline:none; }
+.document-horizontal-scrollbar-thumb { position:absolute; top:3px; height:8px; border-radius:4px; background:color-mix(in srgb,var(--muted,#768395) 72%,transparent); }
+.document-horizontal-scrollbar:is(:hover,:focus-visible) .document-horizontal-scrollbar-thumb { background:color-mix(in srgb,var(--ink,#263443) 76%,transparent); }
+.document-horizontal-scrollbar[aria-disabled="true"] { opacity:.28; }
+.document-horizontal-scrollbar:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
