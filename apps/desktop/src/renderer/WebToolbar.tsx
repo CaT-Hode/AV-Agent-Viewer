@@ -5,8 +5,9 @@ import { call } from './lib/transport';
 import { applyAppearance } from './lib/appearance';
 import type { SettingsSnapshot } from '../../../../packages/settings/src/index';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from './lib/navigation-optics';
+import type {NavigationLane} from './lib/navigation-lane';
 
-type State = { bounds?:NavigationBounds; format?:string;title?:string;canUndo?:boolean; visible?: boolean; manualHidden?: boolean; instant?: boolean; hideProgress?: number; hideDurationMs?: number; backdropImage?: string; backdropSample?: NavigationBackdropSample; viewId?: string; address?: string; translated?: boolean; busy?: boolean; settings?: SettingsSnapshot; zoom?: number };
+type State = { bounds?:NavigationBounds;laneBounds?:NavigationLane; format?:string;title?:string;canUndo?:boolean; visible?: boolean; manualHidden?: boolean; instant?: boolean; hideProgress?: number; hideDurationMs?: number; backdropImage?: string; backdropSample?: NavigationBackdropSample; viewId?: string; address?: string; translated?: boolean; busy?: boolean; settings?: SettingsSnapshot; zoom?: number };
 
 // The native host only supplies transport; all navigation UI and modules are shared.
 export function WebToolbar() {
@@ -64,7 +65,7 @@ export function WebToolbar() {
     <div className="workbench native-toolbar">
       <NavigationToolbar key={state.viewId} state={{ format: state.format ?? 'web', title:state.title,canUndo:state.canUndo, address: state.address, translated: state.translated, busy: state.busy, zoom: state.zoom }}
         progress={state.instant ? 0 : state.hideProgress ?? (state.visible === false ? 1 : 0)} durationMs={state.instant ? 0 : state.hideDurationMs ?? 650} instant={state.instant} backdropImage={state.backdropImage} backdropSample={state.backdropSample} onGeometry={onGeometry} manualHidden={state.manualHidden}
-        availableWidth={state.bounds ? Math.max(32,state.bounds.width - 2 * NAVIGATION_METRICS.shadowGutter) : undefined} onOverflowChange={expanded => call('toolbar-panel',{viewId:state.viewId,expanded})}
+        laneBounds={state.laneBounds} availableWidth={state.bounds ? Math.max(32,state.bounds.width - 2 * NAVIGATION_METRICS.shadowGutter) : undefined} onOverflowChange={expanded => call('toolbar-panel',{viewId:state.viewId,expanded})}
         dispatch={command => { const { type, ...args } = command; action(type, args); }}
         onHover={() => action('hover')} onLeave={() => action('leave')} onFocus={() => action('focus')} onBlur={() => action('blur')} />
     </div>

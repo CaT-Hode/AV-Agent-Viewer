@@ -228,6 +228,11 @@ export class NativeOfficeRuntime extends EventEmitter {
     await this.request('close', { sessionId, discard: options.discard === true }); const record = this.sessions.get(sessionId); this.sessions.delete(sessionId); if (record) this.documentSessions.delete(record.documentId);
   }
   surfaceLayout(sessionId: string, value: OfficeSurfaceLayoutRequest) { return this.request<OfficeSurfaceState>('surfaceLayout', { sessionId, ...value }); }
+  /** The trusted display host enables semantic projection only after real pixels were presented. */
+  async enableContextProjection(sessionId: string, viewId: string) {
+    if (this.options.backend !== 'kit') return;
+    return this.request<{ sessionId: string; viewId: string; engineEpoch: string; enabled: true }>('enableContextProjection', { sessionId, viewId });
+  }
   async surfaceTiles(sessionId: string, value: OfficeSurfaceTilesRequest): Promise<OfficeSurfaceTilesReply> {
     const result = await this.request<any>('surfaceTiles', { sessionId, ...value });
     return { ...result, tiles: result.tiles.map((tile: any) => ({ ...tile, data: new Uint8Array(Buffer.from(tile.data, 'base64')) })) };

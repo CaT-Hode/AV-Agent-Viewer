@@ -1,0 +1,41 @@
+.office-startup-preview { position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;min-width:0;min-height:0;color:var(--document-paper-ink,#24303b);background:var(--document-paper,#fff);overflow:hidden;user-select:text; }
+.office-startup-preview-caption { flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:8px 16px;font-size:11px;color:var(--document-paper-muted,#52606d); }
+.office-startup-preview-caption>span { font-weight:600; }
+.office-startup-preview-caption small { font-size:10px;opacity:.8; }
+.office-startup-preview-scroll { flex:1;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;outline:none; }
+.office-startup-preview-scroll:focus-visible { outline:1px solid var(--document-paper-rule,#dfe3e7);outline-offset:-1px; }
+.office-startup-preview-docx { padding-top:0;background:transparent; }
+.office-startup-word-paper { box-sizing:border-box;max-width:none;margin:0 auto 20px;background:var(--document-paper,#fff);color:var(--document-paper-ink,#24303b);font:16px/1.6 Calibri,'Microsoft YaHei',sans-serif; }
+.office-startup-word-paper p { min-height:1.2em;margin:0 0 12px;overflow-wrap:anywhere; }
+.office-startup-word-paper [data-style=Heading1] { font-size:28px;font-weight:700; }
+.office-startup-word-paper [data-style=Heading2] { font-size:23px;font-weight:650; }
+.office-startup-word-paper [data-style=Heading3] { font-size:19px;font-weight:600; }
+.office-startup-word-table { width:100%;border-collapse:collapse;table-layout:fixed;margin:14px 0; }
+.office-startup-word-table td { border:1px solid var(--document-paper-rule,#dfe3e7);padding:6px;vertical-align:top; }
+.office-startup-word-table td p { margin:0 0 5px; }
+.office-startup-word-table caption { text-align:left;font-size:10px;color:var(--document-paper-muted,#52606d);padding:3px 0; }
+.office-startup-preview-pptx { top:var(--office-presentation-top-inset,84px);left:var(--office-presentation-left-inset,12px);right:var(--office-presentation-right-inset,12px);bottom:12px;background:transparent; }
+.office-startup-slide-stage { padding:4px 0 12px; }
+.office-startup-slide { position:relative;min-width:360px;width:100%;background:var(--document-paper,#fff);color:var(--document-paper-ink,#24303b);overflow:hidden;font:22px/1.25 Arial,'Microsoft YaHei',sans-serif; }
+.office-startup-slide.is-flow { min-height:300px;padding:24px;box-sizing:border-box; }
+.office-startup-slide-object { position:absolute;box-sizing:border-box;white-space:pre-wrap;overflow-wrap:anywhere;border-style:solid;border-width:0;padding:4px; }
+.office-startup-slide-flow { white-space:pre-wrap;padding:8px 16px;overflow-wrap:anywhere; }
+.office-startup-preview-xlsx { top:var(--office-sheet-top-inset,84px);left:var(--office-sheet-left-inset,12px);right:var(--office-sheet-right-inset,12px);bottom:12px;border-radius:18px;background:var(--document-paper,#fff); }
+.embedded-office-xlsx>.office-startup-preview-xlsx { inset:0;border-radius:inherit; }
+.office-startup-preview-xlsx .office-startup-preview-scroll { margin:0 12px 12px; }
+.office-startup-sheet-extent { position:relative;min-width:100%;min-height:100%;font:13px/1.4 Calibri,'Microsoft YaHei',sans-serif; }
+.office-startup-sheet-headers { position:absolute;left:0;right:0;height:28px;z-index:3;pointer-events:none; }
+.office-startup-sheet-headers>span { position:absolute;top:0;height:28px;box-sizing:border-box;display:grid;place-items:center;background:var(--document-paper-soft,#f5f6f7);border-right:1px solid var(--document-paper-rule,#dfe3e7);border-bottom:1px solid var(--document-paper-rule,#dfe3e7);font-size:11px;color:var(--document-paper-muted,#52606d); }
+.office-startup-sheet-corner { width:48px;z-index:4; }
+.office-startup-sheet-row { position:absolute;left:0;right:0; }
+.office-startup-sheet-row>span { position:absolute;top:0;height:100%;box-sizing:border-box;border-right:1px solid var(--document-paper-rule,#dfe3e7);border-bottom:1px solid var(--document-paper-rule,#dfe3e7); }
+.office-startup-sheet-row-number { display:grid;place-items:center;width:48px;z-index:2;background:var(--document-paper-soft,#f5f6f7);color:var(--document-paper-muted,#52606d);font-size:11px; }
+.office-startup-sheet-cell { padding:4px 7px;overflow:hidden;color:var(--document-paper-ink,#24303b);background:var(--document-paper,#fff); }
+.office-startup-preview-pager { flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:10px;min-height:28px;padding:3px 10px;color:var(--document-paper-muted,#52606d);font-size:11px; }
+.office-startup-preview-pager button { border:0;border-radius:6px;background:var(--document-paper-soft,#f5f6f7);color:var(--document-paper-ink,#24303b);font-size:11px;padding:4px 9px; }
+.office-startup-preview-pager button:disabled { opacity:.35; }
+.office-startup-preview-pager button:focus-visible { outline:2px solid var(--accent,#087bdc);outline-offset:1px; }
+.office-startup-preview-sheet-tabs { justify-content:flex-start;overflow:auto hidden;gap:4px; }
+.office-startup-preview-sheet-tabs button { flex:0 0 auto; }
+.office-startup-preview-sheet-tabs button[aria-pressed=true] { font-weight:650;background:var(--document-paper-rule,#dfe3e7); }
+.office-startup-preview-empty,.office-startup-preview-note { margin:20px;font-size:12px;line-height:1.7;color:var(--document-paper-muted,#52606d); }

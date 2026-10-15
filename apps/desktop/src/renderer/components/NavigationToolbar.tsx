@@ -7,7 +7,7 @@ import { navigationMotionDuration, useMotionSnapshot } from '../lib/motion';
 import { LiquidGlassSurface } from './LiquidGlassSurface';
 import { useGlassSpringValue } from '../lib/glass-elasticity';
 import { KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
-import { boundedNavigationPresentation, navigationControlMetrics, navigationDensity, observeNavigationLane, preferredNavigationWidth, readNavigationLane, type NavigationLane } from '../lib/navigation-lane';
+import { boundedNavigationPresentation, clearSidebarNavigationReservation, navigationControlMetrics, navigationDensity, navigationLane, observeNavigationLane, preferredNavigationWidth, readNavigationTargetLane, syncSidebarNavigationReservation, type NavigationLane } from '../lib/navigation-lane';
 
 export type NavigationAction =
   | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' | 'dismiss' }
@@ -74,24 +74,36 @@ const contributions = {
   document: { identity: DocumentModule, tools: [EditModule] },
 };
 
-export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 650, manualHidden = false, instant = false, backdropImage, backdropSample, availableWidth, onOverflowChange, onGeometry, onHover, onLeave, onFocus, onBlur }: ModuleProps & {
+export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 650, manualHidden = false, instant = false, backdropImage, backdropSample, availableWidth, laneBounds, onOverflowChange, onGeometry, onHover, onLeave, onFocus, onBlur }: ModuleProps & {
   progress?: number; durationMs?: number; manualHidden?: boolean; instant?: boolean; backdropImage?: string; backdropSample?: NavigationBackdropSample;
-  availableWidth?: number; onOverflowChange?(open: boolean): Promise<unknown> | void;
+  availableWidth?: number; laneBounds?: NavigationLane; onOverflowChange?(open: boolean): Promise<unknown> | void;
   onGeometry?(bounds: NavigationBounds): void;
   onHover?(): void; onLeave?(): void; onFocus?(): void; onBlur?(): void;
 }) {
   const contribution = contributions[state.format as keyof typeof contributions] ?? contributions.document;
   const Identity = contribution.identity, hidden = progress >= 1, isSheet = state.format === 'xlsx';
-  const nav = useRef<HTMLElement>(null), menu = useRef<HTMLDivElement>(null), more = useRef<HTMLButtonElement>(null);
-  const [lane,setLane] = useState<NavigationLane>({left:0,right:availableWidth ?? 820,width:availableWidth ?? 820,center:(availableWidth ?? 820)/2});
+  const nav = useRef<HTMLElement>(null), capsule = useRef<HTMLDivElement>(null), menu = useRef<HTMLDivElement>(null), more = useRef<HTMLButtonElement>(null);
+  const nativeInset = document.documentElement.classList.contains('native-toolbar-root') ? NAVIGATION_METRICS.shadowGutter : 0;
+  const initialCanvas = navigationLane({left:nativeInset,right:nativeInset+(availableWidth??820)});
+  const [lane,setLane] = useState<NavigationLane>(laneBounds ?? initialCanvas), [canvas,setCanvas] = useState<NavigationLane>(initialCanvas);
   useLayoutEffect(() => {
     const reader = nav.current?.closest<HTMLElement>('.reader-panel');
-    if (!reader) { const width = availableWidth ?? 820; setLane({left:0,right:width,width,center:width/2}); return; }
-    return observeNavigationLane(reader,beforePaint => { const next = readNavigationLane(reader), apply = () => setLane(old => JSON.stringify(old) === JSON.stringify(next) ? old : next); if (beforePaint) flushSync(apply); else apply(); });
-  },[availableWidth]);
+    if (!reader) { const next = navigationLane({left:nativeInset,right:nativeInset+(availableWidth??820)}); setCanvas(next); setLane(laneBounds??next); return; }
+    const dispose = observeNavigationLane(reader,beforePaint => {
+      const next = readNavigationTargetLane(reader), nextCanvas = navigationLane({left:0,right:reader.getBoundingClientRect().width});
+      const apply = () => { setLane(old => JSON.stringify(old) === JSON.stringify(next) ? old : next); setCanvas(old => JSON.stringify(old) === JSON.stringify(nextCanvas) ? old : nextCanvas); };
+      if (beforePaint) flushSync(apply); else apply();
+      const cap = capsule.current;
+      if (hidden) clearSidebarNavigationReservation(reader);
+      else if (cap) { const rect = cap.getBoundingClientRect(), box = reader.getBoundingClientRect(); syncSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left); }
+    });
+    return () => { dispose(); clearSidebarNavigationReservation(reader); };
+  },[availableWidth,laneBounds?.left,laneBounds?.right,laneBounds?.width,laneBounds?.center,nativeInset,hidden]);
   const animatedWidth = useGlassSpringValue(isSheet ? Math.min(lane.width,1060) : preferredNavigationWidth(lane.width),KUBE_GLASS_SPRINGS.lensShape);
   const animatedCenter = useGlassSpringValue(lane.center,KUBE_GLASS_SPRINGS.lensShape);
-  const fitted = boundedNavigationPresentation(lane,animatedWidth,animatedCenter), density = navigationDensity(fitted.width);
+  // The canvas boundary is stable. Sidebars yield their visible shape to the
+  // actual capsule while it springs toward their preannounced final lane.
+  const fitted = boundedNavigationPresentation(canvas,animatedWidth,animatedCenter), density = navigationDensity(fitted.width);
   const wide = density === 'wide', tight = density === 'tight', compact = density === 'compact', minimal = density === 'minimal', micro = density === 'micro';
   const showIdentity = !minimal && !micro && (!isSheet || wide), showHistory = !minimal && !micro && (!isSheet || wide), showForward = (wide || tight || compact) && (!isSheet || wide), showReload = (wide || tight) && !isSheet, showSteps = (wide || tight || compact) && !isSheet, showUndo = (wide || tight) && !isSheet;
   const isWeb = state.format === 'web', isText = state.format === 'markdown' || state.format === 'html', hasMore = isSheet || !wide;
@@ -134,12 +146,11 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
   }, [entered, immediate]);
   const visualProgress = !entered && !immediate ? 1 : progress;
-  const capsule = useRef<HTMLDivElement>(null);
   const [capsuleBounds, setCapsuleBounds] = useState<NavigationBounds>();
   const [surface, setSurface] = useState<'light' | 'dark'>();
   const reportGeometry = useRef(onGeometry); reportGeometry.current = onGeometry;
   useLayoutEffect(() => {
-    if (!onGeometry || !capsule.current) return;
+    if (!capsule.current) return;
     let frame = 0;
     const until = performance.now() + durationMs + 50;
     const measure = () => {
@@ -147,6 +158,8 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
       const node = capsule.current; if (!node) return;
       const rect = node.getBoundingClientRect();
       const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      const reader = nav.current?.closest<HTMLElement>('.reader-panel');
+      if (reader) { if (hidden) clearSidebarNavigationReservation(reader); else { const box = reader.getBoundingClientRect(); syncSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left); } }
       setCapsuleBounds(old => {
         if (old && ['x', 'y', 'width', 'height'].every(key => Math.abs(old[key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) < .125)) return old;
         return bounds;
@@ -157,7 +170,7 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     const observer = new ResizeObserver(measure); observer.observe(capsule.current);
     measure();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [!!onGeometry, visualProgress, durationMs, state.format, fitted.center, fitted.width]);
+  }, [!!onGeometry, hidden, visualProgress, durationMs, state.format, fitted.center, fitted.width]);
   const metrics = navigationControlMetrics(density);
   const style = { '--navigation-slot-left': fitted.center + 'px', '--navigation-slot-width': fitted.width + 'px', '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': metrics.height + 'px', '--navigation-radius': metrics.radius + 'px', '--navigation-button-size': metrics.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
   return <nav ref={nav} className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} data-navigation-density={density} data-navigation-manual-hidden={manualHidden || undefined} style={style}

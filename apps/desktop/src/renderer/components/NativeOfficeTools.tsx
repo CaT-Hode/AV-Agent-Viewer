@@ -48,6 +48,9 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
   const owned = nativeOfficeOwnedState(localState, props) ? localState : undefined;
   const state = supplied && nativeOfficeStateVersionOrder(owned, supplied) === 1 ? owned : supplied ?? owned;
   const current = useRef(state); current.current = state;
+  // The tiled importer can be ready before the first frame is presented.
+  // Tool discovery and thumbnail export must yield to that first real frame.
+  const backgroundReadsReady=!!state&&state.status==='ready'&&(!('surfaceKind' in state)||state.surfaceKind!=='tiled'||state.visible===true&&state.nativeGeometry===true);
   const liveIdentity = useRef(identity); liveIdentity.current = identity;
   const request: NativeOfficeRequest = useMemo(() => (method, args) => (latestProps.current.request ?? call)(method, args), []);
   const acceptState = useMemo(() => (value: NativeOfficeState) => {
@@ -112,7 +115,7 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
     });
   }, [identity, viewId, documentId, props.state === undefined, props.request, acceptState]);
   useEffect(() => {
-    if (!searchOpen || !state || state.status !== 'ready') return;
+    if (!searchOpen || !state || !backgroundReadsReady) return;
     let stopped = false;
     void (async () => {
       try {
@@ -120,9 +123,9 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
         if (!stopped && liveIdentity.current === identity) { setCatalog({ key: engineKey, commands: result }); setReadErrors(previous => updateNativeOfficeReadErrors(previous, { kind: 'catalog', key: engineKey, outcome: 'success' })); }
       } catch (cause) { if (!stopped && liveIdentity.current === identity) setReadErrors(previous => updateNativeOfficeReadErrors(previous, { kind: 'catalog', key: engineKey, outcome: 'failure', cause })); }
     })(); return () => { stopped = true; };
-  }, [engineKey, catalogRetry, props.request, searchOpen]);
+  }, [engineKey, catalogRetry, props.request, searchOpen,backgroundReadsReady]);
   useEffect(() => {
-    if (!state || state.status !== 'ready' || !wanted.length) return;
+    if (!state || !backgroundReadsReady || !wanted.length) return;
     let stopped = false;
     void (async () => {
       try {
@@ -135,9 +138,9 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
         if (!stopped) { setStatuses({ key: statusKey + wantedKey, commands: result }); setReadErrors(previous => updateNativeOfficeReadErrors(previous, { kind: 'status', key: statusKey + wantedKey, outcome: 'success' })); }
       } catch (cause) { if (!stopped && liveIdentity.current === identity) setReadErrors(previous => updateNativeOfficeReadErrors(previous, { kind: 'status', key: statusKey + wantedKey, outcome: 'failure', cause })); }
     })(); return () => { stopped = true; };
-  }, [statusKey, wantedKey, request, queryRetry]);
+  }, [statusKey, wantedKey, request, queryRetry,backgroundReadsReady]);
   useEffect(() => {
-    if (!state || state.status !== 'ready' || !navigationCategory) return;
+    if (!state || !backgroundReadsReady || !navigationCategory) return;
     const target: NativeOfficeQuery = { kind: format === 'docx' ? 'document' : format === 'pptx' ? 'slides' : 'sheets' };
     let stopped = false;
     const load = () => void request<{ state: NativeOfficeState; data: unknown }>('office-query', { viewId, target }).then(response => {
@@ -149,7 +152,7 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
     const timer = format === 'pptx' ? setTimeout(load, 100) : undefined;
     if (timer === undefined) load();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [documentKey, request, queryRetry, navigationCategory]);
+  }, [documentKey, request, queryRetry, navigationCategory,backgroundReadsReady]);
 
   const perform = async (operation: () => Promise<NativeOfficeActionResult>, propagate = false) => {
     if (busyRef.current) { if(propagate)throw new Error('上一条 Office 操作仍在处理中。'); return; }
@@ -174,7 +177,7 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
     {props.category === undefined && <div className="native-office-categories" role="tablist" aria-label="Office 工具分类">{contribution.categories.map(item => <button key={item.id} type="button" role="tab" aria-selected={item.id === category} tabIndex={item.id === category ? 0 : -1} className={item.id === category ? 'selected' : ''} onMouseDown={event => event.preventDefault()} onClick={() => { setLocalCategory({ identity, category: item.id }); props.onCategoryChange?.(item.id); }}>{item.label}</button>)}</div>}
     <div role="tabpanel" aria-label={contribution.categories.find(item => item.id === category)?.label} data-office-category={category}>
       {initializing ? <p className="native-office-note" role="status">正在等待文档引擎，工具准备好后会自动显示…</p> : state.status === 'failed' ? <p className="native-office-note">文档引擎未就绪。</p> : <>
-        <NativeOfficeStyleInspector documentId={documentId} viewId={viewId} format={format} category={category} state={state} busy={busy} request={props.request} onApply={async(target,values,source)=>{const result=await perform(()=>owner.controller.setStyle(target,values,source),true);if(result?.status==='dispatched')throw new Error('修改已派发，尚未确认完整结果。请重新读取属性后检查。');}}/>
+        <NativeOfficeStyleInspector documentId={documentId} viewId={viewId} format={format} category={category} state={state} busy={busy||!backgroundReadsReady} request={props.request} onApply={async(target,values,source)=>{const result=await perform(()=>owner.controller.setStyle(target,values,source),true);if(result?.status==='dispatched')throw new Error('修改已派发，尚未确认完整结果。请重新读取属性后检查。');}}/>
         {visibleGroups.map(group => <section key={group.title} className="native-office-group" aria-label={group.title}><h3>{group.title}</h3><div className="native-office-command-grid">{group.commands.filter(item => item.command !== '.uno:NotesPage' || statusById.get('.uno:NotesMode')?.available !== true).map(renderCommand)}</div></section>)}
         {!visibleGroups.length && commands.length > 0 && <p className="native-office-note">当前引擎未在此分类提供常用命令，可在已发现命令中查找。</p>}
         {navigationCategory && <section className="native-office-group native-office-navigation" aria-label={format === 'pptx' ? '幻灯片导航' : format === 'xlsx' ? '工作表导航' : '页面导航'}>

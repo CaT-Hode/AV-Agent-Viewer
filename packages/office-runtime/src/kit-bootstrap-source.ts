@@ -1,6 +1,6 @@
 /** A docless, versioned registration seed. It never contains a live Office profile. */
 export const officeKitBootstrapSource = String.raw`
-import shutil
+import shutil, stat
 KIT_BOOTSTRAP_BUILD='bf6ef2662401c7d6dce671ab4deb26ee0af3a7c1'
 KIT_BOOTSTRAP_DLL='017d0c21b6e45e54c0194b58017853d8c653059cc643643c3eb831a4d309331f'
 KIT_BOOTSTRAP_SETUP=b'<?xml version="1.0" encoding="UTF-8"?><oor:items xmlns:oor="http://openoffice.org/2001/registry"><item oor:path="/org.openoffice.Setup/Office"><prop oor:name="LastCompatibilityCheckID" oor:op="fuse"><value>'+KIT_BOOTSTRAP_BUILD.encode()+b'</value></prop><prop oor:name="ooSetupInstCompleted" oor:op="fuse"><value>true</value></prop></item></oor:items>'
@@ -10,14 +10,33 @@ def bootstrap_registration_fingerprint(program):
     # of installation path and copy timestamps. Dictionaries are read directly
     # from the installed engine; their contents never enter this seed.
     digest=hashlib.sha256(KIT_BOOTSTRAP_BUILD.encode())
+    def checked_info(path,info):
+        if stat.S_ISLNK(info.st_mode) or getattr(info,'st_file_attributes',0)&getattr(stat,'FILE_ATTRIBUTE_REPARSE_POINT',0):raise ValueError('Bootstrap catalog link')
+        return info
+    share=program.parent/'share'
+    try:share_info=checked_info(share,share.stat(follow_symlinks=False))
+    except FileNotFoundError:share_info=None
+    if share_info is not None and not stat.S_ISDIR(share_info.st_mode):raise ValueError('Bootstrap catalog root')
     for directory in ['share/extensions','share/uno_packages']:
         root=program.parent/directory
-        if not root.exists():digest.update((directory+'/absent\n').encode());continue
-        for path in sorted(root.rglob('*')):
-            if '__pycache__' in path.parts or path.suffix.lower() in ['.pyc','.pyo'] or path.name.lower().endswith('.log'):continue
-            if path.is_symlink() or getattr(path,'is_junction',lambda:False)():raise ValueError('Bootstrap catalog link')
-            if not path.is_file():continue
-            relative=path.relative_to(root).as_posix();size=path.stat().st_size;metadata=path.suffix.lower() in ['.xml','.xcu','.xcs','.rdb','.components','.ini','.json'] or path.name in ['manifest','unorc']
+        if share_info is None:digest.update((directory+'/absent\n').encode());continue
+        try:root_info=checked_info(root,root.stat(follow_symlinks=False))
+        except FileNotFoundError:digest.update((directory+'/absent\n').encode());continue
+        if not stat.S_ISDIR(root_info.st_mode):raise ValueError('Bootstrap catalog root')
+        if '__pycache__' in root.parts:continue
+        files=[]
+        def scan(path):
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    info=checked_info(entry.path,entry.stat(follow_symlinks=False));name=entry.name;suffix=os.path.splitext(name)[1].lower()
+                    if name=='__pycache__':continue
+                    if stat.S_ISDIR(info.st_mode):scan(pathlib.Path(entry.path))
+                    elif stat.S_ISREG(info.st_mode) and suffix not in ['.pyc','.pyo'] and not name.lower().endswith('.log'):files.append((pathlib.Path(entry.path),info.st_size))
+        scan(root)
+        # Preserve the original Path ordering, including Windows component-wise
+        # case folding. Plain relative-string sorting is a different inventory.
+        for path,size in sorted(files,key=lambda item:item[0]):
+            relative=path.relative_to(root).as_posix();metadata=path.suffix.lower() in ['.xml','.xcu','.xcs','.rdb','.components','.ini','.json'] or path.name in ['manifest','unorc']
             digest.update(json.dumps([directory,relative,size,hashlib.sha256(path.read_bytes()).hexdigest() if metadata else None],ensure_ascii=False,separators=(',',':')).encode()+b'\n')
     return digest.hexdigest()
 

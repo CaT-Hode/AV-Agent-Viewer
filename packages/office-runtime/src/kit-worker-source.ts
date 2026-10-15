@@ -203,6 +203,10 @@ def page_rectangles(session):
     text=kit_string(doc_call(session,'getPartPageRectangles',P)())
     return parse_rects(text)
 def project_visible_text(session,view):
+    # First pixels need layout and tiles, not a whole-model semantic geometry
+    # pass. Only the trusted host's real presentation acknowledgement enables
+    # this view's projection; neither a timer nor a requested tile proves that.
+    if view.get('contextProjectionEnabled') is not True:view.pop('visibleProjection',None);return '',False,False
     visible=view.get('visibleTwips')
     if not visible or not view.get('visible'):view.pop('visibleProjection',None);return '',False,False
     key=visible_projection_key(session,view);cache=view.get('visibleProjection')
@@ -211,6 +215,11 @@ def project_visible_text(session,view):
     if result[2] and not native_input_pending(session,view) and key==visible_projection_key(session,view):view['visibleProjection']={'key':key,'result':result}
     else:view.pop('visibleProjection',None)
     return result
+
+def enable_context_projection(session,view):
+    if view.get('contextProjectionEnabled') is not True:
+        view.pop('visibleProjection',None);view['contextProjectionEnabled']=True
+    return {'sessionId':session['sessionId'],'viewId':view['viewId'],'engineEpoch':epoch,'enabled':True}
 
 def visible_projection_key(session,view):
     return (session['engineRevision'],view.get('partIndex',0),view.get('eventSequence',0),view.get('zoom',1),view.get('deviceScaleFactor',1),tuple(view.get('visibleTwips',{}).get(k,0) for k in ['x','y','width','height']))
@@ -476,6 +485,7 @@ def input_request(session,view,args,window=None):
     finally:session['operationActor']=None
 def attach_kit_view(session,controller,args,identifier):
     view={'sessionId':session['sessionId'],'viewId':args['viewId'],'kitViewId':identifier,'controller':controller,'frame':controller.getFrame(),'disposed':False,'selectionEpoch':0,'layoutRevision':0,'renderGeneration':0,'eventSequence':0,'visible':False,'focused':False,'deviceScaleFactor':1,'bounds':{'x':0,'y':0,'width':0,'height':0},'viewportCss':{'width':0,'height':0},'inputStreams':{},'windows':{},'selectionRects':[],'partIndex':0,'actor':'human'}
+    view['contextProjectionEnabled']=False
     session['views'][view['viewId']]=view;session['activeViewId']=view['viewId'];activate(session,view)
     doc_call(session,'initializeForRendering',None,S)(b'{}');callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None)
     doc_call(session,'setAccessibilityState',None,I,B)(identifier,True)
@@ -755,6 +765,7 @@ def handle_request(request):
         for session in list(sessions.values()):close_session(session,args.get('discard',False))
         global quitting;quitting=True;return {'closed':True}
     session=session_for(args);view=view_for(session,args)
+    if method=='enableContextProjection':return enable_context_projection(session,view)
     if method in ['state','surfaceState','office-surface-state']:return state(session,view)
     if method in ['layout','surfaceLayout','office-surface-layout']:layout_view(view,args);yield;return state(session,view)
     if method in ['surfaceTiles','office-surface-tiles']:return tiles(session,view,args)

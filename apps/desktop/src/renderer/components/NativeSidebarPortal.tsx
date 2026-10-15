@@ -2,6 +2,7 @@ import { cloneElement, useCallback, useLayoutEffect, useRef, useState, type CSSP
 import { createPortal } from 'react-dom';
 import { desktop } from '../lib/transport';
 import { NativePanelHeightContext } from '../lib/native-panel-height';
+import { sidebarPopupProjection } from '../lib/sidebar-presence';
 
 type Attributes = Record<string, unknown> & { style?: CSSProperties };
 type Props = Attributes & { enabled: boolean; viewId?: string; side: 'left' | 'right'; children: ReactElement<Attributes> };
@@ -26,7 +27,25 @@ export function NativeSidebarPortal({ enabled, viewId, side, children, ...presen
       if (value === undefined) container.style.removeProperty(name);
       else container.style.setProperty(name, String(value));
     }
-  }, [container, presence.style]);
+    const project = () => {
+      const source=anchor.current;if(!source)return;
+      const original=Number.parseFloat(String(presence.style?.['--sidebar-spring-x' as keyof CSSProperties]??0))||0;
+      const paint=sidebarPopupProjection(side,source.offsetWidth,original);
+      container.style.setProperty('--sidebar-window-scale-x',String(paint.scaleX));
+      container.style.setProperty('--sidebar-window-x',paint.x+'px');
+    };
+    const size=new ResizeObserver(project);if(anchor.current)size.observe(anchor.current);project();
+    return()=>size.disconnect();
+  }, [container, presence.style,side]);
+  useLayoutEffect(() => {
+    const source = anchor.current; if (!container || !source) return;
+    // The navigation lives in another trusted window. Its actual moving edge
+    // constrains the hidden owner's anchor; mirror that paint-only constraint
+    // into this same React tree before the child window's next frame.
+    const sync = () => { const value = source.style.getPropertyValue('--sidebar-space-scale-x'); if (value) container.style.setProperty('--sidebar-space-scale-x',value); else container.style.removeProperty('--sidebar-space-scale-x'); };
+    const observer = new MutationObserver(sync); observer.observe(source,{attributes:true,attributeFilter:['style']}); sync();
+    return () => observer.disconnect();
+  }, [container]);
   useLayoutEffect(() => {
     if (!desktop || !enabled || !viewId) { setContainer(undefined); return; }
     const url = new URL(location.href); url.hash = '/reader-panel?side=' + side + '&view=' + encodeURIComponent(viewId);

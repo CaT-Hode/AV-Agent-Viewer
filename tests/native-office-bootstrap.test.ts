@@ -104,3 +104,61 @@ publish_docless_bootstrap_seed(context);malformed=[]
 test('a null file record rejects the cache and leaves a clean normal-init profile',()=>scenario(String.raw`
 publish_docless_bootstrap_seed(context);malformed=json.loads((context['cache']/'manifest.json').read_text('utf-8'));malformed['files']=[None]
 `+malformedCacheFallback));
+
+test('scandir preserves the exact old catalog digest and content/size rules across mixed-case path ordering',()=>scenario(String.raw`
+def previous_fingerprint(program):
+    digest=hashlib.sha256(KIT_BOOTSTRAP_BUILD.encode())
+    for directory in ['share/extensions','share/uno_packages']:
+        root=program.parent/directory
+        if not root.exists():digest.update((directory+'/absent\n').encode());continue
+        for path in sorted(root.rglob('*')):
+            if '__pycache__' in path.parts or path.suffix.lower() in ['.pyc','.pyo'] or path.name.lower().endswith('.log'):continue
+            if path.is_symlink() or getattr(path,'is_junction',lambda:False)():raise ValueError('Bootstrap catalog link')
+            if not path.is_file():continue
+            relative=path.relative_to(root).as_posix();size=path.stat().st_size;metadata=path.suffix.lower() in ['.xml','.xcu','.xcs','.rdb','.components','.ini','.json'] or path.name in ['manifest','unorc']
+            digest.update(json.dumps([directory,relative,size,hashlib.sha256(path.read_bytes()).hexdigest() if metadata else None],ensure_ascii=False,separators=(',',':')).encode()+b'\n')
+    return digest.hexdigest()
+for name,data in [('alpha/a.xcu',b'AAAA'),('alpha-1/config.XML',b'BBBB'),('ALPHABET/a.dic',b'CCCC'),('Zulu/manifest',b'DDDD'),('binary/data.aff',b'EEEE'),('__pycache__/ignore.pyc',b'ignored'),('ignore.PYO',b'ignored'),('trace.LOG',b'ignored'),('directory.LOG/kept.xcu',b'KEEP'),('directory.pyc/kept.xcu',b'KEEP')]:
+    path=PROGRAM.parent/'share/extensions'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+before=bootstrap_registration_fingerprint(PROGRAM);assert before==previous_fingerprint(PROGRAM)
+dictionary=PROGRAM.parent/'share/extensions/ALPHABET/a.dic';dictionary.write_bytes(b'ZZZZ')
+assert bootstrap_registration_fingerprint(PROGRAM)==before==previous_fingerprint(PROGRAM),'dictionary bytes are read by the engine, not hashed by the registration inventory'
+dictionary.write_bytes(b'LONGER');assert bootstrap_registration_fingerprint(PROGRAM)!=before and bootstrap_registration_fingerprint(PROGRAM)==previous_fingerprint(PROGRAM)
+before=bootstrap_registration_fingerprint(PROGRAM);metadata=PROGRAM.parent/'share/extensions/alpha/a.xcu';metadata.write_bytes(b'ZZZZ')
+assert bootstrap_registration_fingerprint(PROGRAM)!=before and bootstrap_registration_fingerprint(PROGRAM)==previous_fingerprint(PROGRAM),'same-size registration metadata changes must invalidate the seed'
+`));
+
+test('catalog scanning reads each DirEntry stat once without following links and rejects reparse entries before descending',()=>scenario(String.raw`
+from types import SimpleNamespace
+original_scandir=os.scandir;counts={};reparse=False
+class Entry:
+    def __init__(self,entry):self.entry=entry;self.name=entry.name;self.path=entry.path
+    def stat(self,*,follow_symlinks):
+        assert follow_symlinks is False;counts[self.path]=counts.get(self.path,0)+1
+        if reparse:return SimpleNamespace(st_mode=stat.S_IFDIR,st_file_attributes=getattr(stat,'FILE_ATTRIBUTE_REPARSE_POINT',0x400),st_size=0)
+        return self.entry.stat(follow_symlinks=False)
+class Scan:
+    def __init__(self,path):self.source=original_scandir(path)
+    def __enter__(self):return iter(Entry(entry) for entry in self.source.__enter__())
+    def __exit__(self,*args):return self.source.__exit__(*args)
+os.scandir=Scan
+try:
+    bootstrap_registration_fingerprint(PROGRAM);assert counts and all(value==1 for value in counts.values())
+    counts.clear();reparse=True
+    try:bootstrap_registration_fingerprint(PROGRAM);raise AssertionError('Reparse entry traversed')
+    except ValueError as error:assert 'link' in str(error)
+    assert len(counts)==1,'junction targets must not be enumerated'
+finally:os.scandir=original_scandir
+original_stat=pathlib.Path.stat
+for unsafe_root in [PROGRAM.parent/'share',PROGRAM.parent/'share/extensions']:
+    def fake_stat(path,*,follow_symlinks=True):
+        if path==unsafe_root:
+            assert follow_symlinks is False
+            return SimpleNamespace(st_mode=stat.S_IFDIR,st_file_attributes=getattr(stat,'FILE_ATTRIBUTE_REPARSE_POINT',0x400),st_size=0)
+        return original_stat(path,follow_symlinks=follow_symlinks)
+    pathlib.Path.stat=fake_stat
+    try:
+        try:bootstrap_registration_fingerprint(PROGRAM);raise AssertionError('Reparse catalog root accepted')
+        except ValueError as error:assert 'link' in str(error)
+    finally:pathlib.Path.stat=original_stat
+`));

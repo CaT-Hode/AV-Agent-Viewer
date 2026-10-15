@@ -41,8 +41,11 @@ let translations: DocumentTranslationService;
 let selectionTranslations: SelectionTranslationService;
 const settings = new SettingsService(join(directory, 'settings.json'));
 const officeAppearance = () => nativeOfficeAppearance(settings.get('appearance.theme'), settings.get('appearance.documentBackground'), nativeTheme.shouldUseDarkColors, settings.get('appearance.documentPaperColor'));
-const syncOfficeAppearance = () => void office?.setAppearance(officeAppearance()).catch(error => core?.event('office.appearance-error', { error: String(error) }));
-nativeTheme.on('updated', () => { if (settings.get('appearance.theme') === 'system') syncOfficeAppearance(); });
+const syncOfficeAppearance = async () => {
+  try { await office?.setAppearance(officeAppearance()); }
+  catch (error) { core?.event('office.appearance-error', { error: String(error) }); throw error; }
+};
+nativeTheme.on('updated', () => { if (settings.get('appearance.theme') === 'system') void syncOfficeAppearance().catch(() => {}); });
 const connections = new AIConnectionService(join(directory, 'connections.json'));
 let settingsWindow: BrowserWindow | undefined;
 let browserPoll: NodeJS.Timeout | undefined;
@@ -117,7 +120,7 @@ async function openDroppedPaths(owner: BrowserWindow, paths: unknown) {
   return { views, errors };
 }
 async function createWindow(id = 'main') {
-  const win = new BrowserWindow({ width: 1440, height: 900, minWidth: 1280, minHeight: 680, frame: false, show: false, icon: join(root, 'assets', 'agentviewer.ico'), backgroundColor: '#f5f6f9', title: 'AgentViewer', webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=' + id, ...(process.env.AGENTVIEWER_TEST_MODE === '1' ? ['--agentviewer-test-mode=1'] : [])] } });
+  const win = new BrowserWindow({ width: 1440, height: 900, minWidth: 900, minHeight: 600, frame: false, show: false, icon: join(root, 'assets', 'agentviewer.ico'), backgroundColor: '#f5f6f9', title: 'AgentViewer', webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=' + id, ...(process.env.AGENTVIEWER_TEST_MODE === '1' ? ['--agentviewer-test-mode=1'] : [])] } });
   windows.set(id, win);
   const readerContentsId = win.webContents.id;
   let closeReady = false;
@@ -318,8 +321,8 @@ void app.whenReady().then(async () => {
     const { method, args } = request;
     if (method === 'reader-panel-layout') { const viewId = typeof args.viewId === 'string' ? args.viewId : undefined; if (viewId && core.getView(viewId).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.update(owner, viewId, args.panels as never); return {}; }
     if (method === 'settings-read') return { definitions: settingsRegistry.map(definition => ({ ...definition, ...settingsAvailability(definition.id) })), snapshot: settings.snapshot() };
-    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (['appearance.glass','appearance.reduceTransparency','appearance.highContrast'].includes(String(args.id))) readerPanelHost.preferencesChanged(); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground' || args.id === 'appearance.documentPaperColor') syncOfficeAppearance(); return snapshot; }
-    if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); readerPanelHost.preferencesChanged(); syncOfficeAppearance(); return snapshot; }
+    if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (['appearance.glass','appearance.reduceTransparency','appearance.highContrast'].includes(String(args.id))) readerPanelHost.preferencesChanged(); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground' || args.id === 'appearance.documentPaperColor') await syncOfficeAppearance(); return snapshot; }
+    if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); readerPanelHost.preferencesChanged(); await syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-open') { await openSettings(typeof args.category === 'string' ? args.category : undefined); return {}; }
     if (method === 'connections-read') return connections.snapshot();
     if (method === 'connections-upsert') return connections.upsert(args as never);
@@ -347,6 +350,7 @@ void app.whenReady().then(async () => {
       for(const entry of views){const b=entry.bounds;if(!b||![b.x,b.y,b.width,b.height].every(Number.isFinite)||b.x<0||b.y<0||b.width<1||b.height<1||b.x+b.width>content.width+2||b.y+b.height>content.height+2)throw new Error('INVALID_NATIVE_LAYOUT');}
       await office.layoutWindow(owner,views);return {};
     }
+    if(method==='office-display'){if(!office)throw new Error('ENGINE_UNAVAILABLE');return office.display(owner,args);}
     if (method === 'office-flush') { const view=core.getView(String(args.viewId));if(windows.get(view.windowId)!==owner)throw new Error('AUTH_SCOPE_DENIED');if(office?.exited)return {recoveryRetained:true};return core.synchronizeNativeDocument(view.documentId); }
     if (method === 'toolbar-focus') { toolbarHost.focus(owner); return {}; }
     if (method === 'selection-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); selectionHost.update(owner, args); return {}; }

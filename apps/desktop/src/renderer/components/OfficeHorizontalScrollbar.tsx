@@ -14,7 +14,7 @@ export function OfficeHorizontalScrollbar({host,identity,version,active}:{host:R
   },[host,identity,active]);
   useLayoutEffect(()=>{updateRef.current?.();},[version]);
   if(!active)return null;
-  const thumb=Math.max(28,Math.min(metrics.width,metrics.width*metrics.viewport/(metrics.viewport+metrics.maximum))),travel=Math.max(1,metrics.width-thumb);
+  const thumb=Math.min(metrics.width,Math.max(32,metrics.width*metrics.viewport/(metrics.viewport+metrics.maximum))),travel=Math.max(1,metrics.width-thumb);
   const move=(value:number)=>{if(host.current)host.current.scrollLeft=Math.max(0,Math.min(metrics.maximum,value));};
   return <div className="office-horizontal-scrollbar" ref={track} role="scrollbar" aria-label="幻灯片横向滚动" aria-orientation="horizontal" aria-controls={'office-scroll-'+identity} aria-valuemin={0} aria-valuemax={Math.round(metrics.maximum)} aria-valuenow={Math.round(metrics.position)} aria-disabled={!metrics.maximum} tabIndex={metrics.maximum?0:-1} onPointerDown={event=>{
     if(event.button!==0||!metrics.maximum)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);

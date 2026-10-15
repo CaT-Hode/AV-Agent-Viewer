@@ -12,16 +12,17 @@ import { LiquidGlassSurface } from './LiquidGlassSurface';
 import { MotionPresence } from './MotionPresence';
 import '../embedded-office-dialog.css';
 
-export type EmbeddedOfficeDialogHostProps = { state?: OfficeSurfaceState; obscured?: boolean; onState(state: OfficeSurfaceState): void; onError(error: unknown): void; returnFocus?: () => void };
+export type EmbeddedOfficeDialogHostProps = { state?: OfficeSurfaceState; obscured?: boolean; request?: typeof call; onState(state: OfficeSurfaceState): void; onError(error: unknown): void; returnFocus?: () => void };
 const neutral: OfficeInputModifiers = { shift: false, control: false, alt: false, meta: false };
 const modifiers = (event: Pick<KeyboardEvent, 'shiftKey'|'ctrlKey'|'altKey'|'metaKey'>): OfficeInputModifiers => ({ shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey });
 const sourceKey = (state: OfficeSurfaceState) => state.sessionId + ':' + state.engineEpoch + ':' + state.viewId;
-type WindowProps = { window: OfficeSurfaceWindow; identity: OfficeSurfaceWindowIdentity; active: boolean; modal: boolean; index: number; getState(): OfficeSurfaceState | undefined; onState(state: OfficeSurfaceState): void; onError(error: unknown): void };
+type WindowProps = { request:typeof call; window: OfficeSurfaceWindow; identity: OfficeSurfaceWindowIdentity; active: boolean; modal: boolean; index: number; getState(): OfficeSurfaceState | undefined; onState(state: OfficeSurfaceState): void; onError(error: unknown): void };
 
 function EmbeddedOfficeWindow(props: WindowProps) {
   const titleId = useId(), caption = props.window.title || '文档设置';
   const canvas = useRef<HTMLCanvasElement>(null), input = useRef<HTMLTextAreaElement>(null), shell = useRef<HTMLDivElement>(null), bitmap = useRef<ImageBitmap | undefined>(undefined), mounted = useRef(false), paintSequence = useRef(0);
   const latest = useRef(props); latest.current = props;
+  const request=useCallback(<T=unknown,>(method:string,args:Record<string,unknown>={})=>latest.current.request<T>(method,args),[]);
   const composition = useRef<{ id: string; text: string } | undefined>(undefined), recentCommit = useRef<{ text: string; at: number } | undefined>(undefined), pointer = useRef<OfficePointerCapture | undefined>(undefined), clicks = useRef(new OfficePointerClickTracker());
   const [error, setError] = useState(''), [closing, setClosing] = useState(false), [, inputRevision] = useState(0);
   const [dpr, setDpr] = useState(() => globalThis.window.devicePixelRatio || 1);
@@ -35,7 +36,7 @@ function EmbeddedOfficeWindow(props: WindowProps) {
       if (!owns()) throw new Error('文档对话框身份已失效。');
       const normalized: OfficeSurfaceWindowInputEvent = event.kind === 'pointer' ? { ...event, pointCss: event.pointTwips } : event.kind === 'selection-handle' ? (() => { throw new Error('文档对话框不接受正文选区端点。'); })() : event;
       if ('pointTwips' in normalized) delete (normalized as unknown as Record<string, unknown>).pointTwips;
-      const reply = await call<OfficeSurfaceInputReply>(OFFICE_SURFACE_METHODS.windowInput, { ...latest.current.identity, streamId: args.streamId, sequence: args.sequence, event: normalized });
+      const reply = await request<OfficeSurfaceInputReply>(OFFICE_SURFACE_METHODS.windowInput, { ...latest.current.identity, streamId: args.streamId, sequence: args.sequence, event: normalized });
       // The closing keystroke may legitimately remove this window, but never its document identity.
       const state = latest.current.getState(); if (!state || state.sessionId !== reply.state.sessionId || state.engineEpoch !== reply.state.engineEpoch || state.viewId !== reply.state.viewId) throw new Error('文档对话框回执属于旧编辑会话。');
       return reply as T;
@@ -55,7 +56,7 @@ function EmbeddedOfficeWindow(props: WindowProps) {
     const window = props.window, state = props.getState(); if (!window.visible || !state) return;
     const ticket = ++paintSequence.current, identity = props.identity;
     const width = Math.max(1, Math.ceil(window.width * dpr)), height = Math.max(1, Math.ceil(window.height * dpr));
-    void call<OfficeSurfaceWindowPaintReply>(OFFICE_SURFACE_METHODS.windowPaint, { ...identity, generation: window.generation, width, height, deviceScaleFactor: dpr }).then(async reply => {
+    void request<OfficeSurfaceWindowPaintReply>(OFFICE_SURFACE_METHODS.windowPaint, { ...identity, generation: window.generation, width, height, deviceScaleFactor: dpr }).then(async reply => {
       if (!mounted.current || ticket !== paintSequence.current) return;
       const live = owns();
       if (!live || live.generation !== window.generation || !isOfficeSurfaceState(reply.state) || sourceKey(reply.state) !== sourceKey(state) || reply.windowId !== window.id || reply.windowInstanceId !== window.instanceId || reply.generation !== window.generation || reply.tile.width !== width || reply.tile.height !== height) return;
@@ -65,8 +66,9 @@ function EmbeddedOfficeWindow(props: WindowProps) {
       target.width = width; target.height = height; context.clearRect(0, 0, width, height); context.drawImage(next, 0, 0); bitmap.current?.close(); bitmap.current = next; setError('');
     }).catch(async cause => {
       if (!officeSurfaceStaleRead(cause, 'window')) { report(cause); return; }
+      if(!latest.current.active)return;
       // A resized or just-closed native dialog is a normal paint race, never an input replay.
-      try { const fresh = await call<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.state, { viewId: identity.viewId }); if (mounted.current && isOfficeSurfaceState(fresh)) latest.current.onState(fresh); } catch (failure) { report(failure); }
+      try { const fresh = await request<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.state, { viewId: identity.viewId }); if (mounted.current && isOfficeSurfaceState(fresh)) latest.current.onState(fresh); } catch (failure) { report(failure); }
     });
     return () => { paintSequence.current++; };
   }, [key, props.window.generation, props.window.width, props.window.height, props.window.visible, dpr, report]);
@@ -104,7 +106,7 @@ function EmbeddedOfficeWindow(props: WindowProps) {
     try {
       const ime = composition.current; if (ime) { composition.current = undefined; await controller.post({ kind: 'composition', compositionId: ime.id, phase: 'cancel', text: '' }); }
       await controller.barrier(); if (!owns()) return;
-      const reply = await call<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.windowClose, latest.current.identity);
+      const reply = await request<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.windowClose, latest.current.identity);
       const state = latest.current.getState(); if (!state || !isOfficeSurfaceState(reply) || sourceKey(reply) !== sourceKey(state)) throw new Error('关闭对话框的回执属于旧会话。');
       latest.current.onState(reply);
     } catch (cause) { report(cause); } finally { if (mounted.current) setClosing(false); }
@@ -113,7 +115,7 @@ function EmbeddedOfficeWindow(props: WindowProps) {
     try {
       await controller.post({ kind: 'key', phase: 'down', key: cut ? 'x' : 'c', code: cut ? 'KeyX' : 'KeyC', repeat: false, modifiers: { ...neutral, control: true } });
       await controller.post({ kind: 'key', phase: 'up', key: cut ? 'x' : 'c', code: cut ? 'KeyX' : 'KeyC', repeat: false, modifiers: { ...neutral, control: true } }); await controller.barrier();
-      const reply = await call<OfficeSurfaceWindowClipboardReply>(OFFICE_SURFACE_METHODS.windowClipboard, latest.current.identity);
+      const reply = await request<OfficeSurfaceWindowClipboardReply>(OFFICE_SURFACE_METHODS.windowClipboard, latest.current.identity);
       if (!mounted.current || !owns() || reply.windowId !== props.window.id || reply.windowInstanceId !== props.window.instanceId || sourceKey(reply.state) !== sourceKey(latest.current.getState()!)) return;
       const text = reply.items.find(item => item.mimeType.startsWith('text/plain')); if (!text) throw new Error('文档对话框没有提供可复制的文字。'); await navigator.clipboard.writeText(new TextDecoder().decode(text.data));
     } catch (cause) { report(cause); }
@@ -147,6 +149,6 @@ export function EmbeddedOfficeDialogHost(props: EmbeddedOfficeDialogHostProps) {
   useEffect(() => () => { if (hadWindow.current && !current.current.obscured) { const previous = previousFocus.current; if (previous?.isConnected) previous.focus({ preventScroll: true }); } }, []);
   if (!state) return null;
   return createPortal(<MotionPresence show={open} surface="modal" duration={220} identity={sourceKey(state)}><div className={'modal-backdrop embedded-office-dialog-backdrop' + (modal ? '' : ' is-modeless')} data-office-dialog-owner={state.viewId}>
-    {windows.map((window, index) => <EmbeddedOfficeWindow key={window.instanceId} window={window} identity={{ viewId: state.viewId, sessionId: state.sessionId, engineEpoch: state.engineEpoch, windowId: window.id, windowInstanceId: window.instanceId }} active={open && (!modal || index === windows.length - 1)} modal={modal} index={index} getState={() => current.current.state} onState={value => current.current.onState(value)} onError={cause => current.current.onError(cause)} />)}
+    {windows.map((window, index) => <EmbeddedOfficeWindow key={window.instanceId} window={window} request={props.request??call} identity={{ viewId: state.viewId, sessionId: state.sessionId, engineEpoch: state.engineEpoch, windowId: window.id, windowInstanceId: window.instanceId }} active={open && (!modal || index === windows.length - 1)} modal={modal} index={index} getState={() => current.current.state} onState={value => current.current.onState(value)} onError={cause => current.current.onError(cause)} />)}
   </div></MotionPresence>, window.document.body);
 }

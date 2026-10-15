@@ -1,5 +1,5 @@
 :root{--paper:#f7f6f3;--surface:#fff;--sidebar:#f4f3ef;--ink:#252a36;--soft:#777f91;--line:#e6e5e1;--accent:#5b62ca;--accent-soft:#e9eafb;--shadow:0 15px 40px #39425e1b;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;color:var(--ink);background:var(--paper)}
-.app-shell{min-width:1280px;background:var(--paper)}
+.app-shell{min-width:0;width:100%;background:var(--paper)}
 .tab-strip{height:49px;background:#f4f3f0;border-bottom:1px solid #e1e1df;align-items:center}
 .brand{width:40px;height:100%;padding:0 4px;gap:0;display:flex;align-items:center;text-align:left;font-size:14px;letter-spacing:-.2px;-webkit-app-region:no-drag}
 .tab-strip>.brand.brand-static{width:40px;padding:0 4px;flex:0 0 40px;background:transparent;-webkit-app-region:no-drag}

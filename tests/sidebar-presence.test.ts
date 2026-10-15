@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { advanceSidebarSpring, sidebarExitFinished, sidebarSpringPresentation, sidebarSpringSettled } from '../apps/desktop/src/renderer/lib/sidebar-presence';
+import { advanceSidebarSpring, sidebarExitFinished, sidebarPopupProjection, sidebarSpringPresentation, sidebarSpringSettled } from '../apps/desktop/src/renderer/lib/sidebar-presence';
 test('sidebars carry velocity through reversal, settle without a fixed-duration jump and keep bounds modest', () => {
   for (const mode of ['standard','elegant'] as const) {
     let axis = { value: 0, velocity: 0 }, maximum = 0;
@@ -43,4 +43,15 @@ test('reversing a still visible closing panel keeps its physical position and ve
     assert.ok(Math.abs(next.value-axis.value)<.03,'no endpoint snap on reversal');
     assert.ok(sidebarSpringPresentation(next.value,'left').alpha>0,'same material remains visible');
   }
+});
+
+test('popup paint preserves both rounded edges inside its owned gutter without changing DOM spring motion',()=>{
+  for(const width of [180,248,380,620,720])for(const side of ['left','right'])for(const progress of [-.02,0,.2,.8,1,1.02,1.038,1.08]) {
+    const original=sidebarSpringPresentation(progress,side),paint=sidebarPopupProjection(side,width,original.x),scale=Math.min(original.scaleX,paint.scaleX);
+    const left=side==='left'?12+paint.x:12+width+paint.x-width*scale,right=left+width*scale;
+    assert.ok(left>=-1e-7&&right<=width+24+1e-7,`${side} ${width}px physical overshoot fits actual owned popup`);
+    assert.equal(sidebarSpringPresentation(progress,side).scaleX,original.scaleX,'the DOM spring and physical axis are unchanged');
+    if(progress>1)assert.ok(scale>1,'a modest real width overshoot survives the geometric limit');
+  }
+  assert.ok(sidebarPopupProjection('right',720,-.456).scaleX<sidebarPopupProjection('right',380,-.456).scaleX,'resize recalculates the same physical gutter rather than retaining a narrow-pane limit');
 });

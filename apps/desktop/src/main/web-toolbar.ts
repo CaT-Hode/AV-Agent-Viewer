@@ -6,13 +6,14 @@ import { nativeTooltipLayout, type TooltipRect, type TooltipSize } from '../rend
 import { nativeBackdropFrames } from './backdrop-frame-hub';
 import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
 import { navigationExitDuration, retainedSurfaceExit } from './toolbar-motion';
+import { preferredNavigationWidth, type NavigationLane } from '../renderer/lib/navigation-lane';
 const backdropFrames = nativeBackdropFrames;
 type Rect = { x: number; y: number; width: number; height: number };
 export type BackdropSource = { view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
 export type NativeBackdropSource = { bounds: Rect; navigationId: string; layoutRevision: number; revision: number; sourceId: number; capture(rect: Rect): Promise<{ image: NativeImage; rect: Rect }>; attach(window: BrowserWindow): Promise<void> };
 type NativeHostOptions = { sourceFor(viewId: string): NativeBackdropSource | undefined };
 type TooltipReply = { ticket: number; offsetY: number; viewId?: unknown; placement?: ReturnType<typeof nativeTooltipLayout>['placement'] };
-type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout>; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
+type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
 type CaptureRequest = { state: Record<string, unknown>; source: BackdropSource; page: WebContentsView; b: Rect; p: Rect; zoom: number; density: number; frameAligned: boolean; capsule: Rect; capture: Rect; geometryRevision: number; key: string; shape: string };
 
 // A trusted, capsule-sized surface above the website; no page script or full-width scrim.
@@ -21,6 +22,22 @@ export class WebToolbarHost {
   constructor(private url: () => string, private preload: string, private route = '/web-toolbar', private channel = 'agentviewer:toolbar', private sourceFor?: (viewId: string) => BackdropSource | undefined, private nativeHost?: NativeHostOptions) {}
   ownerFor(id: number) { return [...this.entries].find(([,entry])=>!entry.view.webContents.isDestroyed()&&entry.view.webContents.id===id)?.[0]; }
   private bounds(entry: ToolbarEntry) { return entry.rootBounds ?? entry.view.getBounds(); }
+  private syncNavigationShape(entry:ToolbarEntry) {
+    const overlay=entry.overlay;if(this.route!=='/web-toolbar'||!overlay||overlay.isDestroyed())return;
+    const host=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor(),lane=entry.state.laneBounds as NavigationLane|undefined;
+    const width=preferredNavigationWidth(lane?.width??Math.max(32,host.width-2*NAVIGATION_METRICS.shadowGutter));
+    const capsule=entry.capsuleBounds??{x:(lane?.center??host.width/2)-width/2,y:NAVIGATION_METRICS.shadowGutter,width,height:NAVIGATION_METRICS.height};
+    const regions:Rect[]=[];
+    const add=(rect:Rect,gutter=0)=>{const x=Math.max(0,Math.floor(rect.x*zoom-gutter)),y=Math.max(0,Math.floor(rect.y*zoom-gutter)),right=Math.min(host.width,Math.ceil((rect.x+rect.width)*zoom+gutter)),bottom=Math.min(host.height,Math.ceil((rect.y+rect.height)*zoom+gutter));if(right>x&&bottom>y)regions.push({x,y,width:right-x,height:bottom-y});};
+    add(capsule,NAVIGATION_METRICS.shadowGutter);
+    if(entry.panel)add({x:Math.max(0,capsule.x+capsule.width-316),y:capsule.y+capsule.height,width:316,height:Math.max(0,host.height/zoom-capsule.y-capsule.height)});
+    const tooltip=entry.tooltipLayout;
+    if(tooltip?.size)add({...tooltip.placement,...tooltip.size},6);
+    // An empty shape restores the full rectangle. Keep the transparent host
+    // click-through outside the actual capsule and temporary popup regions.
+    const shape=regions.length?regions:[{x:0,y:0,width:1,height:1}],signature=JSON.stringify([overlay.id,shape]);
+    if(entry.shapeSignature!==signature){overlay.setShape(shape);entry.shapeSignature=signature;}
+  }
   private nativeSource(entry: ToolbarEntry) { return this.nativeHost?.sourceFor(String(entry.state.viewId)); }
   private syncHost(owner: BrowserWindow, entry: ToolbarEntry) {
     if(entry.overlay?.isDestroyed()){
@@ -48,6 +65,7 @@ export class WebToolbarHost {
       overlay.once('closed',()=>{owner.removeListener('move',follow);owner.removeListener('resize',follow);owner.removeListener('minimize',hide);owner.removeListener('hide',hide);owner.removeListener('restore',show);owner.removeListener('show',show);});
     }
     if(source&&entry.overlayViewId!==source.navigationId){entry.overlayViewId=source.navigationId;const overlay=entry.overlay;void source.attach(overlay).then(()=>{if(entry.overlay===overlay&&!overlay.isDestroyed()&&this.nativeSource(entry)?.navigationId===source.navigationId&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized())overlay.showInactive();}).catch(()=>{if(!overlay.isDestroyed())overlay.hide();});}
+    this.syncNavigationShape(entry);
     if(!source&&webSource&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized()&&entry.overlay&&!entry.overlay.isDestroyed()&&!entry.overlay.isVisible())entry.overlay.showInactive();
   }
   raise(owner:BrowserWindow){const entry=this.entries.get(owner);if(entry?.state.visible&&entry.overlay&&!entry.overlay.isDestroyed()&&entry.overlay.isVisible())entry.overlay.moveTop();}
@@ -91,7 +109,7 @@ export class WebToolbarHost {
           if(!entry.state.visible)throw new Error('STALE_TOOLTIP');
           const anchor=args.anchor as TooltipRect,size=args.size as TooltipSize;
           if(!anchor||!size||![anchor.x,anchor.y,anchor.width,anchor.height,size.width,size.height].every(Number.isFinite)||size.width<=0||size.width>1000||size.height<=0||size.height>700)throw new Error('INVALID_TOOLTIP');
-          entry.tooltip=true;entry.tooltipLayout=nativeTooltipLayout(anchor,size,this.bounds(entry),this.normalBounds(owner,entry),owner.getContentBounds(),entry.view.webContents.getZoomFactor());
+          entry.tooltip=true;entry.tooltipLayout={...nativeTooltipLayout(anchor,size,this.bounds(entry),this.normalBounds(owner,entry),owner.getContentBounds(),entry.view.webContents.getZoomFactor()),size};
           this.resizeTooltip(owner,entry);return this.tooltipReply(entry);
         }
         const close=()=>{entry.tooltip=false;entry.tooltipLayout=undefined;this.resizeTooltip(owner,entry);const reply=this.tooltipReply(entry);entry.tooltipClose?.(reply);entry.tooltipClose=undefined;return reply;};
@@ -110,6 +128,8 @@ export class WebToolbarHost {
       const result = this.route === '/ai-result-toolbar';
       if (!geometry || ![geometry.x, geometry.y, geometry.width, geometry.height].every(Number.isFinite) || geometry.width <= 0 || geometry.width > (result ? 800 : 2600) || geometry.height <= 0 || geometry.height > (result ? 620 : 160) || Math.abs(geometry.x) > 3000 || Math.abs(geometry.y) > 300) throw new Error('INVALID_GEOMETRY');
       if (JSON.stringify(entry.capsuleBounds) !== JSON.stringify(geometry)) { entry.capsuleBounds = { ...geometry }; entry.geometryRevision++; if (this.route === '/agent-toolbar') this.setBounds(owner, entry); this.sampleBackdrop(owner, entry); }
+      this.syncNavigationShape(entry);
+      if(this.route==='/web-toolbar'&&entry.state.visible){const host=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor();owner.webContents.send(this.channel,{action:'geometry',viewId:entry.state.viewId,bounds:{x:host.x+geometry.x*zoom,y:host.y+geometry.y*zoom,width:geometry.width*zoom,height:geometry.height*zoom}});}
       return {};
     }
     owner.webContents.send(this.channel, { ...args, viewId: entry.state.viewId });
@@ -192,6 +212,7 @@ export class WebToolbarHost {
     const before=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor();entry.tooltipTicket=(entry.tooltipTicket??0)+1;entry.tooltipPending=true;
     this.setBounds(owner,entry);const after=this.bounds(entry),shift=(before.y-after.y)/zoom;
     if(entry.capsuleBounds&&shift){entry.capsuleBounds={...entry.capsuleBounds,y:entry.capsuleBounds.y+shift};entry.geometryRevision++;}
+    this.syncNavigationShape(entry);
     const sample=entry.state.backdropSample as {origin:{x:number;y:number};capsuleBounds:Rect;geometryRevision:number}|undefined;
     if(sample&&shift){entry.state={...entry.state,backdropSample:{...sample,origin:{...sample.origin,y:sample.origin.y+shift},capsuleBounds:{...sample.capsuleBounds,y:sample.capsuleBounds.y+shift},geometryRevision:entry.geometryRevision}};this.sendBackdrop(entry,undefined,entry.state.backdropSample,false);}
     this.sendState(entry);
@@ -212,6 +233,7 @@ export class WebToolbarHost {
       if(entry.overlay&&!entry.overlay.isDestroyed()){const p=owner.getContentBounds();entry.rootBounds=next;entry.overlay.setBounds({x:p.x+next.x,y:p.y+next.y,width:next.width,height:next.height});entry.view.setBounds({x:0,y:0,width:next.width,height:next.height});}
       else entry.view.setBounds(next);
     }
+    this.syncNavigationShape(entry);
   }
   private send(entry: ToolbarEntry, payload: Record<string, unknown>) {
     const { backdropImage, ...metadata } = payload;

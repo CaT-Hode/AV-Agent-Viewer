@@ -129,6 +129,20 @@ test('command status describes managed commands as disabled without starting or 
   await fixture.runtime.shutdown({ discard: true });
 });
 
+test('context projection has an explicit internal view-scoped request and leaves a legacy idle runtime untouched', async () => {
+  const legacy = await setup((_request, respond) => respond({}));
+  assert.equal(await legacy.runtime.enableContextProjection('writer', 'view'), undefined);
+  assert.equal(Boolean(legacy.worker), false, 'a legacy display cannot accidentally start the tiled backend');
+  await legacy.runtime.shutdown();
+  const runtime = new NativeOfficeRuntime({ appRoot: '.', dataDir: '.', backend: 'kit' });
+  const requests: { method: string; args: Record<string, unknown> }[] = [];
+  (runtime as any).request = async (method: string, args: Record<string, unknown>) => {
+    requests.push({ method, args }); return { ...args, engineEpoch: 'actual-worker-epoch', enabled: true };
+  };
+  assert.deepEqual(await runtime.enableContextProjection('writer', 'view'), { sessionId: 'writer', viewId: 'view', engineEpoch: 'actual-worker-epoch', enabled: true });
+  assert.deepEqual(requests, [{ method: 'enableContextProjection', args: { sessionId: 'writer', viewId: 'view' } }], 'the internal call never opens another model or requests an eager state/semantic pass');
+});
+
 test('the bridge binds one writer per document and multiple views reuse the same session identity', async () => {
   const fixture = await setup((request, respond) => respond({ ...request.args, bytes: undefined, engineEpoch: 'epoch-1', engineRevision: 0 }));
   await fixture.runtime.open(input('doc')); await fixture.runtime.open(input('doc', 'doc', 'second-view'));

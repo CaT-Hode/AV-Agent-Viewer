@@ -1,9 +1,12 @@
 import { _electron as electron, type Page } from 'playwright';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import type { WorkspaceState } from '../packages/contracts/src/index';
 import { NAVIGATION_METRICS } from '../apps/desktop/src/renderer/lib/navigation-optics';
@@ -27,8 +30,12 @@ const env: Record<string, string> = {
   AGENTVIEWER_DATA_DIR: directory, AGENTVIEWER_PORT: String(port), AGENTVIEWER_TEST_MODE: '1', AGENTVIEWER_TEST_TRANSLATOR: '1',
 };
 delete env.ELECTRON_RUN_AS_NODE;
-const app = await electron.launch({ executablePath: require('electron'), args: ['.'], cwd: resolve('.'), env, timeout: 45000 });
+const scale=Number(process.env.AGENTVIEWER_QA_SCALE??1),clientWidth=Number(process.env.AGENTVIEWER_QA_WIDTH??(scale>=2?1080:1440)),clientHeight=Number(process.env.AGENTVIEWER_QA_HEIGHT??(scale>=2?676:900));
+const releaseExecutable=process.env.AGENTVIEWER_QA_EXE?.trim(),executable=releaseExecutable?resolve(releaseExecutable):require('electron') as string,assetRoot=releaseExecutable?join(dirname(executable),'resources/app/dist'):resolve('dist');
+const assets={executable,mainSha:createHash('sha256').update(await readFile(join(assetRoot,'main/index.cjs'))).digest('hex'),rendererIndex:await readFile(join(assetRoot,'renderer/index.html'),'utf8')};
+const app = await electron.launch({ executablePath: executable, args: [...(releaseExecutable?[]:['.']),'--force-device-scale-factor='+scale], cwd: resolve('.'), env, timeout: 45000 });
 const page = await app.firstWindow(), errors: string[] = [];
+const processReceipt={launchPid:app.process().pid,mainPid:await app.evaluate(()=>process.pid),directory,qa,scale,assets};await writeFile(join(qa,'startup-receipt.json'),JSON.stringify(processReceipt,null,2));console.log('Navigation QA started',JSON.stringify({launchPid:processReceipt.launchPid,mainPid:processReceipt.mainPid,directory,qa,scale,mainSha:assets.mainSha}));
 const watch = (target: Page) => {
   target.on('pageerror', error => errors.push(`${target.url()}: ${error.message}`));
   target.on('console', message => { if (/same key|unique.*key|Encountered two children/i.test(message.text())) errors.push(`${target.url()}: ${message.text()}`); });
@@ -105,9 +112,80 @@ const noRefraction = async (target: Page) => {
   })));
   assert.ok(layers.every(layer => layer.display === 'none' || layer.opacity === '0' || !/url\(/.test(layer.filter + layer.backdrop)), 'refraction filters are disabled');
 };
+// CDP directed at a WebContents bypasses the OS overlay hit test. This small
+// Windows helper targets only this private root HWND and uses actual SendInput.
+const nativePointerScript=join(directory,'private-pointer.ps1'),run=promisify(execFile);
+await writeFile(nativePointerScript,`param([long]$WindowHandle,[int]$ExpectedPid,[double]$X,[double]$Y,[double]$ViewportWidth,[double]$ViewportHeight,[string]$Action)
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class QaPointer {
+ [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; }
+ [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; }
+ [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx,dy; public uint mouseData,dwFlags,time; public IntPtr extra; }
+ [StructLayout(LayoutKind.Explicit,Size=40)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public MOUSEINPUT mouse; }
+ [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+ [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr value,out RECT rect);
+ [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr value,out RECT rect);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr value,StringBuilder text,int count);
+ [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr value,ref POINT point);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr value,out uint pid);
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr value);
+ [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
+ [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+ [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr value,uint flags);
+ [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr value);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr value,int index);
+ [DllImport("user32.dll",SetLastError=true)] public static extern bool SetWindowPos(IntPtr value,IntPtr after,int x,int y,int width,int height,uint flags);
+ [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr value,int attribute,out int result,int size);
+ [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+ [DllImport("user32.dll",SetLastError=true)] public static extern uint SendInput(uint count,INPUT[] values,int size);
+ public static void MouseAt(int x,int y,bool click) {
+  int left=GetSystemMetrics(76),top=GetSystemMetrics(77),width=GetSystemMetrics(78),height=GetSystemMetrics(79);
+  if(width<=0||height<=0||x<left||y<top||x>=left+width||y>=top+height)throw new InvalidOperationException("Private pointer outside virtual desktop");
+  int dx=Math.Min(65535,(int)Math.Floor((x-left+.5)*65536/width)),dy=Math.Min(65535,(int)Math.Floor((y-top+.5)*65536/height));
+  const uint move=1|0x8000|0x4000;
+  var values=click?new[]{new INPUT{mouse=new MOUSEINPUT{dx=dx,dy=dy,dwFlags=move|2}},new INPUT{mouse=new MOUSEINPUT{dx=dx,dy=dy,dwFlags=move|4}}}:new[]{new INPUT{mouse=new MOUSEINPUT{dx=dx,dy=dy,dwFlags=move|2048,mouseData=unchecked((uint)-360)}}};
+  if(SendInput((uint)values.Length,values,40)!=(uint)values.Length)throw new InvalidOperationException("SendInput rejected");
+ }
+}
+'@
+$target=[IntPtr]$WindowHandle;[uint32]$ownerPid=0;[void][QaPointer]::GetWindowThreadProcessId($target,[ref]$ownerPid);if($ownerPid-ne$ExpectedPid){throw 'Private HWND identity mismatch'}
+if([QaPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))-eq[IntPtr]::Zero){throw 'DPI context rejected'}
+[void][QaPointer]::SetForegroundWindow($target);Start-Sleep -Milliseconds 80
+$topmost=[QaPointer]::SetWindowPos($target,[IntPtr](-1),0,0,0,0,83);Start-Sleep -Milliseconds 80
+$rect=New-Object QaPointer+RECT;if(-not[QaPointer]::GetClientRect($target,[ref]$rect)){throw 'Client rect unavailable'}
+$point=New-Object QaPointer+POINT;$point.X=[int][Math]::Round($X*($rect.Right-$rect.Left)/$ViewportWidth);$point.Y=[int][Math]::Round($Y*($rect.Bottom-$rect.Top)/$ViewportHeight)
+if(-not[QaPointer]::ClientToScreen($target,[ref]$point)){throw 'Client origin unavailable'}
+if(-not[QaPointer]::SetCursorPos($point.X,$point.Y)){throw 'Private pointer placement rejected'}
+$cursor=New-Object QaPointer+POINT;if(-not[QaPointer]::GetCursorPos([ref]$cursor)-or$cursor.X-ne$point.X-or$cursor.Y-ne$point.Y){@{inputSent=$false;expectedCursor=@{x=$point.X;y=$point.Y};actualCursor=@{x=$cursor.X;y=$cursor.Y}}|ConvertTo-Json -Compress;throw 'Private pointer moved before input'}
+$hit=[QaPointer]::WindowFromPoint($point);[uint32]$hitPid=0;[void][QaPointer]::GetWindowThreadProcessId($hit,[ref]$hitPid);$ancestor=[QaPointer]::GetAncestor($hit,2)
+$class=New-Object System.Text.StringBuilder 256;[void][QaPointer]::GetClassName($hit,$class,256);$window=New-Object QaPointer+RECT;[void][QaPointer]::GetWindowRect($target,[ref]$window);$hitRect=New-Object QaPointer+RECT;[void][QaPointer]::GetWindowRect($ancestor,[ref]$hitRect);$cloaked=0;$cloakStatus=[QaPointer]::DwmGetWindowAttribute($target,14,[ref]$cloaked,4)
+@{target=$WindowHandle;hit=$hit.ToInt64();ancestor=$ancestor.ToInt64();pid=$ownerPid;hitPid=$hitPid;class=$class.ToString();x=$point.X;y=$point.Y;action=$Action;foreground=[QaPointer]::GetForegroundWindow().ToInt64();visible=[QaPointer]::IsWindowVisible($target);topmost=$topmost;extendedStyle=[QaPointer]::GetWindowLongPtr($target,-20).ToInt64();targetRoot=[QaPointer]::GetAncestor($target,2).ToInt64();cloaked=$cloaked;cloakStatus=$cloakStatus;window=@{left=$window.Left;top=$window.Top;right=$window.Right;bottom=$window.Bottom};hitRoot=@{left=$hitRect.Left;top=$hitRect.Top;right=$hitRect.Right;bottom=$hitRect.Bottom};client=@{width=$rect.Right-$rect.Left;height=$rect.Bottom-$rect.Top};targetCorrect=($hitPid-eq$ExpectedPid-and$ancestor-eq$target)}|ConvertTo-Json -Compress -Depth 4
+if($hitPid-ne$ExpectedPid){throw 'Private QA point is occluded by an external application; no input sent'}
+if($ancestor-ne$target){throw 'Owned overlay intercepts private webpage target; no input sent'}
+if($Action-eq'click'){[QaPointer]::MouseAt($point.X,$point.Y,$true)}elseif($Action-eq'wheel'){[QaPointer]::MouseAt($point.X,$point.Y,$false)}else{throw 'Unknown private pointer action'}
+Start-Sleep -Milliseconds 100
+$cursorAfter=New-Object QaPointer+POINT;[void][QaPointer]::GetCursorPos([ref]$cursorAfter)
+@{afterInput=$true;foreground=[QaPointer]::GetForegroundWindow().ToInt64();hit=[QaPointer]::WindowFromPoint($point).ToInt64();cursor=@{x=$cursorAfter.X;y=$cursorAfter.Y};action=$Action}|ConvertTo-Json -Compress
+`);
+const osPointer=async(point:{x:number;y:number},action:'click'|'wheel')=>{
+  const identity=await app.evaluate(({BrowserWindow},rootUrl)=>{const root=BrowserWindow.getAllWindows().find(window=>!window.isDestroyed()&&!window.webContents.isDestroyed()&&window.webContents.getURL()===rootUrl)!;root.setAlwaysOnTop(true);root.show();root.focus();const bytes=root.getNativeWindowHandle();return{handle:String(bytes.length>=8?bytes.readBigUInt64LE():bytes.readUInt32LE()),pid:process.pid};},page.url());
+  const viewport=await page.evaluate(()=>({width:innerWidth,height:innerHeight,devicePixelRatio}));
+  const candidates=await app.evaluate(({BrowserWindow,screen})=>({windows:BrowserWindow.getAllWindows().filter(window=>!window.isDestroyed()&&!window.webContents.isDestroyed()).map(window=>({id:window.id,parent:window.getParentWindow()?.id,handle:String(window.getNativeWindowHandle().readBigUInt64LE()),bounds:window.getBounds(),content:window.getContentBounds(),zoom:window.webContents.getZoomFactor(),visible:window.isVisible(),focused:window.isFocused(),url:window.webContents.getURL(),childUrls:window.contentView.children.map((child:any)=>child.webContents?.getURL())})),displays:screen.getAllDisplays().map(display=>({bounds:display.bounds,workArea:display.workArea,scaleFactor:display.scaleFactor}))}));
+  await writeFile(join(qa,'native-pointer-candidates-'+action+'.json'),JSON.stringify({identity,viewport,point,candidates},null,2));
+  try {
+    const reply=await run('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',nativePointerScript,identity.handle,String(identity.pid),String(point.x),String(point.y),String(viewport.width),String(viewport.height),action],{timeout:15000,windowsHide:true});
+    const receipt=reply.stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line) as Record<string,unknown>);
+    await writeFile(join(qa,'native-pointer-receipt-'+action+'.json'),JSON.stringify(receipt,null,2));
+    return receipt;
+  } catch(error) { const failure=error as Error&{stdout?:string;stderr?:string};await writeFile(join(qa,'native-pointer-failure.json'),JSON.stringify({error:String(error),stdout:failure.stdout,stderr:failure.stderr},null,2));throw error; }
+};
 
 try {
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
+  const placement=await app.evaluate(({ BrowserWindow,screen },size) => {const root=BrowserWindow.getAllWindows()[0];root.setContentSize(size.width,size.height);const secondary=screen.getAllDisplays().find(display=>display.id!==screen.getPrimaryDisplay().id&&display.workArea.width>=size.width&&display.workArea.height>=size.height);if(secondary)root.setPosition(secondary.workArea.x+Math.floor((secondary.workArea.width-size.width)/2),secondary.workArea.y+Math.floor((secondary.workArea.height-size.height)/2));return{bounds:root.getBounds(),display:screen.getDisplayMatching(root.getBounds())};},{width:clientWidth,height:clientHeight});
+  await writeFile(join(qa,'private-window-placement.json'),JSON.stringify(placement,null,2));
   await page.locator('.prose h1').waitFor();
   await setting('appearance.theme', 'light'); await setting('appearance.motion', 'off');
   await setting('appearance.toolbarDelayMs', 10000); await setting('appearance.autoHideToolbar', true);
@@ -153,16 +231,35 @@ try {
   const nativeStyle = await capsuleStyle(toolbar);
   assert.match(nativeStyle.opticalFilter, /url\(/, 'sampled native glass uses the same source SVG pipeline');
   assert.equal(nativeStyle.gaussianBlur, Math.min(NAVIGATION_METRICS.blur, REFRACTIVE_BLUR_LIMIT_PX));
-  for (const key of ['height', 'border', 'borderStyle', 'radius', 'blur', 'refractionWidth', 'buttonWidth', 'buttonHeight', 'buttonRadius'] as const) {
+  for (const key of ['height', 'border', 'borderStyle', 'radius', 'blur', 'refractionWidth'] as const) {
     assert.equal(nativeStyle[key], localStyle[key], `local/native shared style: ${key}`);
   }
+  const nativeMetrics=navigationControlMetrics(await toolbar.locator('.navigation-toolbar').getAttribute('data-navigation-density') as NavigationDensity);
+  assert.equal(nativeStyle.height,60);assert.equal(nativeStyle.buttonWidth,nativeMetrics.buttonSize);assert.equal(nativeStyle.buttonHeight,nativeMetrics.buttonSize);assert.equal(nativeStyle.buttonRadius,nativeMetrics.buttonSize/2+'px');
   await noOuterMask(toolbar, true);
   const native = (await nativeGeometry()).find(view => view.url?.startsWith(fixtureUrl))!;
   const overlay = (await nativeGeometry()).find(view => view.url?.includes('#/web-toolbar'))!;
+  assert.equal(native.visible,true,'underlying native webpage is visible');assert.equal(overlay.visible,true,'native toolbar host is visible');
   const reader = await page.locator('.reader-panel').boundingBox(); assert.ok(reader);
   assert.ok(Math.abs(native.bounds.y - reader.y) <= 2, 'native page begins at reader top, without a reserved rectangular header');
-  assert.ok(overlay.bounds.width < native.bounds.width, 'only capsule-sized native overlay is present');
+  assert.ok(Math.abs(overlay.bounds.width-native.bounds.width-2*NAVIGATION_METRICS.shadowGutter)<=2,'stable full reader host leaves capsule free to spring; its OS shape limits the hit region');
   assert.equal(overlay.bounds.height, NAVIGATION_METRICS.height + 2 * NAVIGATION_METRICS.shadowGutter);
+  await setting('appearance.autoHideToolbar',false);
+  const capsuleBox=(await toolbar.locator(capsuleSelector).boundingBox())!,point={x:reader.x+20,y:reader.y+NAVIGATION_METRICS.top+30};
+  assert.ok(point.x<overlay.bounds.x+capsuleBox.x-NAVIGATION_METRICS.shadowGutter-8,'test target lies inside the transparent host, outside capsule/shadow shape');
+  for(const surface of [native,overlay])assert.ok(point.x>=surface.bounds.x&&point.y>=surface.bounds.y&&point.x<surface.bounds.x+surface.bounds.width&&point.y<surface.bounds.y+surface.bounds.height,'OS test point lies within both actual underlying page and transparent host bounds');
+  const fixtureViewport=await fixtureScript<{width:number;height:number}>('({width:innerWidth,height:innerHeight})');
+  const pagePoint={x:(point.x-native.bounds.x)*fixtureViewport.width/native.bounds.width,y:(point.y-native.bounds.y)*fixtureViewport.height/native.bounds.height};
+  await fixtureScript(`(() => { const button=document.createElement('button');button.id='qa-transparent-host-click';button.textContent='QA';button.style.cssText='position:fixed;left:${pagePoint.x-10}px;top:${pagePoint.y-10}px;width:24px;height:24px;padding:0;z-index:9999';window.__qaOutsideClicks=0;window.__qaPointerEvents=[];for(const type of ['pointermove','pointerdown','pointerup','click','wheel'])window.addEventListener(type,event=>window.__qaPointerEvents.push({type,target:event.target?.id,x:event.clientX,y:event.clientY,deltaY:event.deltaY}),true);button.onclick=()=>window.__qaOutsideClicks++;document.body.append(button); })()`);
+  const pointerFixture=()=>fixtureScript(`(() => {const button=document.getElementById('qa-transparent-host-click'),box=button?.getBoundingClientRect(),hit=document.elementFromPoint(${pagePoint.x},${pagePoint.y});return{count:window.__qaOutsideClicks,events:window.__qaPointerEvents,button:box&&{x:box.x,y:box.y,width:box.width,height:box.height},hit:hit?.outerHTML,viewport:{width:innerWidth,height:innerHeight,devicePixelRatio},scrollY,visibility:document.visibilityState,focus:document.hasFocus()}})()`);
+  await writeFile(join(qa,'native-fixture-before-click.json'),JSON.stringify({native,overlay,reader,point,pagePoint,fixture:await pointerFixture()},null,2));
+  for(const target of [page,toolbar])await target.evaluate(()=>{(window as any).__qaSurfacePointerEvents=[];for(const type of ['pointermove','pointerdown','pointerup','click','wheel'])window.addEventListener(type,(event:any)=>(window as any).__qaSurfacePointerEvents.push({type,target:event.target?.outerHTML?.slice(0,350),x:event.clientX,y:event.clientY,deltaY:event.deltaY}),true);});
+  const outsideClick=await osPointer(point,'click');
+  try { await until(async()=>await fixtureScript<number>('window.__qaOutsideClicks')===1,'actual OS click reaches document below transparent host'); }
+  finally { await writeFile(join(qa,'native-fixture-after-click.json'),JSON.stringify({fixture:await pointerFixture(),geometry:await nativeGeometry(),mainSurface:await page.evaluate(()=>(window as any).__qaSurfacePointerEvents),toolbarSurface:await toolbar.evaluate(()=>(window as any).__qaSurfacePointerEvents)},null,2)); }
+  const beforeWheel=await fixtureScript<number>('scrollY'),outsideWheel=await osPointer(point,'wheel');await until(async()=>await fixtureScript<number>('scrollY')>beforeWheel+20,'actual OS wheel scrolls underlying webpage');
+  await writeFile(join(qa,'native-transparent-hit-test.json'),JSON.stringify({scale,clientWidth,clientHeight,point,capsuleBox,native,overlay,outsideClick,outsideWheel,scrollAfter:await fixtureScript<number>('scrollY')},null,2));
+  await fixtureScript('document.getElementById("qa-transparent-host-click").remove();window.scrollTo(0,0)');await setting('appearance.autoHideToolbar',true);
   for (const name of ['源码', '分栏', '撤销最近修改', '保存']) assert.equal(await toolbar.getByRole('button', { name, exact: true }).count(), 0, `web has no ${name} module`);
   assert.equal(await toolbar.locator('.view-modes').count(), 0);
   assert.equal(await toolbar.getByRole('textbox', { name: '网页地址', exact: true }).count(), 1);
@@ -222,7 +319,7 @@ try {
   const chrome = await page.evaluate(() => ({ top: document.querySelector('.tab-strip')!.getBoundingClientRect().top, bottom: document.querySelector('.workbench')!.getBoundingClientRect().bottom, footers: document.querySelectorAll('.status-bar').length, shellScroll: document.querySelector('.app-shell')!.scrollTop, scroll: scrollY, height: innerHeight }));
   assert.equal(chrome.footers, 0, 'main window has no persistent footer');
   assert.ok(Math.abs(chrome.top) < 1 && Math.abs(chrome.bottom - chrome.height) < 1); assert.equal(chrome.shellScroll, 0); assert.equal(chrome.scroll, 0);
-  await writeFile(join(qa, 'navigation-styles.json'), JSON.stringify({ localStyle, nativeStyle, native, overlay, chrome }, null, 2));
+  await writeFile(join(qa, 'navigation-styles.json'), JSON.stringify({ assets,scale,clientWidth,clientHeight,localStyle, nativeStyle, native, overlay, chrome }, null, 2));
   assert.deepEqual(errors, []);
   console.log('Shared local/native navigation, capsule-only glass, module gating, history, translation, copy and scroll/focus: PASS', qa);
 } catch (error) {
@@ -234,4 +331,7 @@ try {
   })) })).catch(() => ({ unavailable: true }));
   await writeFile(join(qa, 'failure.json'), JSON.stringify({ error: String(error), diagnostics }, null, 2));
   console.error('Navigation regression evidence:', qa); throw error;
-} finally { await app.close(); }
+} finally {
+  const child=app.process(),exit=new Promise<{code:number|null;signal:NodeJS.Signals|null}>((done,reject)=>{if(child.exitCode!==null){done({code:child.exitCode,signal:child.signalCode});return;}const timer=setTimeout(()=>reject(new Error('Private navigation QA did not exit naturally')),20000);child.once('exit',(code,signal)=>{clearTimeout(timer);done({code,signal});});});
+  await app.close();const status=await exit;await writeFile(join(qa,'qa-exit.json'),JSON.stringify({pid:child.pid,...status},null,2));assert.equal(status.code,0);assert.equal(status.signal,null);
+}

@@ -26,6 +26,7 @@ import type { Annotation } from '../../selection-tools/src/index';
 interface StoredWorkspace { annotations?: Annotation[]; schemaVersion: string; documents: { info: DocumentInfo; bytes: string; sourceHash?: string }[]; views: ViewInfo[]; activeViewId?: string; lastHumanViewId?: string; receipts?: [string, { payload: string; receipt: unknown }][]; patches?: [string, PreparedPatch][] }
 interface UndoEntry { documentId: string; before: InternalDocument; afterRevision: number; native?: { sessionId: string; writerEpoch: string; engineEpoch: string; engineRevision: number; viewId: string; undoToken?: string } }
 interface NativeBinding { writerEpoch: string; state: NativeOfficeState; mirrorEngineRevision: number; openingEngineRevision: number; closing: boolean; workerExited?: boolean; viewIds: Set<string> }
+interface NativeRetirement { documentId: string; sessionId: string; engineEpoch: string; viewId: string; kind: 'writer' | 'view' }
 
 export class ViewerCore extends EventEmitter {
   readonly annotations = new Map<string, Annotation>();
@@ -49,6 +50,8 @@ export class ViewerCore extends EventEmitter {
   private nativeOfficeDriver?: NativeOfficeDriver;
   private wrappedNativeOfficeDriver?: NativeOfficeDriver;
   private nativeOfficeBindings = new Map<string, NativeBinding>();
+  private nativeOfficeOpenings = new Map<string, Promise<NativeOfficeState>>();
+  private nativeOfficeRetirements = new Map<string, NativeRetirement>();
   private saveTimer?: NodeJS.Timeout;
   private positionSaveTimer?: NodeJS.Timeout;
   lastPersistenceError?: string;
@@ -97,12 +100,31 @@ export class ViewerCore extends EventEmitter {
   }
   getDocument(id: string) { const document = this.documents.get(id); if (!document) throw new ViewerError('TARGET_NOT_FOUND', '文档已关闭或不存在。'); return document; }
   registerNativeOfficeDriver(driver: NativeOfficeDriver) {
-    if (this.nativeOfficeBindings.size && this.nativeOfficeDriver !== driver) throw new ViewerError('NATIVE_SESSION_ACTIVE', '原生Office会话仍在运行，不能替换编辑源。');
+    if ((this.nativeOfficeBindings.size || this.nativeOfficeOpenings.size || this.nativeOfficeRetirements.size) && this.nativeOfficeDriver !== driver) throw new ViewerError('NATIVE_SESSION_ACTIVE', '原生Office会话仍在运行、加载或等待清理，不能替换编辑源。');
     if (this.nativeOfficeDriver === driver && this.wrappedNativeOfficeDriver) return;
     this.nativeOfficeDriver = driver;
     this.wrappedNativeOfficeDriver = normalizeNativeOfficeDriver(driver);
   }
   private nativeDriver() { if (!this.wrappedNativeOfficeDriver) throw new ViewerError('ENGINE_UNAVAILABLE', '完整原生Office引擎尚未连接。'); return this.wrappedNativeOfficeDriver; }
+  private forgetNativeRetirements(sessionId: string, engineEpoch?: string) {
+    for (const [key, retirement] of this.nativeOfficeRetirements) if (retirement.sessionId === sessionId && (engineEpoch === undefined || retirement.engineEpoch === engineEpoch)) this.nativeOfficeRetirements.delete(key);
+  }
+  private async retireNativeOffice(key: string) {
+    const retirement = this.nativeOfficeRetirements.get(key); if (!retirement) return;
+    const driver = this.nativeDriver(), binding = this.nativeOfficeBindings.get(retirement.documentId);
+    const shared = binding?.state.sessionId === retirement.sessionId && binding.state.engineEpoch === retirement.engineEpoch;
+    // A failed initial cleanup may subsequently be adopted by a new real view.
+    // Its old controller can be detached, but its now-shared writer cannot close.
+    if (shared && binding.viewIds.has(retirement.viewId)) throw new ViewerError('NATIVE_SESSION_ACTIVE', '待清理的原生控制器仍由有效页面持有，不能关闭。');
+    if (retirement.kind === 'writer' && !shared) {
+      await driver.close(retirement.sessionId);
+      this.forgetNativeRetirements(retirement.sessionId, retirement.engineEpoch);
+    } else {
+      if (!driver.detachView) throw new ViewerError('CAPABILITY_UNSUPPORTED', '原生引擎尚不支持独立关闭文档控制器；待清理控制器仍被追踪。');
+      await driver.detachView(retirement.sessionId, retirement.viewId);
+      if (this.nativeOfficeRetirements.get(key) === retirement) this.nativeOfficeRetirements.delete(key);
+    }
+  }
   private nativeBinding(documentId: string) { const binding = this.nativeOfficeBindings.get(documentId); if (!binding || binding.closing || binding.state.status === 'failed') throw new ViewerError('NATIVE_SESSION_EXPIRED', '原生Office会话已关闭或不可用，请重新打开。'); return binding; }
   private publishNativeMetadata(documentId: string, binding: NativeBinding) {
     const doc = this.getDocument(documentId);
@@ -112,6 +134,7 @@ export class ViewerCore extends EventEmitter {
   }
   /** Called only by the trusted runtime owner after its native worker exits. */
   failNativeOfficeSession(sessionId: string, reasonCode = 'NATIVE_WORKER_EXITED') {
+    this.forgetNativeRetirements(sessionId);
     for (const [documentId, binding] of this.nativeOfficeBindings) {
       if (binding.state.sessionId !== sessionId) continue;
       if (binding.state.engineRevision !== binding.mirrorEngineRevision) this.getDocument(documentId).info.dirty = true;
@@ -133,24 +156,55 @@ export class ViewerCore extends EventEmitter {
     if (state.engineRevision !== binding.mirrorEngineRevision) for (const view of this.views.values()) if (view.documentId === state.documentId && view.context) view.context = { ...view.context, quality: 'last-confirmed', selection: { ...view.context.selection, rect: undefined } };
     this.event('office.state', { documentId: state.documentId, sessionId: state.sessionId, engineRevision: state.engineRevision, dirty: state.dirty }, durable ? 'normal' : 'position');
   }
-  async openNativeOffice(viewId: string) {
+  async openNativeOffice(viewId: string, options: { deferInitialMirror?: boolean } = {}) {
     const view = this.getView(viewId), documentId = view.documentId;
-    return this.serial(documentId, async () => {
+    const pending = this.nativeOfficeOpenings.get(viewId);
+    if (pending) {
+      const state = await pending;
+      if (!options.deferInitialMirror && this.nativeOfficeBindings.get(documentId)?.mirrorEngineRevision === -1) {
+        await this.synchronizeNativeDocument(documentId);
+        return this.nativeOfficeState(viewId);
+      }
+      return state;
+    }
+    const opening = this.serial(documentId, async () => {
+      if (!this.views.has(viewId)) throw new ViewerError('NATIVE_OPEN_CANCELLED', '页面已关闭，已取消本次文档加载。');
       const doc = this.getDocument(documentId);
       if (!['docx','pptx','xlsx'].includes(doc.info.format)) throw new ViewerError('CAPABILITY_UNSUPPORTED', '完整原生Office仅支持Word、PPT和Excel文档。');
       const driver = this.nativeDriver(), previous = this.nativeOfficeBindings.get(documentId);
-      if (previous?.viewIds.has(viewId)) return this.nativeOfficeState(viewId);
+      if (previous?.viewIds.has(viewId)) {
+        if (!options.deferInitialMirror && previous.mirrorEngineRevision === -1) await this.syncNativeInside(documentId, 'engine');
+        return this.nativeOfficeState(viewId);
+      }
+      // A cancelled sole writer is no longer a document's editing source. It
+      // must retire before reimporting the latest library bytes, rather than
+      // letting the host adopt an obsolete model after a failed close.
+      if (!previous) for (const [key, retirement] of [...this.nativeOfficeRetirements]) if (retirement.documentId === documentId) await this.retireNativeOffice(key);
       const state = await driver.open({ documentId, viewId, format: doc.info.format as NativeOfficeState['format'], bytes: doc.bytes.slice(), revision: doc.info.revision, sourcePath: doc.info.path });
       if (state.documentId !== documentId || state.format !== doc.info.format || !state.sessionId || !state.engineEpoch || !Number.isInteger(state.engineRevision) || state.engineRevision < 0) throw new ViewerError('NATIVE_STATE_INVALID', '原生引擎返回了不匹配的文档身份或版本。');
       if (previous && (previous.state.sessionId !== state.sessionId || previous.state.engineEpoch !== state.engineEpoch)) throw new ViewerError('NATIVE_WRITER_CONFLICT', '同一文档不能建立第二个独立的原生编辑源。');
+      // Closing a still-loading tab removes its UI immediately. Retire only the
+      // late controller created for that tab, never an already bound writer.
+      if (!this.views.has(viewId)) {
+        const key = randomUUID();
+        this.nativeOfficeRetirements.set(key, { documentId, sessionId: state.sessionId, engineEpoch: state.engineEpoch, viewId, kind: previous ? 'view' : 'writer' });
+        await this.retireNativeOffice(key);
+        throw new ViewerError('NATIVE_OPEN_CANCELLED', '页面已关闭，已取消本次文档加载。');
+      }
       const binding = previous ?? { writerEpoch: randomUUID(), state: clone(state), mirrorEngineRevision: -1, openingEngineRevision: state.engineRevision, closing: false, viewIds: new Set<string>() };
       binding.viewIds.add(viewId);
       binding.state = clone(state); this.nativeOfficeBindings.set(documentId, binding); this.publishNativeMetadata(documentId, binding);
       doc.info.capabilities = { ...doc.info.capabilities, engine: 'libreoffice-native', editKinds: [...(state.supportedOperations ?? []), 'office.dispatch'], limitations: ['原生Office是唯一编辑源；未接入的旧操作需使用原生命令目录。', ...(state.warnings ?? [])] };
-      if (!previous || binding.mirrorEngineRevision !== state.engineRevision) await this.syncNativeInside(documentId, 'engine');
+      // The tiled display can use real native pixels before an OOXML export.
+      // Its mirror remains explicitly unconfirmed until an actual snapshot;
+      // reads, save, editing plans and recovery still synchronize the model.
+      if (!options.deferInitialMirror && (!previous || binding.mirrorEngineRevision !== state.engineRevision)) await this.syncNativeInside(documentId, 'engine');
       this.event('office.opened', { documentId, viewId, sessionId: state.sessionId });
       return this.nativeOfficeState(viewId);
     });
+    this.nativeOfficeOpenings.set(viewId, opening);
+    try { return await opening; }
+    finally { if (this.nativeOfficeOpenings.get(viewId) === opening) this.nativeOfficeOpenings.delete(viewId); }
   }
   async nativeOfficeState(viewId: string) {
     const view = this.getView(viewId), existing = this.nativeOfficeBindings.get(view.documentId);
@@ -400,6 +454,7 @@ export class ViewerCore extends EventEmitter {
         // Only a trusted exit proves the writer is already gone. A close veto or
         // transport timeout alone must never authorize dropping a live writer.
         await this.persist(); this.nativeOfficeBindings.delete(documentId); delete doc.info.nativeOffice;
+        this.forgetNativeRetirements(binding.state.sessionId, binding.state.engineEpoch);
         doc.info.capabilities = this.registry.resolve(doc.info.format).capabilities(doc.info.format);
         this.event('office.closed', { documentId, sessionId: binding.state.sessionId, recovery: true, mirrorEngineRevision: binding.mirrorEngineRevision, reasonCode: 'NATIVE_WORKER_EXITED' }); await this.persist(); return;
       }
@@ -414,6 +469,7 @@ export class ViewerCore extends EventEmitter {
       try { await this.nativeDriver().close(binding.state.sessionId); }
       catch (error) { binding.state.status = 'failed'; binding.closing = false; this.publishNativeMetadata(documentId, binding); throw error; }
       this.nativeOfficeBindings.delete(documentId); const doc = this.getDocument(documentId); delete doc.info.nativeOffice; doc.info.capabilities = this.registry.resolve(doc.info.format).capabilities(doc.info.format);
+      this.forgetNativeRetirements(binding.state.sessionId, binding.state.engineEpoch);
       this.event('office.closed', { documentId, sessionId: binding.state.sessionId }); await this.persist();
   }
   /** Detach a window controller while preserving its tab identity and model. */
@@ -587,6 +643,12 @@ export class ViewerCore extends EventEmitter {
   }
   async requestCloseView(viewId: string, retainRecovery = false) {
     const view = this.getView(viewId), native = this.nativeOfficeBindings.has(view.documentId);
+    if (this.nativeOfficeOpenings.has(viewId) && !this.nativeOfficeBindings.get(view.documentId)?.viewIds.has(viewId)) {
+      // No controller for this view has become available for editing. Closing
+      // its tab must not wait for another document's shared engine startup.
+      // The open continuation retires its own late controller when it returns.
+      this.closeViewInside(viewId, retainRecovery, true); await this.persist(); return;
+    }
     if (native) {
       const failed = this.nativeOfficeBindings.get(view.documentId)!;
       if (failed.workerExited) {
@@ -613,7 +675,14 @@ export class ViewerCore extends EventEmitter {
     }
     this.closeView(viewId, retainRecovery); await this.persist();
   }
-  async shutdownNativeOffice() { for (const documentId of [...this.nativeOfficeBindings.keys()]) await this.closeNativeOffice(documentId); await this.persist(); }
+  async shutdownNativeOffice() {
+    // Wait for real terminal import receipts, including cleanup failures that
+    // remain tracked below. Do not abandon an importer or replay its edits.
+    await Promise.allSettled([...this.nativeOfficeOpenings.values()]);
+    for (const documentId of [...this.nativeOfficeBindings.keys()]) await this.closeNativeOffice(documentId);
+    for (const [key, retirement] of [...this.nativeOfficeRetirements]) await this.serial(retirement.documentId, () => this.retireNativeOffice(key));
+    await this.persist();
+  }
   updateContext(viewId: string, update: Partial<ReadingContext>, actor: Actor = 'human') {
     const view = this.getView(viewId), doc = this.getDocument(view.documentId);
     if (update.contentRevision !== undefined && update.contentRevision !== doc.info.revision) return;

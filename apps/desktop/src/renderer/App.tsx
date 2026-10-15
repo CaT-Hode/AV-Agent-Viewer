@@ -10,7 +10,7 @@ import { TranslationCard, type TranslationCardState as Card } from './components
 import type { AIReadingToolDefinition, AIReadingScope } from './lib/ai-reading-tools';
 import { FileDropHost } from './components/FileDropHost';
 import { AGENT_OPERATION_METRICS, NAVIGATION_METRICS } from './lib/navigation-optics';
-import { observeNavigationLane, preferredNavigationWidth, readNavigationLane } from './lib/navigation-lane';
+import { clearSidebarNavigationReservation, observeNavigationLane, readNavigationTargetLane, syncSidebarNavigationReservation } from './lib/navigation-lane';
 import { MotionPresence, usePresence } from './components/MotionPresence';
 import { NavigationToolbar, type NavigationAction } from './components/NavigationToolbar';
 import { useNavigationVisibility } from './lib/navigation-visibility';
@@ -125,6 +125,7 @@ export function App() {
   }, []);
   async function flushDrafts(viewId?: string) {
     for (const controller of officeControllers.current.values()) if (!viewId || controller.viewId === viewId) {
+      if (!controller.hasDrafts()) continue;
       await controller.flush();
       if (controller.hasDrafts()) throw new Error('输入内容仍在变化，请完成输入后重试。');
     }
@@ -255,6 +256,11 @@ export function App() {
     if (event.action === 'close-error') { alert(event.message); return; }
     if (event.action === 'files-opened') { void handleFilesOpened(event as unknown as { views: ViewInfo[]; errors: string[] }); return; }
     if (event.viewId !== view?.id) return;
+    if(event.action==='geometry'&&document?.format==='web'){
+      const reader=window.document.querySelector<HTMLElement>('.reader-panel'),bounds=event.bounds as {x:number;width:number}|undefined;
+      if(reader&&bounds&&Number.isFinite(bounds.x)&&Number.isFinite(bounds.width)&&bounds.width>0&&navigation.visible){const origin=reader.getBoundingClientRect().left;syncSidebarNavigationReservation(reader,bounds.x-origin,bounds.x+bounds.width-origin);}
+      return;
+    }
     if(event.action==='native-save'){void save();return;}
     if(event.action==='native-save-as'){void save(true);return;}
     if(event.action==='native-open'){void openFile();return;}
@@ -273,13 +279,13 @@ export function App() {
     else if (event.action === 'zoom') void navigationAction({ type: 'zoom', factor: Number(event.factor) });
     else if (event.action === 'zoom-updated') void refresh();
     else if (['back', 'forward', 'reload', 'copy', 'translate', 'undo', 'save'].includes(String(event.action))) void navigationAction({ type: event.action as 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' });
-  }), [view?.id, view?.zoom, document?.format, home, homeTabId, webTranslated, webBusy, navigation.onFocus, navigation.onBlur, navigation.onHover, navigation.onLeave, navigation.reveal, navigation.revealFromEdge, navigation.dismiss, navigation.onScroll]);
+  }), [view?.id, view?.zoom, document?.format, home, homeTabId, webTranslated, webBusy, navigation.onFocus, navigation.onBlur, navigation.onHover, navigation.onLeave, navigation.visible, navigation.reveal, navigation.revealFromEdge, navigation.dismiss, navigation.onScroll]);
   useEffect(() => {
     if (!desktop) return;
-    if (home || modalMotion.present || closing || document?.format !== 'web' || !view) { void call('toolbar-layout', { visible: false }); return; }
+    if (home || modalMotion.present || closing || document?.format !== 'web' || !view) { const reader=window.document.querySelector<HTMLElement>('.reader-panel');if(reader&&(home||document?.format==='web'))clearSidebarNavigationReservation(reader);void call('toolbar-layout', { visible: false }); return; }
     const reader = window.document.querySelector<HTMLElement>('.reader-panel'); if (!reader) return;
-    const update = () => { const box = reader.getBoundingClientRect(), lane = readNavigationLane(reader), width = preferredNavigationWidth(lane.width) + 2 * NAVIGATION_METRICS.shadowGutter; void call('toolbar-layout', { viewId: view.id, visible: navigation.visible, manualHidden: navigation.manualHidden, hideProgress: navigation.progress, hideDurationMs: navigationDuration, format: document.format, title: document.title, canUndo:!!lastTransactions.current.get(document.id), address: document.model.url, translated: webTranslated[view.id], busy: webBusy, settings, zoom: view.zoom ?? 1, bounds: { x: box.x + lane.center - width / 2, y: box.y + NAVIGATION_METRICS.top - NAVIGATION_METRICS.shadowGutter, width, height: NAVIGATION_METRICS.height + 2 * NAVIGATION_METRICS.shadowGutter } }).catch(alert); };
-    return observeNavigationLane(reader,update);
+    const update = () => { const box = reader.getBoundingClientRect(), lane = readNavigationTargetLane(reader), gutter=NAVIGATION_METRICS.shadowGutter;if(!navigation.visible)clearSidebarNavigationReservation(reader);void call('toolbar-layout', { viewId: view.id, visible: navigation.visible, manualHidden: navigation.manualHidden, hideProgress: navigation.progress, hideDurationMs: navigationDuration, format: document.format, title: document.title, canUndo:!!lastTransactions.current.get(document.id), address: document.model.url, translated: webTranslated[view.id], busy: webBusy, settings, zoom: view.zoom ?? 1, laneBounds:{...lane,left:lane.left+gutter,right:lane.right+gutter,center:lane.center+gutter}, bounds: { x: box.x-gutter, y: box.y + NAVIGATION_METRICS.top - gutter, width:box.width+2*gutter, height: NAVIGATION_METRICS.height + 2*gutter } }).catch(alert); };
+    const dispose=observeNavigationLane(reader,update);return()=>{dispose();clearSidebarNavigationReservation(reader);};
   }, [home, modalMotion.present, closing, view?.id, view?.zoom, document?.model.url, navigation.visible, navigation.manualHidden, navigation.progress, navigationDuration, settings, webBusy, webTranslated, leftOpen, drawer]);
   useEffect(() => {
     if (!desktop) return;
@@ -290,7 +296,12 @@ export function App() {
     const observer = new ResizeObserver(update); observer.observe(reader); update();
     return () => observer.disconnect();
   }, [home, modalMotion.present, closing, view?.id, document?.id, document?.format, document?.title, agentEvent?.seq, view?.agentState?.controlId, view?.agentState?.phase, agentStatuses, settings?.revision, leftOpen, drawer]);
-  useEffect(() => { window.dispatchEvent(new Event('agentviewer:selection-clear')); }, [view?.id, home, document?.revision]);
+  useEffect(() => { window.dispatchEvent(new Event('agentviewer:selection-clear')); }, [view?.id, home, document?.id]);
+  useEffect(() => {
+    // A tiled Office mirror can advance the library revision while the native
+    // selection is unchanged. Its bridge owns engine/selection invalidation.
+    if (!desktop || !['docx','pptx','xlsx'].includes(document?.format ?? '')) window.dispatchEvent(new Event('agentviewer:selection-clear'));
+  }, [document?.id, document?.format, document?.revision]);
   const refreshAnnotations = () => { if(document) void call<any[]>('annotations-list',{documentId:document.id}).then(setAnnotations).catch(alert); };
   useEffect(refreshAnnotations,[document?.id,drawer]);
   useEffect(()=>{

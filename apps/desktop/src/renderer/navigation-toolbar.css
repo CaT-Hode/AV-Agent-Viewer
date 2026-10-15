@@ -83,7 +83,7 @@
 
 /* A transparent source-derived optical gutter; no rectangular blur surface. */
 html.native-toolbar-root .workbench.native-toolbar { position: relative; display: block; height: 100vh; padding: 16px; background: transparent !important; clip-path: none; }
-html.native-toolbar-root[data-theme] .native-toolbar .reader-toolbar.navigation-toolbar { --navigation-offset-x: 0%; position: relative; top: auto; left: auto; width:var(--navigation-slot-width,100%); max-width:100%; margin:0 auto; }
+html.native-toolbar-root[data-theme] .native-toolbar .reader-toolbar.navigation-toolbar { --navigation-offset-x: -50%; position: absolute; top:16px; left:var(--navigation-slot-left,50%); width:var(--navigation-slot-width,100%); max-width:100%; margin:0; }
 html.native-toolbar-root[data-theme] .native-toolbar .navigation-capsule { width: 100%; max-width: none; }
 .navigation-toolbar[data-navigation-density="tight"] { --navigation-gap:5px; --navigation-padding:12px; }
 .navigation-toolbar[data-navigation-density="compact"] { --navigation-gap:3px; --navigation-padding:8px; }
@@ -118,10 +118,10 @@ html.native-toolbar-root[data-theme] .native-toolbar .navigation-capsule { width
 :root[data-motion="reduced"] .workbench .reader-toolbar.navigation-toolbar.is-hidden { transition-delay: 0s, 80ms; }
 :root[data-motion="off"] .workbench .reader-toolbar.navigation-toolbar { transition: none !important; }
 :root[data-motion="reduced"] .workbench .reader-toolbar.navigation-toolbar { transform: translateX(-50%); }
-html.native-toolbar-root[data-motion="reduced"] .native-toolbar .reader-toolbar.navigation-toolbar { transform: none; }
+html.native-toolbar-root[data-motion="reduced"] .native-toolbar .reader-toolbar.navigation-toolbar { transform: translateX(-50%); }
 @media (prefers-reduced-motion: reduce) {
   .navigation-overflow-menu { transition-duration:80ms; transform:none; }
   :root[data-theme] .workbench .reader-toolbar.navigation-toolbar { transition-duration: 80ms, 0s !important; transform: translateX(-50%); }
-  html.native-toolbar-root .native-toolbar .reader-toolbar.navigation-toolbar { transform: none; }
+  html.native-toolbar-root .native-toolbar .reader-toolbar.navigation-toolbar { transform: translateX(-50%); }
   :root[data-theme] .workbench .reader-toolbar.navigation-toolbar.is-hidden { transition-delay: 0s, 80ms; }
 }

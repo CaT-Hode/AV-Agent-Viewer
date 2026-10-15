@@ -37,5 +37,11 @@ test('paint retries classify only precise read version races, keeping unknown ed
   assert.equal(officeSurfaceStaleRead({ code: 'STALE_OFFICE_SURFACE_LAYOUT' }, 'document'), true);
   assert.equal(officeSurfaceStaleRead(new Error("Error invoking remote method 'agentviewer:command': Error: STALE_OFFICE_WINDOW: resized"), 'window'), true);
   assert.equal(officeSurfaceStaleRead(new Error('NATIVE_OUTCOME_UNKNOWN: edit outcome missing'), 'document'), false);
+  assert.equal(officeSurfaceStaleRead(new Error('OFFICE_DISPLAY_EXPIRED: withdrawn reader'), 'document'), true);
+  assert.equal(officeSurfaceStaleRead({code:'OFFICE_DISPLAY_EXPIRED'}, 'window'), true);
+  assert.equal(officeSurfaceStaleRead({code:'STALE_OFFICE_DISPLAY'}, 'document'), true);
+  assert.equal(officeSurfaceStaleRead(new Error('OFFICE_VIEWPORT_CHANGED: resized before layout'), 'document'), true);
+  assert.equal(officeSurfaceStaleRead({code:'OFFICE_DISPLAY_NOT_PRESENTED'}, 'document'), false);
+  assert.equal(officeSurfaceStaleRead(new Error('OFFICE_DISPLAY_EXPIRED_SUFFIX'), 'window'), false);
   assert.equal(officeSurfaceStaleRead(new Error('STALE_OFFICE_WINDOW_SUFFIX'), 'window'), false);
 });

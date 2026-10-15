@@ -12,6 +12,7 @@ import { JsonWorkspaceRepository } from '../packages/persistence/src/index';
 import { blankBytes } from '../packages/document-core/src/fixtures';
 import { dispatch } from '../packages/sdk/src/dispatch';
 import { actionsFor } from '../packages/selection-tools/src/index';
+import { ViewerError } from '../packages/contracts/src/index';
 import type { EditOperation, NativeOfficeCommand, NativeOfficeDriver, NativeOfficeState, NativeOfficeSnapshot, NativeOfficeExecuteRequest, NativeOfficeQuery, NativeOfficeNavigateTarget, NativeOfficeExportFormat, NativeOfficeCapture, NativeOfficeInputRequest, NativeOfficeStylePatch, NativeOfficeStyleInspection } from '../packages/contracts/src/index';
 
 const sha = (value: Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -77,6 +78,102 @@ async function setup(format: 'docx' | 'xlsx' | 'pptx' = 'docx') {
 }
 const versions = (state: NativeOfficeState) => ({ expectedEngineEpoch: state.engineEpoch, expectedEngineRevision: state.engineRevision, expectedSelectionEpoch: state.selectionEpoch });
 const plan = (core: ViewerCore, documentId: string, viewId: string, text = '原生写入的真实文件') => core.prepare(documentId, core.getDocument(documentId).info.revision, { kind: 'word.setBlock', blockId: 'paragraph-0', text }, { viewId });
+
+test('tiled first display does not await a serialized mirror, while public reads still obtain a real snapshot', async()=>{
+  const {core,view,driver}=await setup();
+  await core.openNativeOffice(view.id,{deferInitialMirror:true});
+  assert.equal(driver.snapshots,0,'real native state is usable before the OOXML exporter');
+  assert.equal(core.getDocument(view.documentId).info.nativeOffice?.mirrorEngineRevision,-1);
+  assert.equal((await core.context(view.id)).quality,'not-ready','source bytes cannot masquerade as a fresh native mirror');
+  const result=await dispatch(core,'read',{documentId:view.documentId}) as {blocks:unknown[]};
+  assert.ok(result.blocks.length);assert.equal(driver.snapshots,1);
+  assert.equal(core.getDocument(view.documentId).info.nativeOffice?.mirrorEngineRevision,0);
+  assert.equal((await core.context(view.id)).quality,'confirmed');
+});
+
+test('pending native import neither blocks unrelated views nor resurrects a tab closed before its controller arrives',async()=>{
+  const {core,view,driver}=await setup(),entered=gate(),release=gate(),original=driver.open.bind(driver),before=core.getDocument(view.documentId).bytes.slice();
+  driver.open=async input=>{entered.resolve();await release.promise;return original(input);};
+  const first=core.openNativeOffice(view.id,{deferInitialMirror:true}),duplicate=core.openNativeOffice(view.id,{deferInitialMirror:true});
+  const rejected=Promise.all([assert.rejects(first,{code:'NATIVE_OPEN_CANCELLED'}),assert.rejects(duplicate,{code:'NATIVE_OPEN_CANCELLED'})]);
+  await entered.promise;
+  assert.throws(()=>core.registerNativeOfficeDriver(new OfficeDriver()),{code:'NATIVE_SESSION_ACTIVE'});
+  const markdown=await core.openBytes('independent.md',new TextEncoder().encode('# 继续阅读'),'markdown');core.activate(markdown.id);
+  await core.requestCloseView(view.id,true);
+  assert.equal(core.activeViewId,markdown.id);assert.equal(core.views.has(view.id),false);assert.equal(driver.closes,0,'the importer remains live until its real completion');
+  assert.equal(core.getDocument(view.documentId).info.nativeOffice,undefined);
+  release.resolve();await rejected;
+  assert.equal(driver.opens,1,'two requests share one actual import');assert.equal(driver.closes,1,'only the abandoned writer is retired after import');
+  assert.equal(core.getDocument(view.documentId).info.nativeOffice,undefined);assert.deepEqual(core.getDocument(view.documentId).bytes,before);
+});
+
+test('cancelling a second loading controller leaves the already bound writable document and view intact',async()=>{
+  const {core,view,driver}=await setup();await core.openNativeOffice(view.id);
+  const second=core.addView(view.documentId),entered=gate(),release=gate(),original=driver.open.bind(driver);
+  driver.open=async input=>{entered.resolve();await release.promise;return original(input);};
+  const pending=core.openNativeOffice(second.id,{deferInitialMirror:true}),rejected=assert.rejects(pending,{code:'NATIVE_OPEN_CANCELLED'});
+  await entered.promise;await driver.replaceWord('原视图继续编辑');await core.requestCloseView(second.id,true);assert.equal(core.views.has(view.id),true);
+  release.resolve();await rejected;
+  assert.equal(driver.closes,0,'cancelling another controller never closes the shared writer');assert.deepEqual(driver.detached,[second.id]);
+  assert.equal((await core.nativeOfficeState(view.id)).viewId,view.id);assert.equal(core.getDocument(view.documentId).info.nativeOffice?.sessionId,'session');
+  await core.synchronizeNativeDocument(view.documentId);assert.equal(core.getDocument(view.documentId).info.model.blocks![0].text,'原视图继续编辑');
+});
+
+test('cancelled imports retain failed writer cleanup until shutdown confirms actual disposal',async()=>{
+  const {core,view,driver}=await setup(),entered=gate(),release=gate(),originalOpen=driver.open.bind(driver),originalClose=driver.close.bind(driver);
+  const before=core.getDocument(view.documentId).bytes.slice();let closeAttempts=0;
+  driver.open=async input=>{entered.resolve();await release.promise;return originalOpen(input);};
+  driver.close=async()=>{if(++closeAttempts<3)throw new ViewerError('NATIVE_CLOSE_VETO','own test worker remains live');await originalClose();};
+  const opening=core.openNativeOffice(view.id,{deferInitialMirror:true}),rejected=assert.rejects(opening,{code:'NATIVE_CLOSE_VETO'});
+  await entered.promise;await core.requestCloseView(view.id,true);
+  let terminal=false;const shutdown=core.shutdownNativeOffice().finally(()=>{terminal=true;}),shutdownRejected=assert.rejects(shutdown,{code:'NATIVE_CLOSE_VETO'});
+  await Promise.resolve();assert.equal(terminal,false,'shutdown must await the importer actual terminal receipt');assert.equal(closeAttempts,0);
+  release.resolve();await rejected;await shutdownRejected;
+  assert.equal(closeAttempts,2);assert.equal(driver.viewIds.has(view.id),true);assert.equal(core.views.has(view.id),false);assert.equal(core.getDocument(view.documentId).info.nativeOffice,undefined);
+  assert.throws(()=>core.registerNativeOfficeDriver(new OfficeDriver()),{code:'NATIVE_SESSION_ACTIVE'},'failed cleanup cannot silently orphan a writer');
+  await core.shutdownNativeOffice();assert.equal(closeAttempts,3);assert.equal(driver.closes,1);assert.equal(driver.snapshots,0);assert.deepEqual(core.getDocument(view.documentId).bytes,before);
+  core.registerNativeOfficeDriver(new OfficeDriver());
+});
+
+for(const cleanup of ['reject','missing'] as const)test('cancelled extra controller with '+cleanup+' detach preserves parent edits and clears only after whole-writer close',async()=>{
+  const {core,view,driver,directory}=await setup();await core.openNativeOffice(view.id);
+  const second=core.addView(view.documentId),entered=gate(),release=gate(),originalOpen=driver.open.bind(driver);let detachAttempts=0;
+  driver.open=async input=>{entered.resolve();await release.promise;return originalOpen(input);};
+  if(cleanup==='missing')Reflect.set(driver,'detachView',undefined);
+  else driver.detachView=async()=>{detachAttempts++;throw new ViewerError('NATIVE_CONNECTION_LOST','own test detach not confirmed');};
+  const pending=core.openNativeOffice(second.id,{deferInitialMirror:true}),rejected=assert.rejects(pending,{code:cleanup==='missing'?'CAPABILITY_UNSUPPORTED':'NATIVE_CONNECTION_LOST'});
+  await entered.promise;await driver.replaceWord('父视图未保存的修改');await core.requestCloseView(second.id,true);release.resolve();await rejected;
+  assert.equal(driver.closes,0);assert.equal(driver.viewIds.has(second.id),true);assert.equal((await core.nativeOfficeState(view.id)).viewId,view.id);
+  await core.synchronizeNativeDocument(view.documentId);assert.equal(core.getDocument(view.documentId).info.model.blocks![0].text,'父视图未保存的修改');
+  const patch=plan(core,view.documentId,view.id,'父视图继续修改并保存');await core.commit(patch.id,'parent-after-cancel-'+cleanup,'human');
+  const target=join(directory,'parent-after-cancel.docx');await core.save(view.documentId,target);assert.deepEqual(new Uint8Array(await readFile(target)),driver.bytes);
+  assert.equal(core.getDocument(view.documentId).info.model.blocks![0].text,'父视图继续修改并保存');assert.equal(driver.closes,0);
+  await core.shutdownNativeOffice();assert.equal(driver.closes,1);assert.equal(detachAttempts,cleanup==='reject'?1:0,'confirmed writer close retires all its controllers without replaying detach');
+  assert.equal(core.views.has(view.id),true);assert.equal(core.views.has(second.id),false);core.registerNativeOfficeDriver(new OfficeDriver());
+});
+
+test('trusted worker exit disposes cancelled-import tombstones without retrying a dead worker',async()=>{
+  const {core,view,driver}=await setup(),entered=gate(),release=gate(),originalOpen=driver.open.bind(driver);let closeAttempts=0;
+  driver.open=async input=>{entered.resolve();await release.promise;return originalOpen(input);};
+  driver.close=async()=>{closeAttempts++;throw new ViewerError('NATIVE_CONNECTION_LOST','own test close result unknown');};
+  const pending=core.openNativeOffice(view.id,{deferInitialMirror:true}),rejected=assert.rejects(pending,{code:'NATIVE_CONNECTION_LOST'});
+  await entered.promise;await core.requestCloseView(view.id,true);release.resolve();await rejected;
+  assert.throws(()=>core.registerNativeOfficeDriver(new OfficeDriver()),{code:'NATIVE_SESSION_ACTIVE'});
+  core.failNativeOfficeSession('session');await core.shutdownNativeOffice();assert.equal(closeAttempts,1);core.registerNativeOfficeDriver(new OfficeDriver());
+});
+
+test('reopening after a failed sole-writer retirement imports updated library bytes instead of adopting the obsolete model',async()=>{
+  const {core,view,driver,directory}=await setup(),entered=gate(),release=gate(),originalOpen=driver.open.bind(driver),originalClose=driver.close.bind(driver);let closeAttempts=0;
+  driver.open=async input=>{entered.resolve();await release.promise;return originalOpen(input);};
+  driver.close=async()=>{if(++closeAttempts<3)throw new ViewerError('NATIVE_CLOSE_VETO','own test writer remains live');await originalClose();Reflect.set(driver,'base',undefined);};
+  const opening=core.openNativeOffice(view.id,{deferInitialMirror:true}),rejected=assert.rejects(opening,{code:'NATIVE_CLOSE_VETO'});
+  await entered.promise;await core.requestCloseView(view.id,true);release.resolve();await rejected;
+  const next=core.addView(view.documentId),patch=plan(core,view.documentId,next.id,'文档库中的后续编辑');await core.commit(patch.id,'library-after-retirement','human');
+  const target=join(directory,'updated-library.docx');await core.save(view.documentId,target);const bytes=core.getDocument(view.documentId).bytes.slice();
+  await assert.rejects(core.openNativeOffice(next.id,{deferInitialMirror:true}),{code:'NATIVE_CLOSE_VETO'});assert.equal(driver.opens,1,'an unretired sole writer cannot accept a new controller');assert.equal(core.getDocument(view.documentId).info.nativeOffice,undefined);
+  await core.openNativeOffice(next.id,{deferInitialMirror:true});assert.equal(closeAttempts,3);assert.equal(driver.opens,2);assert.deepEqual(driver.bytes,bytes);assert.deepEqual(new Uint8Array(await readFile(target)),bytes);
+  await core.synchronizeNativeDocument(view.documentId);assert.equal(core.getDocument(view.documentId).info.model.blocks![0].text,'文档库中的后续编辑');await core.shutdownNativeOffice();
+});
 
 test('native writer invalidates old mirror patches, commits only through driver and retains view identity', async () => {
   const { core, view, driver } = await setup(), old = plan(core, view.documentId, view.id), second = core.addView(view.documentId);

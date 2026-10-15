@@ -2,7 +2,7 @@ import { stepGlassSpring, type SpringAxis } from './glass-elasticity';
 import type { MotionMode } from './motion-policy';
 
 export function sidebarSpringParameters(mode: MotionMode) {
-  const response = mode === 'elegant' ? .58 : .4, dampingRatio = mode === 'elegant' ? .68 : .76;
+  const response = mode === 'elegant' ? .72 : .5, dampingRatio = mode === 'elegant' ? .72 : .79;
   const frequency = 2 * Math.PI / response;
   return { stiffness: frequency * frequency, damping: 2 * dampingRatio * frequency, mass: 1 };
 }
@@ -20,5 +20,11 @@ export function sidebarSpringPresentation(progress: number, side: string) {
   const value = Math.max(-.12, Math.min(1.12, progress));
   // The owned webpage panel has a 12px transparent gutter. Keep the same
   // translation on DOM and owned surfaces so the visible rounded rim stays inside it.
-  return { x: (side === 'left' ? -1 : 1) * 12 * (1 - value), scaleX: .94 + .06 * value, scaleY: .987 + .013 * value, alpha: Math.max(0, Math.min(1, value * 1.8)) };
+  return { x: (side === 'left' ? -1 : 1) * 12 * (1 - value), scaleX: Math.max(.001,value), scaleY: .987 + .013 * value, alpha: Math.max(0, Math.min(1, value * 1.4)) };
+}
+/** A trusted popup owns only a fixed transparent gutter around its material.
+ * Project its paint into that window without changing the physical spring. */
+export function sidebarPopupProjection(side:string,width:number,translation:number,gutter=12) {
+  const x=Math.max(-gutter,Math.min(gutter,translation));
+  return {x,scaleX:width>0?Math.max(.001,1+(gutter+(side==='right'?x:-x))/width):1};
 }

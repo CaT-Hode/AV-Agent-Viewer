@@ -18,7 +18,9 @@ import { OfficePendingScroll } from '../lib/office-pending-scroll';
 import { observeNavigationLane, readNavigationLane } from '../lib/navigation-lane';
 import { officePresentationFitForView, officePresentationManualLayout } from '../lib/office-presentation-fit';
 import {OfficeFramePresenter,drawOfficeFrameTile} from '../lib/office-frame-presenter';
+import { OfficeStartupPreview, type OfficeStartupPreviewLocation } from './OfficeStartupPreview';
 import { useOfficeFormulaNavigationHost } from '../lib/useOfficeFormulaNavigationHost';
+import {flushOfficeSurfaceDraft,officeSurfaceHasDrafts} from '../lib/office-surface-draft';
 import { intersectOfficeRect, officeCssScale, officeCurrentPage, officeDocumentPoint, officeSheetCanvasLayout, officeSurfaceClipRects, officeSurfaceSize, officeTileBatches, officeViewportRect, officeVisibleTiles, officeVisibleTwips, type OfficeSurfaceGeometry } from '../lib/office-surface-geometry';
 import '../embedded-office.css';
 
@@ -33,11 +35,29 @@ const sameIdentity = (a: OfficeSurfaceState, b: OfficeSurfaceState) => a.session
 /** LibreOffice owns the document, layout and editing; DOM owns tiles, focus and accessible input. */
 export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const { document: file, view } = props, identity = file.id + ':' + view.id;
-  useEmbeddedOfficeSelectionTools(view.id, !props.obscured);
+  const [paintedIdentity,setPaintedIdentity]=useState<string>();
+  const [presentedLease,setPresentedLease]=useState<string>();
+  const presentedLeaseRef=useRef<string|undefined>(undefined);
+  const startupDocument=useMemo(()=>file,[identity]);
+  const startupLocation=useRef<OfficeStartupPreviewLocation|undefined>(undefined);
+  const startupHandoff=useRef<string|undefined>(undefined);
+  const presentationFlight=useRef(false);
+  const firstPaintIdentity=useRef<string|undefined>(undefined);
   const latest = useRef(props); latest.current = props;
+  const displayOwner=useRef<{leaseId:string;ready:Promise<unknown>}|undefined>(undefined);
+  useLayoutEffect(()=>{
+    presentedLeaseRef.current=undefined;setPresentedLease(undefined);
+    if(props.obscured){displayOwner.current=undefined;return;}
+    const leaseId=crypto.randomUUID(),owner={leaseId,ready:call('office-display',{viewId:view.id,leaseId,action:'acquire'})};displayOwner.current=owner;
+    return()=>{if(displayOwner.current===owner)displayOwner.current=undefined;void call('office-display',{viewId:view.id,leaseId,action:'release'}).catch(()=>{});};
+  },[identity,!!props.obscured]);
+  const surfaceCall=useCallback(async<T=unknown,>(method:string,args:Record<string,unknown>={}):Promise<T>=>{const owner=displayOwner.current;if(!owner)throw new Error('OFFICE_DISPLAY_EXPIRED');await owner.ready;if(displayOwner.current!==owner)throw new Error('OFFICE_DISPLAY_EXPIRED');return call<T>(method,{...args,leaseId:owner.leaseId});},[identity]);
   const scroll = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), input = useRef<HTMLTextAreaElement>(null), formulaDraft = useRef<OfficeDraftController | undefined>(undefined);
   const formulaHost = useOfficeFormulaNavigationHost(scroll);
   const [surface, setSurface] = useState<OfficeSurfaceState>(), [failure, setFailure] = useState(''), [viewportVersion, setViewportVersion] = useState(0), [, inputChanged] = useState(0);
+  const displayScope=surface?`${identity}:${surface.sessionId}:${surface.engineEpoch}`:undefined;
+  const nativePresented=!!presentedLease&&presentedLease===displayOwner.current?.leaseId;
+  useEmbeddedOfficeSelectionTools(view.id, !props.obscured&&nativePresented&&!!displayScope&&paintedIdentity===displayScope);
   const current = useRef(surface), mounted = useRef(false), generation = useRef(0), frame = useRef(0), tileFlight = useRef(false), tileQueued = useRef(false), layoutRevision = useRef(0), lastLayout = useRef(''), zoom = useRef(view.zoom ?? 1);
   const dispatchQueue = useMemo(() => new OfficeSurfaceDispatchQueue(), [identity]);
   const presentationFit=useMemo(()=>file.format==='pptx'?officePresentationFitForView(identity):undefined,[identity,file.format]);
@@ -98,20 +118,33 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     const extra=latest.current.document.format==='xlsx'?officeSheetCanvasLayout({width:size.width*scale,height:size.height*scale},viewport):manual&&reader?officePresentationManualLayout({width:size.width*scale,height:size.height*scale},viewport,{left:Math.max(0,presentationLane.current.left-(rect.left-reader.left)),right:Math.max(0,(rect.left+host.clientWidth-reader.left)-presentationLane.current.right)}):{};
     return { zoom: zoom.current, scrollX: host.scrollLeft, scrollY: host.scrollTop, offsetX: Math.max(0, (host.clientWidth - size.width * scale) / 2), offsetY: latest.current.document.format==='pptx'?Math.max(0,(host.clientHeight-size.height*scale)/2):0, viewport,...extra };
   }, [presentationFit]);
-  const refresh = useCallback(async () => { const next = await call<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.state, { viewId: latest.current.view.id }); if (!isOfficeSurfaceState(next)) throw new Error('Office 内置核心没有返回 tiled 编辑会话。'); accept(next); }, [accept]);
+  const refresh = useCallback(async () => { if(latest.current.obscured)return;const next = await surfaceCall<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.state, { viewId: latest.current.view.id }); if (!isOfficeSurfaceState(next)) throw new Error('Office 内置核心没有返回 tiled 编辑会话。'); accept(next); }, [accept,surfaceCall]);
   const synchronizeLayoutLocked = useCallback(async (): Promise<void> => {
-    if (!mounted.current || latest.current.document.id + ':' + latest.current.view.id !== identity) return;
-    const state = current.current, geometry = measure(); if (!state || !geometry || state.status !== 'ready') return;
+    const started=performance.now();
+    for (;;) {
+    if (!mounted.current || latest.current.obscured || latest.current.document.id + ':' + latest.current.view.id !== identity) return;
+    const state = current.current, geometry = measure(), display=displayOwner.current; if (!state || !geometry || !display || state.status !== 'ready') return;
     const host=scroll.current;if(!host)return;
     const size = officeSurfaceSize(state), request: OfficeSurfaceLayoutRequest = { viewId: state.viewId, layoutRevision: 0, partIndex: state.partIndex, visibleTwips: officeVisibleTwips(geometry, size), viewportCss: { width: geometry.viewport.width, height: geometry.viewport.height }, documentOriginCss: { x: geometry.offsetX - geometry.scrollX, y: geometry.offsetY - geometry.scrollY },canvasOffsetCss:{x:geometry.offsetX,y:geometry.offsetY},scrollCss:{x:geometry.scrollX,y:geometry.scrollY},scrollExtentCss:{x:Math.max(0,host.scrollWidth-host.clientWidth),y:Math.max(0,host.scrollHeight-host.clientHeight)},safeViewportCss:geometry.safeViewport??{x:0,y:0,width:host.clientWidth,height:host.clientHeight}, boundsCss: geometry.viewport, zoom: zoom.current, deviceScaleFactor: window.devicePixelRatio || 1, visible: !latest.current.obscured && !window.document.hidden, focused: window.document.activeElement === input.current };
-    const signature = JSON.stringify({ ...request, layoutRevision: undefined });
+    // The same geometry must be acknowledged again after a display release.
+    // An earlier display's cache can never satisfy the new lease's layout.
+    const signature = JSON.stringify({ ...request, layoutRevision: undefined, displayLeaseId: display.leaseId });
     if (signature === lastLayout.current && state.layoutRevision === layoutRevision.current) return;
     request.layoutRevision = ++layoutRevision.current;
-    const next = await call<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.layout, request);
+    let next:OfficeSurfaceState;
+    try { next=await surfaceCall<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.layout, {...request}); }
+    catch(cause) {
+      // The main process rejects this before any native write or input. Wait
+      // for Chromium's new viewport, then measure again; never replay input.
+      if(String(cause).includes('OFFICE_VIEWPORT_CHANGED')&&mounted.current&&displayOwner.current===display&&!latest.current.obscured&&performance.now()-started<3000){lastLayout.current='';await new Promise<void>(resolve=>window.setTimeout(resolve,50));continue;}
+      throw cause;
+    }
     // Rendering invalidation may happen while the layout call is in flight.
     // It retires pixels, not an acknowledged layout of the same live session.
-    if (mounted.current && current.current && sameIdentity(state, current.current) && isOfficeSurfaceState(next) && sameIdentity(state, next)) { lastLayout.current = signature; accept(next); }
-  }, [identity, accept, measure]);
+    if (mounted.current && displayOwner.current===display && current.current && sameIdentity(state, current.current) && isOfficeSurfaceState(next) && sameIdentity(state, next)) { lastLayout.current = signature; accept(next); }
+    return;
+    }
+  }, [identity, accept, measure,surfaceCall]);
   const synchronizeLayout = useCallback(() => dispatchQueue.run(synchronizeLayoutLocked), [dispatchQueue, synchronizeLayoutLocked]);
   const inputRequest = useCallback(<T,>(method: string, args: Record<string, unknown> = {}): Promise<T> => {
     const before = current.current;
@@ -122,9 +155,9 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     if (!mounted.current || !before || !live || !sameIdentity(before, live) || args.expectedPartIndex !== live.partIndex) throw new Error('Office 输入目标已变化；输入不会自动重试。');
     // The exact engine coordinate version is read while layout writers are
     // excluded, immediately before this one input is dispatched.
-    return call<T>(method, { ...args, layoutRevision: live.layoutRevision });
+    return surfaceCall<T>(method, { ...args, layoutRevision: live.layoutRevision });
     });
-  }, [dispatchQueue, synchronizeLayoutLocked]);
+  }, [dispatchQueue, synchronizeLayoutLocked,surfaceCall]);
   const inputController = useMemo(() => new OfficeSurfaceInputController(view.id, { request: inputRequest, state: () => current.current, beforeInput: async () => {}, accept, changed: () => { if (mounted.current) inputChanged(version => version + 1); } }), [identity, surface?.sessionId, surface?.engineEpoch, accept, inputRequest]);
   const fail = useCallback((cause: unknown) => { if (!mounted.current) return; const message = cause instanceof Error ? cause.message : String(cause); setFailure(message); latest.current.reportError(cause); }, []);
   const schedulePresentationFit=useCallback(()=>{
@@ -152,7 +185,10 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const post = useCallback((event: OfficeSurfaceInputEvent) => { void inputController.post(event).catch(cause => { inputFailure.current = cause instanceof Error ? cause.message : String(cause); fail(cause); }); }, [inputController, fail]);
   const paint = useCallback(async () => {
     const state = current.current, geometry = measure(), host = scroll.current, target = canvas.current;
-    if (!mounted.current || !state || state.status !== 'ready' || !geometry || !host || !target || latest.current.obscured || performance.now() < paintRetry.current.after) return;
+    // A loaded model is not yet a painted viewport. Wait for the first actual
+    // layout receipt rather than racing a generation-zero tile request against
+    // the initialization layout; later same-session resizes keep strict tickets.
+    if (!mounted.current || !state || state.status !== 'ready' || !state.visible || state.nativeGeometry !== true || state.layoutRevision <= 0 || !geometry || !host || !target || latest.current.obscured || performance.now() < paintRetry.current.after) return;
     const size = officeSurfaceSize(state), dpr = window.devicePixelRatio || 1, scale = officeCssScale(geometry.zoom), visible = officeVisibleTwips(geometry, size), allSpecs = officeVisibleTiles(visible, size, geometry.zoom, dpr);
     const visibleBytes = allSpecs.filter(spec => intersectOfficeRect(spec.rectTwips, visible)).reduce((sum, spec) => sum + spec.pixelWidth * spec.pixelHeight * 4, 0);
     if (visibleBytes > 256 * 1024 * 1024) throw new Error('当前 Office 可见区域超过画布资源限制。');
@@ -165,6 +201,35 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
       for(const spec of visibleSpecs){const bitmap=cache.get(prefix+spec.key);if(bitmap)drawOfficeFrameTile(context,bitmap,{x:geometry.offsetX+spec.rectTwips.x*scale-geometry.scrollX,y:geometry.offsetY+spec.rectTwips.y*scale-geometry.scrollY,width:spec.rectTwips.width*scale,height:spec.rectTwips.height*scale},replacing);}
     }});
     if(presented.changed){target.dataset.officeFrameReused=String(presented.reused);target.dataset.officeFrameRevision=String(state.engineRevision);target.dataset.officeFrameZoom=String(geometry.zoom);}
+    // Calc starts with a genuine cell selection. Its contextual toolbar needs
+    // a stable OOXML snapshot, but must not export it before any real pixels
+    // are on screen. The same native selection is published after first paint.
+    const scope=`${identity}:${state.sessionId}:${state.engineEpoch}`;
+    const display=displayOwner.current;
+    if(display&&!presentationFlight.current&&presentedLeaseRef.current!==display.leaseId&&visibleSpecs.length>0&&visibleSpecs.every(spec=>cache.has(prefix+spec.key))&&target.dataset.officeFrameRevision===String(state.engineRevision)&&target.dataset.officeFrameZoom===String(state.zoom??geometry.zoom)){
+      presentationFlight.current=true;
+      try {
+        const location=startupLocation.current,locationKey=location&&JSON.stringify([scope,location]);
+        if(firstPaintIdentity.current!==scope&&location&&locationKey!==startupHandoff.current&&state.engineRevision===(startupDocument.nativeOffice?.engineRevision??0)){
+          startupHandoff.current=locationKey;
+          let destination:Record<string,unknown>|undefined;
+          if(location.kind==='paragraph'){
+            const response=await call<{state:{engineRevision:number};data:{text?:string}}>('office-query',{viewId:state.viewId,target:{kind:'document'}});
+            // Tables and unsupported structure can change paragraph indexing.
+            // Only an exact source/native text match permits the handoff seek.
+            if(response.state.engineRevision===state.engineRevision&&response.data.text?.split('\n')[location.paragraphIndex]===location.text)destination={kind:'paragraph',paragraphIndex:location.paragraphIndex};
+          }else if(location.kind==='slide'&&state.parts.length===startupDocument.model.slides?.length&&state.parts.some(part=>part.index===location.index))destination={kind:'slide',index:location.index};
+          else if(location.kind==='cell'&&state.parts.some(part=>part.name===location.sheetName))destination={kind:'cell',sheetName:location.sheetName,address:location.address};
+          if(destination&&JSON.stringify([scope,startupLocation.current])===locationKey&&displayOwner.current===display){
+            await call('office-navigate',{viewId:state.viewId,expectedEngineEpoch:state.engineEpoch,expectedEngineRevision:state.engineRevision,expectedSelectionEpoch:state.selectionEpoch,idempotencyKey:crypto.randomUUID(),target:destination});
+            await refresh();scheduleRef.current();return;
+          }
+        }
+        await call('office-display',{viewId:state.viewId,leaseId:display.leaseId,action:'presented',sessionId:state.sessionId,engineEpoch:state.engineEpoch,engineRevision:state.engineRevision,layoutRevision:state.layoutRevision});
+        if(mounted.current&&displayOwner.current===display&&current.current&&sameIdentity(state,current.current)&&current.current.engineRevision===state.engineRevision){presentedLeaseRef.current=display.leaseId;setPresentedLease(display.leaseId);firstPaintIdentity.current=scope;setPaintedIdentity(scope);}
+      } catch(cause) {if(!officeSurfaceStaleRead(cause,'document')&&!/NATIVE_TARGET_UNSUPPORTED|STALE_NATIVE_QUERY/.test(String(cause)))throw cause;await refresh();scheduleRef.current();}
+      finally {presentationFlight.current=false;}
+    }
     const missing = specs.filter(spec => !cache.has(prefix + spec.key)); if (!missing.length) return;
     if (tileFlight.current) { tileQueued.current = true; return; }
     tileFlight.current = true; const token = generation.current; let painted = false;
@@ -173,7 +238,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
         if (!mounted.current || token !== generation.current) break;
         const tickets = new Map(batch.map(spec => [spec.key, cache.begin(prefix + spec.key, spec.rectTwips, state.partIndex)]));
         try {
-          const reply = await call<OfficeSurfaceTilesReply>(OFFICE_SURFACE_METHODS.tiles, { viewId: state.viewId, layoutRevision: state.layoutRevision, renderGeneration: state.renderGeneration, partIndex: state.partIndex, tiles: batch });
+          const reply = await surfaceCall<OfficeSurfaceTilesReply>(OFFICE_SURFACE_METHODS.tiles, { viewId: state.viewId, layoutRevision: state.layoutRevision, renderGeneration: state.renderGeneration, partIndex: state.partIndex, tiles: batch });
           if (!mounted.current || token !== generation.current || !isOfficeSurfaceState(reply.state) || !sameIdentity(state, reply.state) || reply.partIndex !== state.partIndex || reply.renderGeneration !== state.renderGeneration || reply.layoutRevision !== state.layoutRevision) break;
           const expected = new Map(batch.map(spec => [spec.key, spec]));
           for (const tile of reply.tiles) {
@@ -192,14 +257,14 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
       paintRetry.current = { after: 0, failures: 0 };
     } catch (cause) { const failures = paintRetry.current.failures + 1; paintRetry.current = { failures, after: performance.now() + Math.min(10000, 500 * 2 ** Math.min(failures, 5)) }; throw cause; }
     finally { tileFlight.current = false; const queued = tileQueued.current; tileQueued.current = false; if (mounted.current && (painted || queued)) schedule(); }
-  }, [cache,presenter, measure, refresh, synchronizeLayout]);
+  }, [cache,presenter, measure, refresh, synchronizeLayout,surfaceCall,identity,startupDocument]);
   const paintRef = useRef(paint); paintRef.current = paint;
   const schedule = useCallback(() => { if (!mounted.current || frame.current) return; frame.current = requestAnimationFrame(() => { frame.current = 0; void paintRef.current().catch(fail); }); }, [fail]);
   const scheduleRef = useRef(schedule); scheduleRef.current = schedule;
   useLayoutEffect(() => {
     mounted.current = true; current.current = undefined; generation.current++; lastLayout.current = ''; layoutRevision.current = 0; inputFailure.current = ''; paintRetry.current = { after: 0, failures: 0 }; lastSelectionProjection.current = '';pendingScroll.current.clear();
     let stopped = false, running = false;
-    const poll = async () => { if (stopped || running || window.document.hidden) return; running = true; try { await refresh(); } catch (cause) { if (!stopped) { setFailure(cause instanceof Error ? cause.message : String(cause)); } } finally { running = false; } };
+    const poll = async () => { if (stopped || running || window.document.hidden) return; running = true; try { await refresh(); } catch (cause) { if (!stopped&&!officeSurfaceStaleRead(cause,'document')) { setFailure(cause instanceof Error ? cause.message : String(cause)); } } finally { running = false; } };
     const off = window.agentViewer?.onToolbar(value => {
       const event = value as unknown as OfficeSurfaceEvent;
       if (event.action === 'office-surface-state') { accept(event.state); scheduleRef.current(); }
@@ -213,7 +278,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   useEffect(() => { const host = scroll.current; if (!host || !surface) return; const changed = () => { setViewportVersion(version => version + 1); lastLayout.current = ''; scheduleRef.current(); void synchronizeLayout().catch(fail); }; const observer = new ResizeObserver(changed); observer.observe(host); window.addEventListener('resize', changed); changed(); return () => { observer.disconnect(); window.removeEventListener('resize', changed); }; }, [!!surface, identity, synchronizeLayout, fail]);
   useEffect(() => { if (!surface) return; schedule(); void synchronizeLayout().catch(fail); }, [surface,viewportVersion, view.zoom, props.obscured, schedule, synchronizeLayout, fail]);
   useLayoutEffect(() => {
-    const draft: OfficeDraftController = { viewId: view.id, hasDrafts: () => inputController.pendingEdit || inputController.compositionActive || !!inputController.failure || !!current.current?.pendingInput || !!formulaDraft.current?.hasDrafts(), flush: async () => { await formulaDraft.current?.flush(); await inputController.flush(async () => { await call('office-flush', { viewId: view.id }); await refresh(); }); }, discard: () => { formulaDraft.current?.discard(); if (inputController.compositionActive || inputController.failure || current.current?.pendingInput) throw new Error('输入法或未确认输入尚未稳定，不能静默丢弃。'); } };
+    const draft: OfficeDraftController = { viewId: view.id, hasDrafts: () => officeSurfaceHasDrafts(inputController,current.current,formulaDraft.current), flush: () => flushOfficeSurfaceDraft(inputController,current.current,formulaDraft.current,async () => { await call('office-flush', { viewId: view.id }); await refresh(); }), discard: () => { formulaDraft.current?.discard(); if (inputController.compositionActive || inputController.failure || current.current?.pendingInput) throw new Error('输入法或未确认输入尚未稳定，不能静默丢弃。'); } };
     latest.current.onOfficeDraftController?.(draft); return () => latest.current.onOfficeDraftController?.(undefined);
   }, [identity, inputController, refresh]);
   const inputDirty = inputController.pendingEdit || inputController.compositionActive || !!inputController.failure || !!surface?.pendingInput;
@@ -247,16 +312,17 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     apply();const retry=requestAnimationFrame(apply);return()=>cancelAnimationFrame(retry);
   },[surface,viewportVersion,view.zoom,synchronizeLayout,fail]);
   useEffect(() => {
-    const state = current.current, geometry = measure(); if (!state || !geometry) return;
+    const state = current.current, geometry = measure();
+    if(props.obscured||!nativePresented||!state||!geometry||paintedIdentity!==`${identity}:${state.sessionId}:${state.engineEpoch}`){lastSelectionProjection.current='';return;}
     const selected = state.selection?.kind === 'objects' && state.graphicSelection ? [state.graphicSelection.rect] : state.selection?.kind === 'cells' && (state.cellSelection || state.cellCursor) ? [state.cellSelection || state.cellCursor!] : state.selectionRects;
     const rects = selected.map(rect => officeViewportRect(rect, geometry)).map(rect => intersectOfficeRect(rect, geometry.viewport)).filter((rect): rect is Rect => !!rect);
     const projection: OfficeSurfaceSelectionProjection = { viewId: state.viewId, documentId: state.documentId, sessionId: state.sessionId, engineEpoch: state.engineEpoch, engineRevision: state.engineRevision, selectionEpoch: state.selectionEpoch, layoutRevision: state.layoutRevision, actor: state.actor, selection: state.selection, rects, visibleTwips: officeVisibleTwips(geometry, officeSurfaceSize(state)), viewportCss: geometry.viewport, pageIndex, partIndex: state.partIndex };
     const signature = JSON.stringify(projection); if (signature !== lastSelectionProjection.current) { lastSelectionProjection.current = signature; window.dispatchEvent(new CustomEvent('agentviewer:office-surface-selection', { detail: projection })); }
-  }, [surface, viewportVersion, pageIndex, view.zoom, measure]);
+  }, [surface, viewportVersion, pageIndex, view.zoom, measure, paintedIdentity, nativePresented, identity, props.obscured]);
   const takeFocus = () => { input.current?.focus({ preventScroll: true }); };
   const modalOpen = !!surface?.windows?.some(window => window.visible && window.modal === true);
   const pointerEvent = (event: React.PointerEvent<HTMLDivElement>, phase: 'down' | 'move' | 'up' | 'cancel') => {
-    if (latest.current.obscured || modalOpen || !current.current || current.current.status !== 'ready' || inputController.failure) return;
+    if (latest.current.obscured || modalOpen || !nativePresented || !current.current || current.current.status !== 'ready' || inputController.failure) return;
     if (phase === 'down') { if (composition.current) return;pendingScroll.current.clear(); event.preventDefault(); pointer.current = { id: event.pointerId, button: event.button, clickCount: clicks.current.down(event) }; event.currentTarget.setPointerCapture(event.pointerId); takeFocus(); }
     if (phase !== 'down' && pointer.current?.id !== event.pointerId && event.buttons) return;
     if (phase !== 'down' && phase !== 'move' && pointer.current?.id !== event.pointerId) return;
@@ -274,7 +340,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     event.preventDefault(); post({ kind: 'key', phase, key: event.key, code: event.code, repeat: event.repeat, modifiers: modifiers(event) });
   };
   const selectionHandle = (event: React.PointerEvent<HTMLButtonElement>, edge: 'start' | 'end', phase: 'down' | 'move' | 'up' | 'cancel') => {
-    event.preventDefault(); event.stopPropagation(); if (composition.current || inputController.failure || props.obscured || modalOpen) return;
+    event.preventDefault(); event.stopPropagation(); if (composition.current || inputController.failure || props.obscured || modalOpen || !nativePresented) return;
     if (phase === 'down') { event.currentTarget.setPointerCapture(event.pointerId); takeFocus(); }
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     const geometry = measure(); if (geometry && phase !== 'cancel') post({ kind: 'selection-handle', edge, pointTwips: officeDocumentPoint(event.clientX, event.clientY, geometry) });
@@ -284,8 +350,9 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     try { await formulaDraft.current?.flush(); await inputController.barrier(); const state = current.current; if (!state) return; await call('office-navigate', { viewId: view.id, expectedEngineEpoch: state.engineEpoch, expectedEngineRevision: state.engineRevision, expectedSelectionEpoch: state.selectionEpoch, idempotencyKey: crypto.randomUUID(), target: { kind: file.format === 'xlsx' ? 'sheet' : 'slide', index } }); await refresh(); } catch (cause) { fail(cause); }
   };
   void viewportVersion;
-  return <section className={'embedded-office-document embedded-office-' + file.format} data-office-engine="libreofficekit" data-office-ready={surface?.status === 'ready'} data-office-actor={surface?.actor} data-office-agent-active={!!view.agentState} data-office-fit-mode={presentationFit?(presentationFit.enabled?'page':'manual'):undefined}>
-    {file.format === 'xlsx' && formulaHost && createPortal(<NativeOfficeFormulaBar documentId={file.id} viewId={view.id} state={surface} active={surface?.status === 'ready' && !props.obscured && !modalOpen} onState={next => { if (isOfficeSurfaceState(next)) accept(next); else void refresh().catch(fail); }} onError={props.reportError} onDraftController={controller => { formulaDraft.current = controller; }} onDraftChange={dirty => latest.current.onOfficeDraftChange?.({ viewId: view.id, dirty: dirty || inputController.pendingEdit || inputController.compositionActive || !!current.current?.pendingInput })} />,formulaHost)}
+  const showStartupPreview=!displayScope||paintedIdentity!==displayScope;
+  return <section className={'embedded-office-document embedded-office-' + file.format} data-office-engine="libreofficekit" data-office-ready={surface?.status === 'ready'&&nativePresented} data-office-render-mode={showStartupPreview?'preview':'native'} data-office-actor={surface?.actor} data-office-agent-active={!!view.agentState} data-office-fit-mode={presentationFit?(presentationFit.enabled?'page':'manual'):undefined}>
+    {file.format === 'xlsx' && formulaHost && createPortal(<NativeOfficeFormulaBar documentId={file.id} viewId={view.id} state={surface} active={surface?.status === 'ready' && nativePresented && !props.obscured && !modalOpen} onState={next => { if (isOfficeSurfaceState(next)) accept(next); else void refresh().catch(fail); }} onError={props.reportError} onDraftController={controller => { formulaDraft.current = controller; }} onDraftChange={dirty => latest.current.onOfficeDraftChange?.({ viewId: view.id, dirty: dirty || inputController.pendingEdit || inputController.compositionActive || !!current.current?.pendingInput })} />,formulaHost)}
     <div ref={scroll} id={'office-scroll-'+identity} className={'document-content embedded-office-content format-' + file.format} data-office-surface={view.id} data-office-page={pageIndex} tabIndex={-1} aria-label={file.title + ' 编辑区'} onWheelCapture={()=>pendingScroll.current.clear()} onScroll={() => { clicks.current.reset(); setViewportVersion(version => version + 1); latest.current.onReaderScroll?.(scroll.current?.scrollTop ?? 0); schedule(); void synchronizeLayout().catch(fail); }}>
       {size && <div className="embedded-office-stage" style={geometry?.stageSize??{ width: Math.max(size.width * scale, geometry?.viewport.width ?? 1), height: Math.max(size.height * scale, geometry?.viewport.height ?? 1) }}>
         {(surface.pages?.length ? surface.pages : file.format === 'pptx' ? [{ x: 0, y: 0, ...size }] : []).map((rect, index) => <span key={index} className="embedded-office-paper-base" style={rectStyle(rect)} />)}
@@ -299,17 +366,18 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
           {surface.caret && surface.caretVisible !== false && <span className="embedded-office-caret" style={rectStyle(surface.caret)} />}
           {surface.selectionRects.length > 0 && (['start', 'end'] as const).map(edge => { const rect = edge === 'start' ? surface.selectionStart : surface.selectionEnd; return rect && <button key={edge} type="button" className="embedded-office-selection-handle" aria-label={edge === 'start' ? '调整选区开始位置' : '调整选区结束位置'} style={{ left: offsetX + rect.x * scale - 5, top: offsetY + (edge === 'start' ? rect.y : rect.y + rect.height) * scale - 5 }} onPointerDown={event => selectionHandle(event, edge, 'down')} onPointerMove={event => selectionHandle(event, edge, 'move')} onPointerUp={event => selectionHandle(event, edge, 'up')} onPointerCancel={event => selectionHandle(event, edge, 'cancel')} />; })}
         </div>
-        <textarea ref={input} className="embedded-office-input" aria-label={file.title + ' 文本输入'} aria-describedby="embedded-office-input-help" autoCapitalize="off" autoComplete="off" autoCorrect="off" spellCheck={false} disabled={!surface || surface.status !== 'ready' || !!inputController.failure || !!props.obscured || modalOpen} style={surface.caret ? { left: offsetX + surface.caret.x * scale, top: offsetY+surface.caret.y * scale } : { left: offsetX, top: offsetY }} onFocus={() => void synchronizeLayout().catch(fail)} onBlur={() => void synchronizeLayout().catch(fail)} onKeyDown={event => keyEvent(event, 'down')} onKeyUp={event => keyEvent(event, 'up')} onInput={event => { if (!composition.current) event.currentTarget.value = ''; }} onCompositionStart={() => { const session = { id: crypto.randomUUID(), text: '' }; composition.current = session; post({ kind: 'composition', compositionId: session.id, phase: 'start', text: '' }); }} onCompositionUpdate={event => { const session = composition.current; if (session) { session.text = event.data; post({ kind: 'composition', compositionId: session.id, phase: 'update', text: event.data }); } }} onCompositionEnd={event => { const session = composition.current; if (!session) return; composition.current = undefined; lastCompositionCommit.current = { text: event.data, at: performance.now() }; post({ kind: 'composition', compositionId: session.id, phase: event.data ? 'end' : 'cancel', text: event.data }); event.currentTarget.value = ''; }} onPaste={event => {
+        <textarea ref={input} className="embedded-office-input" aria-label={file.title + ' 文本输入'} aria-describedby="embedded-office-input-help" autoCapitalize="off" autoComplete="off" autoCorrect="off" spellCheck={false} disabled={!surface || !nativePresented || surface.status !== 'ready' || !!inputController.failure || !!props.obscured || modalOpen} style={surface.caret ? { left: offsetX + surface.caret.x * scale, top: offsetY+surface.caret.y * scale } : { left: offsetX, top: offsetY }} onFocus={() => void synchronizeLayout().catch(fail)} onBlur={() => void synchronizeLayout().catch(fail)} onKeyDown={event => keyEvent(event, 'down')} onKeyUp={event => keyEvent(event, 'up')} onInput={event => { if (!composition.current) event.currentTarget.value = ''; }} onCompositionStart={() => { const session = { id: crypto.randomUUID(), text: '' }; composition.current = session; post({ kind: 'composition', compositionId: session.id, phase: 'start', text: '' }); }} onCompositionUpdate={event => { const session = composition.current; if (session) { session.text = event.data; post({ kind: 'composition', compositionId: session.id, phase: 'update', text: event.data }); } }} onCompositionEnd={event => { const session = composition.current; if (!session) return; composition.current = undefined; lastCompositionCommit.current = { text: event.data, at: performance.now() }; post({ kind: 'composition', compositionId: session.id, phase: event.data ? 'end' : 'cancel', text: event.data }); event.currentTarget.value = ''; }} onPaste={event => {
           event.preventDefault(); if (composition.current) return;
           const text = event.clipboardData.getData('text/plain'), html = event.clipboardData.getData('text/html'), encode = new TextEncoder();
           const items = [...(html ? [{ mimeType: 'text/html', data: encode.encode(html) }] : []), { mimeType: 'text/plain;charset=utf-8', data: encode.encode(text) }]; post({ kind: 'paste', items });
         }} onCopy={event => { if (surface.selection?.text) { event.preventDefault(); event.clipboardData.setData('text/plain', surface.selection.text); } }} onCut={event => { if (surface.selection?.text) { event.preventDefault(); event.clipboardData.setData('text/plain', surface.selection.text); post({ kind: 'key', phase: 'down', key: 'Delete', code: 'Delete', repeat: false, modifiers: { shift: false, control: false, alt: false, meta: false } }); post({ kind: 'key', phase: 'up', key: 'Delete', code: 'Delete', repeat: false, modifiers: { shift: false, control: false, alt: false, meta: false } }); } }} />
       </div>}
-      {(!surface || surface.status !== 'ready' || failure) && <div className={'embedded-office-message' + (failure ? ' has-error' : '')} role="status">{failure || '正在初始化内置文档核心…'}</div>}
+      {failure&&!showStartupPreview && <div className="embedded-office-message has-error" role="status">{failure}</div>}
     </div>
+    {showStartupPreview&&<OfficeStartupPreview document={startupDocument} viewId={view.id} sourceRevision={startupDocument.revision} initialPartIndex={view.context?.locator.pageIndex??0} error={failure||undefined} onViewport={location=>{startupLocation.current=location;}} />}
     <OfficeHorizontalScrollbar host={scroll} identity={identity} version={viewportVersion+':'+(view.zoom??1)} active={file.format==='pptx'&&!presentationFit?.enabled&&surface?.status==='ready'} />
-    {file.format === 'xlsx' && surface && <div className="embedded-office-sheet-tabs" role="tablist" aria-label="工作表">{surface.parts.filter(part => part.visible !== false).map(part => <button key={part.index} type="button" role="tab" aria-selected={part.index === surface.partIndex} disabled={!!props.obscured || modalOpen || inputController.pending || inputController.compositionActive} onClick={() => void navigatePart(part.index)}>{part.name}</button>)}</div>}
-    <EmbeddedOfficeDialogHost state={surface} obscured={props.obscured} onState={accept} onError={fail} returnFocus={takeFocus} />
+    {file.format === 'xlsx' && surface && <div className="embedded-office-sheet-tabs" role="tablist" aria-label="工作表">{surface.parts.filter(part => part.visible !== false).map(part => <button key={part.index} type="button" role="tab" aria-selected={part.index === surface.partIndex} disabled={!nativePresented || !!props.obscured || modalOpen || inputController.pending || inputController.compositionActive} onClick={() => void navigatePart(part.index)}>{part.name}</button>)}</div>}
+    <EmbeddedOfficeDialogHost state={surface} obscured={props.obscured} request={surfaceCall} onState={accept} onError={fail} returnFocus={takeFocus} />
     <span id="embedded-office-input-help" className="embedded-office-accessible-text">{surface?.focusedParagraph || '使用鼠标定位文字或对象，使用键盘编辑。'}</span>
   </section>;
 }
