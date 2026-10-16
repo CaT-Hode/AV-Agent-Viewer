@@ -114,7 +114,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   display(owner: BrowserWindow, raw: unknown) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ViewerError('INVALID_ARGUMENT', 'Office 显示请求无效。');
     const value = raw as Record<string, unknown>, { viewId, leaseId, action } = value;
-    const keys=action==='presented'?['viewId','leaseId','action','sessionId','engineEpoch','engineRevision','layoutRevision']:['viewId','leaseId','action'];
+    const keys=action==='presented'?['viewId','leaseId','action','sessionId','engineEpoch','engineRevision','layoutRevision','decodeMs']:['viewId','leaseId','action'];
     if (Object.keys(value).some(key => !keys.includes(key)) || typeof viewId !== 'string' || !viewId || viewId.length > 128 || typeof leaseId !== 'string' || !leaseId || leaseId.length > 128 || !['acquire','release','presented'].includes(String(action))) throw new ViewerError('INVALID_ARGUMENT', 'Office 显示身份无效。');
     const view = this.core.views.get(viewId), current = this.displays.current(viewId);
     if (action === 'release' && !view && !current) return { viewId, leaseId, generation: 0, active: false };
@@ -127,11 +127,16 @@ export class NativeOfficeHost implements NativeOfficeDriver {
       return { viewId, leaseId, generation: ticket.generation, active: true, presented:this.displays.presented(ticket,this.views.get(viewId)?.state) };
     }
     if(action==='presented'){
+      // Optional telemetry never grants authority and cannot reject a valid
+      // presentation after a long session or an older renderer's counter.
+      const decodeMs=typeof value.decodeMs==='number'&&Number.isFinite(value.decodeMs)&&value.decodeMs>=0&&value.decodeMs<=120000?value.decodeMs:undefined;
       if(typeof value.sessionId!=='string'||!value.sessionId||value.sessionId.length>128||typeof value.engineEpoch!=='string'||!value.engineEpoch||value.engineEpoch.length>128||!Number.isSafeInteger(value.engineRevision)||Number(value.engineRevision)<0||!Number.isSafeInteger(value.layoutRevision)||Number(value.layoutRevision)<=0)throw new ViewerError('INVALID_ARGUMENT','Office 画面确认版本无效。');
       const ticket=this.displays.require(owner,viewId,leaseId),entry=this.views.get(viewId),state=entry?.state,layout=this.layouts.get(viewId),metadata=view&&this.core.getDocument(view.documentId).info.nativeOffice;
       if(!isOfficeSurfaceState(state)||state.status!=='ready'||!state.visible||state.nativeGeometry!==true||!this.displayMounted(viewId)||entry?.nativeTileSource?.sessionId!==state.sessionId||entry.nativeTileSource.engineEpoch!==state.engineEpoch||layout?.surfaceLayoutRevision!==state.layoutRevision||state.documentId!==view?.documentId||state.sessionId!==value.sessionId||state.engineEpoch!==value.engineEpoch||state.engineRevision!==value.engineRevision||state.layoutRevision!==value.layoutRevision||metadata?.sessionId!==state.sessionId||metadata.engineEpoch!==state.engineEpoch||metadata.engineRevision!==state.engineRevision)throw new ViewerError('STALE_OFFICE_DISPLAY','Office 画面或实际布局已经变化，请重新呈现当前图块后确认。');
       this.displays.confirm(ticket,{sessionId:state.sessionId,engineEpoch:state.engineEpoch,engineRevision:state.engineRevision,layoutRevision:state.layoutRevision});
       entry.firstTileAt??=Date.now();
+      this.runtime.recordOpenStage(state.sessionId,viewId,'renderer-decode',decodeMs);
+      this.runtime.recordOpenStage(state.sessionId,viewId,'presented');
       this.accept(state,ticket);this.core.updateNativeOfficeContextForHost(state);
       // Semantic paragraph projection is useful after real pixels are shown,
       // but must never hold the first paint acknowledgement or the input gate.
@@ -257,7 +262,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
         const painted=await this.runtime.surfaceLayout(entry.sessionId, value);layout.surfaceLayoutRevision=painted.layoutRevision;return painted;
       });
     } else if (method === OFFICE_SURFACE_METHODS.tiles) result = await this.runtime.surfaceTiles(entry.sessionId, value);
-    else if (method === OFFICE_SURFACE_METHODS.input) {if(!this.displayVisible(view.id))throw new ViewerError('OFFICE_DISPLAY_NOT_PRESENTED','原生正文尚未呈现，不能使用预览画面的坐标输入。');result = await this.runtime.surfaceInput(entry.sessionId, value);}
+    else if (method === OFFICE_SURFACE_METHODS.input) {if(!this.displayVisible(view.id))throw new ViewerError('OFFICE_DISPLAY_NOT_PRESENTED','原生正文尚未呈现，不能使用预览画面的坐标输入。');result = await this.runtime.surfaceInput(entry.sessionId, value);this.runtime.recordOpenStage(entry.sessionId,view.id,'first-input-ack');}
     else if (method === OFFICE_SURFACE_METHODS.windowPaint) result = await this.runtime.surfaceWindowPaint(value);
     else if (method === OFFICE_SURFACE_METHODS.windowInput) {if(!this.displayVisible(view.id))throw new ViewerError('OFFICE_DISPLAY_NOT_PRESENTED','原生正文尚未呈现，不能操作其原生窗口。');result = await this.runtime.surfaceWindowInput(value);}
     else if (method === OFFICE_SURFACE_METHODS.windowClose) {if(!this.displayVisible(view.id))throw new ViewerError('OFFICE_DISPLAY_NOT_PRESENTED','原生正文尚未呈现，不能操作其原生窗口。');result = await this.runtime.surfaceWindowClose(value);}
@@ -276,9 +281,16 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     if (retiredDisplay && [OFFICE_SURFACE_METHODS.input, OFFICE_SURFACE_METHODS.windowInput, OFFICE_SURFACE_METHODS.windowClose, OFFICE_SURFACE_METHODS.windowAction].includes(method as any)) return result.state ? { ...result, state, retiredDisplay: true } : { ...state, retiredDisplay: true };
     if (retiredController) throw new ViewerError('OFFICE_DISPLAY_EXPIRED', 'Office 页面编辑源已关闭或更换，请重新读取当前页面。');
     checkDisplay();
-    if(method===OFFICE_SURFACE_METHODS.tiles&&result.tiles?.length&&this.displayMounted(view.id)){entry.nativeTileSource={sessionId:state.sessionId,engineEpoch:state.engineEpoch};entry.firstTileAt??=Date.now();}
+    if(method===OFFICE_SURFACE_METHODS.tiles&&result.tiles?.length&&this.displayMounted(view.id)){entry.nativeTileSource={sessionId:state.sessionId,engineEpoch:state.engineEpoch};entry.firstTileAt??=Date.now();this.runtime.recordOpenStage(entry.sessionId,view.id,'first-tiles-reply');}
     this.core.updateNativeOfficeContextForHost(this.displayState(state));
-    return result.state ? { ...result, state } : state;
+    // This authenticated renderer needs the mounted engine geometry in order
+    // to paint its first tile. Public Core/SDK state remains withdrawn until
+    // presented(), and native input is independently gated by displayVisible.
+    // Returning that public projection here races the private surface push:
+    // a same-version withdrawn reply can replace drawable state and leave the
+    // renderer waiting for the 2500ms heartbeat deadline before it can paint.
+    const rendererState = this.privateDisplayState(rawState);
+    return result.state ? { ...result, state: rendererState } : rendererState;
   }
   async snapshot(sessionId:string,reuse?:NativeOfficeSnapshotReuse) { const result = await this.runtime.snapshot(sessionId,undefined,reuse); return { ...result, state: this.displayState(result.state) }; }
   commands(sessionId:string,viewId:string) { return this.runtime.commands(sessionId,viewId); }

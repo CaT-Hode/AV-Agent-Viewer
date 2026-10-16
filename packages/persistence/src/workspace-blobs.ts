@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { hashDocumentBytes } from './background-codec';
 
 export const MAX_TEXT_DELTA_DEPTH = 32;
 export type BlobReference = { sha256: string; byteLength: number; delta?: { sha256: string; byteLength: number; depth: number } };
@@ -73,7 +74,7 @@ export async function readWorkspaceBlob(reference: BlobReference, read: Reader, 
   for (const { reference: target, delta, insert } of chain.reverse()) {
     buffer.copy(buffer, delta.from + insert.byteLength, delta.to, length); insert.copy(buffer, delta.from);
     length = target.byteLength;
-    if (hashBytes(buffer.subarray(0, length)) !== target.sha256) throw new Error('WORKSPACE_BLOB_CORRUPT');
+    if (await hashDocumentBytes(buffer.subarray(0, length)) !== target.sha256) throw new Error('WORKSPACE_BLOB_CORRUPT');
     dependency = { reference: target, base: dependency };
   }
   loaded?.(dependency);

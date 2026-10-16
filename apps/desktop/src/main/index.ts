@@ -1,9 +1,10 @@
 import './safe-stdio-init';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor } from 'electron';
 import { extname, isAbsolute, join, resolve } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { ViewerCore } from '../../../../packages/document-core/src/index';
+import { createRegistry } from '../../../../packages/format-adapters/src/index';
 import { JsonWorkspaceRepository } from '../../../../packages/persistence/src/index';
 import { ElectronBrowserRuntime } from '../../../../packages/browser-runtime/src/electron';
 import { dispatch } from '../../../../packages/sdk/src/dispatch';
@@ -27,6 +28,7 @@ import { NativeOfficeHost } from './native-office';
 import { viewZoomEvent, type CoreViewEvent } from './view-zoom-events';
 import { WorkspaceInvalidations } from './workspace-invalidations';
 import { exportMarkdown, importMarkdown, markdownExportCapabilities } from './markdown-export';
+import { MarkdownMediaHost } from './markdown-media';
 import { nativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
 let office: NativeOfficeHost | undefined;
 const nativeHost = { sourceFor: (viewId: string) => office?.backdrop(viewId) };
@@ -182,7 +184,9 @@ void app.whenReady().then(async () => {
   await mkdir(directory, { recursive: true });
   await settings.load();
   await connections.load();
-  core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); await core.initialize();
+  core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json')), createRegistry({officeModelWorkerPath:join(root,'dist/main/office-model-worker.cjs')})); await core.initialize();
+  const media = new MarkdownMediaHost(core);
+  core.extensions.set('markdown-media', async args => media.resolve(String(args.documentId), String(args.path)));
   office = new NativeOfficeHost(core,root,directory,viewId=>windows.get(core.getView(viewId).windowId),(owner,viewId)=>{toolbarHost.sourceChanged(owner,viewId);selectionHost.sourceChanged(owner,viewId);agentHost.sourceChanged(owner,viewId);aiResultHost.sourceChanged(owner,viewId);readerPanelHost.sourceChanged(owner,viewId);},officeAppearance());
   office.runtime.on('application-action',(event:{action?:string;sessionId?:string;viewId?:string;paths?:unknown})=>{
     if(event.action!=='open-files'||!event.viewId)return;
@@ -251,7 +255,7 @@ void app.whenReady().then(async () => {
   const workspaceInvalidations = new WorkspaceInvalidations({ views: () => core.views.values(), view: id => core.views.get(id), owner: id => windows.get(id), alive: owner => !owner.isDestroyed() && !owner.webContents.isDestroyed(), send: (owner, message) => owner.webContents.send('agentviewer:toolbar', message) });
   core.on('change', (event: CoreViewEvent) => {
     workspaceInvalidations.receive(event);
-    if (process.platform === 'win32' && !process.env.AGENTVIEWER_TEST_MODE && ['view.opened', 'document.saved'].includes(event.type)) {
+    if (process.platform === 'win32' && !process.env.AGENTVIEWER_TEST_MODE && process.env.AGENTVIEWER_ISOLATED_QA !== '1' && ['view.opened', 'document.saved'].includes(event.type)) {
       const data = event.data as { documentId?: string }, path = data.documentId ? core.documents.get(data.documentId)?.info.path : undefined;
       if (path) { app.addRecentDocument(path); app.setJumpList([{ type: 'recent' }]); }
     }
@@ -383,7 +387,7 @@ void app.whenReady().then(async () => {
       if (method === 'markdown-import') return importMarkdown(core, owner, ownerId!);
       const documentId = String(args.documentId), document = core.getDocument(documentId);
       if (document.info.format !== 'markdown' || ![...core.views.values()].some(view => view.documentId === documentId && view.windowId === ownerId)) throw new Error('AUTH_SCOPE_DENIED');
-      if (method === 'markdown-export') return exportMarkdown(core, owner, { documentId, expectedRevision: Number(args.expectedRevision), format: String(args.format), html: typeof args.html === 'string' ? args.html : undefined });
+      if (method === 'markdown-export') return exportMarkdown(core, owner, { documentId, expectedRevision: Number(args.expectedRevision), format: String(args.format) });
       if (method === 'markdown-workspace-choose') {
         const result = await dialog.showOpenDialog(owner, { title: '选择 Markdown 工作文件夹', properties: ['openDirectory'] });
         if (result.canceled || !result.filePaths[0]) return null;
@@ -472,7 +476,19 @@ void app.whenReady().then(async () => {
     return dispatch(core, method, args, 'human');
   });
   await createWindow();
-  const warmup = setTimeout(() => { if (!app.isReady() || process.env.AGENTVIEWER_OFFICE_PREWARM === '0') return; void office?.runtime.warmup().catch(error => core.emit('diagnostic', error)); }, 1500);
+  const warmup = setTimeout(() => {
+    if (!app.isReady() || process.env.AGENTVIEWER_OFFICE_PREWARM === '0') return;
+    void (async()=>{
+      await office?.runtime.warmup();
+      const officeOpen=()=>[...core.views.values()].some(view=>['docx','xlsx','pptx'].includes(core.getDocument(view.documentId).info.format));
+      for(let attempt=0;attempt<12&&powerMonitor.getSystemIdleTime()<3;attempt++) {if(officeOpen())return;await new Promise<void>(done=>{const timer=setTimeout(done,5000);timer.unref();});}
+      const activation=core.humanActivationVersion;
+      const canContinue=()=>powerMonitor.getSystemIdleTime()>=3&&!officeOpen()&&activation===core.humanActivationVersion;
+      if(!canContinue())return;
+      const sources=await Promise.all(runtime.sampleFiles.filter(file=>['docx','pptx','xlsx'].includes(file.format)).map(async file=>({format:file.format as 'docx'|'pptx'|'xlsx',bytes:new Uint8Array(await readFile(file.path))})));
+      if(canContinue())await office?.runtime.warmup(sources,canContinue);
+    })().catch(error=>core.emit('diagnostic',error));
+  }, 1500);
   warmup.unref();
   startupComplete = true;
   if (activationPending) activateReaderWindow();

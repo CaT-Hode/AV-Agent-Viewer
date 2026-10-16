@@ -46,6 +46,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const startupHandoff=useRef<string|undefined>(undefined);
   const presentationFlight=useRef(false);
   const firstPaintIdentity=useRef<string|undefined>(undefined);
+  const startupDecode=useRef({scope:'',milliseconds:0});
   const latest = useRef(props); latest.current = props;
   const displayOwner=useRef<{leaseId:string;ready:Promise<unknown>}|undefined>(undefined);
   useLayoutEffect(()=>{
@@ -232,7 +233,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
             await refresh();scheduleRef.current();return;
           }
         }
-        await call('office-display',{viewId:state.viewId,leaseId:display.leaseId,action:'presented',sessionId:state.sessionId,engineEpoch:state.engineEpoch,engineRevision:state.engineRevision,layoutRevision:state.layoutRevision});
+        await call('office-display',{viewId:state.viewId,leaseId:display.leaseId,action:'presented',sessionId:state.sessionId,engineEpoch:state.engineEpoch,engineRevision:state.engineRevision,layoutRevision:state.layoutRevision,decodeMs:startupDecode.current.scope===scope?startupDecode.current.milliseconds:0});
         if(mounted.current&&displayOwner.current===display&&current.current&&sameIdentity(state,current.current)&&current.current.engineRevision===state.engineRevision){presentedLeaseRef.current=display.leaseId;setPresentedLease(display.leaseId);firstPaintIdentity.current=scope;setPaintedIdentity(scope);}
       } catch(cause) {if(!officeSurfaceStaleRead(cause,'document')&&!/NATIVE_TARGET_UNSUPPORTED|STALE_NATIVE_QUERY/.test(String(cause)))throw cause;await refresh();scheduleRef.current();}
       finally {presentationFlight.current=false;}
@@ -255,7 +256,14 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
             validate: tile => {
               const spec = expected.get(tile.key), ticket = tickets.get(tile.key); if (!spec || !ticket || tile.width !== spec.pixelWidth || tile.height !== spec.pixelHeight || JSON.stringify(tile.rectTwips) !== JSON.stringify(spec.rectTwips)) throw new Error('Office tile 回执目标不匹配。');
             },
-            decode: image => createImageBitmap(image),
+            decode: async image => {
+              const started=performance.now(),bitmap=await createImageBitmap(image);
+              if(firstPaintIdentity.current!==scope){
+                if(startupDecode.current.scope!==scope)startupDecode.current={scope,milliseconds:0};
+                startupDecode.current.milliseconds+=performance.now()-started;
+              }
+              return bitmap;
+            },
             admit: (tile, bitmap) => {
               const admitted = cache.admit(tickets.get(tile.key)!, bitmap, tile.width * tile.height * 4);
               painted = admitted || painted; tickets.delete(tile.key);

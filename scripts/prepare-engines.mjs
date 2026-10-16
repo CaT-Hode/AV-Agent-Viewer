@@ -31,6 +31,19 @@ async function download(url, target, expected) {
 
 await mkdir(engineDir, { recursive: true });
 const downloads = join(engineDir, 'downloads');
+const pandocArchive=join(downloads,`pandoc-${lock.pandoc.version}-windows-x86_64.zip`),pandocRoot=join(root,lock.pandoc.runtimeFolder);
+await download(lock.pandoc.archiveUrl,pandocArchive,lock.pandoc.archiveSha256);
+const pandocMarker=join(pandocRoot,'.archive-sha256');
+if(!existsSync(join(pandocRoot,'pandoc.exe'))||!existsSync(pandocMarker)||(await readFile(pandocMarker,'utf8'))!==lock.pandoc.archiveSha256) {
+  const pandocZip=await JSZip.loadAsync(await readFile(pandocArchive));
+  for(const entry of Object.values(pandocZip.files)) {
+    if(entry.dir)continue;
+    const parts=entry.name.split('/');parts.shift();if(!parts.length)continue;
+    const target=resolve(pandocRoot,...parts);assert.ok(target.startsWith(pandocRoot+sep),'Pandoc 压缩包包含越界路径');
+    await mkdir(resolve(target,'..'),{recursive:true});await writeFile(target,await entry.async('nodebuffer'));
+  }
+  await writeFile(pandocMarker,lock.pandoc.archiveSha256);
+}
 const pythonArchive = join(downloads, 'python-3.12.10-embed-amd64.zip');
 const officeInstaller = join(downloads, 'LibreOffice_26.8.1_Win_x86-64.msi');
 const pythonRoot = join(engineDir, 'babeldoc-runtime'), python = join(pythonRoot, 'python.exe');

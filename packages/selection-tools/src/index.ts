@@ -4,6 +4,7 @@ import type { ViewerCore } from '../../document-core/src/index';
 import { ViewerError, type Actor, type EditOperation, type ReadingSnapshot, type SelectionContext } from '../../contracts/src/index';
 import { selectionActionSchema, type SelectionAction } from './schemas';
 import { scopedReadingSnapshot } from '../../ai-reading-tools/src/index';
+import { retainedValueBytes } from '../../persistence/src/retained-value';
 export { selectionActionSchema, type SelectionAction } from './schemas';
 
 export type Annotation = { id: string; documentId: string; sourceRevision: number; sourceUri?: string; selection: ReadingSnapshot['context']['selection']; kind: 'note' | 'highlight'; text: string; createdAt: string };
@@ -50,6 +51,7 @@ export async function selectionAction(core:ViewerCore,input:unknown,actor:Actor)
     if(!actionsFor(snapshot,!!core.extensions.get('selection-ai')).some(a=>a.id===args.action))throw new ViewerError('CAPABILITY_UNSUPPORTED','此选区不支持该工具。');
     const location=l?.pageIndex!==undefined?'第 '+(l.pageIndex+1)+' 页':l?.cell??l?.blockId??l?.slideId??'';
     const citation=`> ${s.text.replace(/\n/g,'\n> ')}\n\n— ${snapshot.document.title}${location?' · '+location:''} ([返回原文](agentviewer://document/${d.id}?quote=${encodeURIComponent(s.text.slice(0,500))}))`;
+    return core.withReceiptCapacity(args.idempotencyKey,d.id,{payload},retainedValueBytes({selection:s,citation,value:args.value,context:snapshot.context})*2+16384,async()=>{
     let result:unknown;
     if(args.action==='copy'||args.action==='citation')result={text:args.action==='copy'?s.text:citation};
     else {
@@ -83,6 +85,7 @@ export async function selectionAction(core:ViewerCore,input:unknown,actor:Actor)
       else { const local:ReadingSnapshot=args.selectionContextId?{id:snapshot.id,schemaVersion:'1.0',createdAt:snapshot.createdAt,context:snapshot.context,document:d}:snapshot as ReadingSnapshot;const operation=operationFor(local,args);const patch=core.prepare(d.id,d.revision,operation,{viewId:snapshot.context.viewId});result={receipt:await core.commit(patch.id,args.idempotencyKey+':edit',actor)}; }
     }
     core.receipts.set(args.idempotencyKey,{payload,receipt:result});await core.persist();return result;
+    });
   });documentQueues.set(queueKey,pending);void pending.finally(()=>{if(documentQueues.get(queueKey)===pending)documentQueues.delete(queueKey);}).catch(()=>{});return pending;
 }
 function operationFor(snapshot:ReadingSnapshot,args:SelectionAction):EditOperation {

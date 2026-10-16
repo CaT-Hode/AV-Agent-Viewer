@@ -6,7 +6,7 @@
 | --- | --- |
 | desktop / local-service | 窗口、原生宿主、本地鉴权与工具入口 |
 | document-core | 文档/视图身份、版本、事务、保存屏障、任务 |
-| DocumentSessions / DocumentHistory | 按文档有序执行、历史字节预算 |
+| DocumentSessions / DocumentHistory / ReceiptLedger | 文档队列、历史与幂等回执配额 |
 | format-adapters | 非原生编辑与格式投影 |
 | office-runtime | Kit 进程、原生模型、输入、图块与检查点 |
 | markdown | 源范围命令、资源、工作区文件及偏好 |
@@ -28,7 +28,9 @@ Markdown 源文本是唯一可写正文；表格、公式等控件产生范围�
 
 `exportRecovery(path)` 排空文档队列、严格同步原生及落盘后导出旧格式恢复包；repository维护屏障保护读取的blob，目标必须新建，不切换当前存储。
 
-文本撤销保留逆操作，Office保留原生token；历史、prepared patches分别限制每文档64 MiB、合计256 MiB。提交释放patch正文，回执以指纹保留幂等语义。回执键数量和元数据序列化仍会增长，细粒度授权与统一预算待完善。
+文本撤销保留逆操作，Office保留原生token；历史、prepared patches分别限制每文档64 MiB、合计256 MiB。提交释放patch正文，回执以指纹保留幂等语义。回执在执行前预留每文档64 MiB、总256 MiB配额；已完成和旧版回执不丢弃，超额时拒绝新键。第三方超大结果仍完整保留，并关闭后续准入。完整快照同样按64/256 MiB和100项限制，运行任务固定来源。
+
+后台编码lane处理大正文UTF-8、SHA-256和恢复导出JSON；Office辅助模型按压缩/展开XML规模转Worker。完整Markdown导出在独立renderer准备AST/DOM，只获得当前文档资源读取桥。主线程仍承担版本检查和有界元数据序列化。
 
 桌面按窗口失效通知刷新，已知正文 revision 可省略重复模型；低频轮询用于补偿。外部文档内容不授予工具权限，运行凭据和密钥不得进入仓库。
 

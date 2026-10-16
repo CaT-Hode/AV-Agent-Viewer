@@ -8,6 +8,7 @@ assert.ok(!destination.toLowerCase().startsWith((source + sep).toLowerCase()) &&
 execFileSync(process.execPath, [join(root, 'scripts', 'verify-engines.mjs')], { cwd: root, stdio: 'inherit' });
 await mkdir(destination, { recursive: true });
 for (const [from, to] of [
+  [join(source, 'pandoc'), join(destination, 'pandoc')],
   [join(source, 'babeldoc-runtime'), join(destination, 'babeldoc-runtime')],
   [join(source, 'babeldoc-home'), join(destination, 'babeldoc-home')],
   [join(source, 'libreoffice-stage'), join(destination, 'libreoffice')],

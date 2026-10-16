@@ -26,7 +26,7 @@ npm.cmd start
 | PDF | 阅读、OCR、增补文字、覆盖式标记、旋转与增页 |
 | AI | 按明确来源分析、选区翻译、独立全文译文与任务协作 |
 
-本轮实现与实测范围见[测试记录](tests/README.md)，格式保真以保存重开和导出产物为准。Markdown 按[官方 Windows 功能矩阵](docs/editing/refactor.md)逐项对标 Typora；复杂语法、主题兼容及可选转换仍需补齐验收。PDF 标记不会删除原文。
+本轮实现与实测范围见[测试记录](tests/README.md)，格式保真以保存重开和导出产物为准。Markdown 按[官方 Windows 功能矩阵](docs/editing/refactor.md)逐项对标 Typora；转换使用随包Pandoc，媒体、文件树及资源流程有真实桌面验收；复杂文件兼容以矩阵边界为准。PDF 标记不会删除原文。
 
 ## 接入与数据
 

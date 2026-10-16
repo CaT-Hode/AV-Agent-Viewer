@@ -9,6 +9,7 @@ import { ViewerCore } from '../packages/document-core/src/index';
 import { blankBytes } from '../packages/document-core/src/fixtures';
 import { editOperationSchema, type DocumentModel, type EditOperation, type Format } from '../packages/contracts/src/index';
 import { shiftSheetFormula } from '../packages/format-adapters/src/sheet-editing';
+import { OfficeModelBackground, backgroundOfficeAdapter } from '../packages/format-adapters/src/office-model-background';
 
 const repository = () => ({ load: async <T>() => undefined as T | undefined, save: async (_value: unknown) => {} });
 const customPart = 'customXml/agentviewer-proof.xml', customContent = '<proof>unrelated package payload</proof>';
@@ -32,6 +33,19 @@ async function setup(format: Format, bytes?: Uint8Array) {
 
 test('Word rich text, paragraphs, tables and page settings save/reopen and undo',async()=>{
   const t=await setup('docx'),id=t.model().blocks![0].id,source=t.model().blocks![0].text;
+  const { build }=await import('esbuild'),workerPath=join(t.directory,'office-model-worker.cjs');
+  await build({entryPoints:[join(process.cwd(),'packages/format-adapters/src/office-model-worker.ts')],bundle:true,platform:'node',format:'cjs',target:'node22',outfile:workerPath,logLevel:'silent'});
+  const parser=new OfficeModelBackground(workerPath),parserBytes=t.core.getDocument(t.view.documentId).bytes,beforeParser=parserBytes.slice();let heartbeat=0;
+  const heartbeatTimer=setInterval(()=>heartbeat++,1);
+  try { assert.deepEqual(await parser.open(parserBytes,'docx'),t.model()); } finally {clearInterval(heartbeatTimer);}
+  assert.ok(heartbeat>0,'Office model parsing allows the main process event loop to continue');assert.deepEqual(parserBytes,beforeParser,'worker transfer never detaches or edits the source');
+  await assert.rejects(parser.open(new Uint8Array([1,2,3]),'docx'),/zip|end of central directory/i);
+  assert.deepEqual(await parser.open(parserBytes,'docx'),t.model(),'a failed document does not poison the parser lane');
+  for(const format of ['xlsx','pptx']as const){const bytes=await blankBytes(format);assert.deepEqual(await parser.open(bytes,format),await t.core.registry.resolve(format).open(bytes,format),'background and foreground Office models retain exact structure');}
+  const compressedZip=await JSZip.loadAsync(parserBytes),xml=await compressedZip.file('word/document.xml')!.async('string'),longText='长段落'.repeat(100000);compressedZip.file('word/document.xml',xml.replace('欢迎使用 AgentViewer',longText));
+  const compressedBytes=await compressedZip.generateAsync({type:'uint8array',compression:'DEFLATE'});assert.ok(compressedBytes.byteLength<256*1024);
+  let dispatchedLargeXml=0;const originalParserOpen=parser.open.bind(parser);parser.open=(bytes,format)=>{dispatchedLargeXml++;return originalParserOpen(bytes,format);};
+  assert.equal((await backgroundOfficeAdapter(t.core.registry.resolve('docx'),parser).open(compressedBytes,'docx')).blocks![0].text,longText);assert.equal(dispatchedLargeXml,1,'highly compressed XML takes the background lane too');
   await t.edit({kind:'office.setTextStyle',blockId:id,from:0,to:2,expectedText:source.slice(0,2),fontName:'Microsoft YaHei',fontSize:18,color:'204060',highlight:'FFF1AA',strike:true,bold:true},model=>{const run=model.blocks![0].runs![0];assert.equal(run.fontSize,18);assert.equal(run.fontName,'Microsoft YaHei');assert.equal(run.color,'204060');assert.equal(run.highlight,'FFF1AA');assert.equal(run.strike,true);assert.equal(model.blocks![0].text,source);});
   await t.edit({kind:'word.setParagraphFormat',blockId:id,alignment:'both',spacingBefore:8,spacingAfter:12,lineSpacing:1.5,indentLeft:18,indentRight:9,indentFirstLine:-12},model=>{const p=model.blocks![0];assert.equal(p.spacingAfter,12);assert.equal(p.lineSpacing,1.5);assert.equal(p.indentFirstLine,-12);assert.equal(p.alignment,'both');});
   await t.edit({kind:'word.insertParagraph',afterBlockId:id,text:'独立插入段落',style:'Heading2'},model=>assert.ok(model.blocks!.some(p=>p.text==='独立插入段落'&&p.style==='Heading2')));

@@ -1,6 +1,13 @@
 {
   "schemaVersion": 1,
   "target": "win32-x64",
+  "pandoc": {
+    "version": "3.12.1",
+    "license": "GPL-2.0-or-later",
+    "archiveUrl": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-windows-x86_64.zip",
+    "archiveSha256": "6ef431cb20b2c24a0371fc19200dc49d452be54b1b5c9239f3462841ef53e587",
+    "runtimeFolder": ".engines/pandoc"
+  },
   "babeldoc": {
     "version": "0.6.4",
     "license": "AGPL-3.0",

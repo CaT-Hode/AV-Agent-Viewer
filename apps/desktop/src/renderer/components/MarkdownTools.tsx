@@ -93,6 +93,7 @@ export function MarkdownTools({ viewId }: { viewId: string }) {
     const history = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string } & Record<string, boolean | string>>).detail; if (detail?.viewId === viewId) setState(previous => ({ ...previous, ...Object.fromEntries(Object.entries(detail).filter(([, value]) => typeof value === 'boolean')) as Record<string, boolean> })); };
     const failure = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; message: string }>).detail; if (detail?.viewId === viewId) setError(detail.message); };
     window.addEventListener('agentviewer:markdown-editor-history', history); window.addEventListener('agentviewer:markdown-error', failure);
+    window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-state-request', { detail: { viewId } }));
     return () => { window.removeEventListener('agentviewer:markdown-editor-history', history); window.removeEventListener('agentviewer:markdown-error', failure); };
   }, [viewId]);
   const execute = (tool: Tool) => {

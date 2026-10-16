@@ -23,6 +23,7 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     case 'markdown-resources-list': return listMarkdownResources(core, str('documentId'));
     case 'markdown-resources-apply': { if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '资源批处理由阅读窗口发起。'); return applyMarkdownResources(core, { documentId: str('documentId'), expectedRevision: Number(args.expectedRevision), action: str('action'), sources: args.sources as string[] }); }
     case 'markdown-resource': return markdownResource(core, str('documentId'), str('path'));
+    case 'markdown-media': { const extension = core.extensions.get(method); if (!extension) throw new ViewerError('CAPABILITY_UNSUPPORTED', '本地音视频需要桌面阅读窗口。'); return extension({ documentId: str('documentId'), path: str('path') }, actor); }
     case 'markdown-import-image': return importMarkdownImage(core, { documentId: str('documentId'), name: String(args.name ?? 'image'), mimeType: String(args.mimeType ?? ''), bytes: args.bytes as number[] | undefined, dataUrl: args.dataUrl as string | undefined });
     case 'markdown-resolve-link': return resolveMarkdownLink(core, str('documentId'), str('href'));
     case 'new-document': return createDocument(core, args, actor);

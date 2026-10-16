@@ -5,8 +5,8 @@ import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import { renderMarkdownDiagram, renderMarkdownFormula } from './markdown-renderers';
-import { call } from './transport';
 import { loadMarkdownEmoji, markdownEmoji } from './markdown-emoji';
+import { typoraInlineSyntax } from './markdown-export-syntax';
 
 type Render = { kind: 'math' | 'diagram'; source: string; block: boolean; language?: 'mermaid' | 'sequence' | 'flow' };
 type MarkdownNode = { type: string; value?: string; children?: MarkdownNode[]; data?: Record<string, unknown> };
@@ -20,7 +20,7 @@ function typoraExtensions() {
       node.children = node.children.flatMap(child => {
         if (child.type !== 'text' || !child.value) { transform(child); return [child]; }
         const result: MarkdownNode[] = []; let cursor = 0;
-        for (const match of child.value.matchAll(/==([^\n=]+)==|(?<!~)~([^~\s][^~\n]*?)~(?!~)|\^([^\^\s][^\^\n]*?)\^|:([a-z0-9_+\-]+):/g)) { if (match.index! > cursor) result.push({ type: 'text', value: child.value.slice(cursor, match.index) }); if (match[4]) result.push({ type: 'text', value: markdownEmoji(match[4]) ?? match[0] }); else { const tag = match[1] ? 'mark' : match[2] ? 'sub' : 'sup'; result.push({ type: 'avInline', children: [{ type: 'text', value: match[1] ?? match[2] ?? match[3] }], data: { hName: tag } }); } cursor = match.index! + match[0].length; }
+        for (const match of child.value.matchAll(/:([a-z0-9_+\-]+):/g)) { if (match.index! > cursor) result.push({ type: 'text', value: child.value.slice(cursor, match.index) }); result.push({ type: 'text', value: markdownEmoji(match[1]) ?? match[0] }); cursor = match.index! + match[0].length; }
         if (!cursor) return [child]; if (cursor < child.value.length) result.push({ type: 'text', value: child.value.slice(cursor) }); return result;
       });
     };
@@ -32,11 +32,12 @@ const printStyle = `:root{color-scheme:light}*{box-sizing:border-box}body{margin
 /** Export from a frozen source string, never from CodeMirror's virtual DOM.
  * Rendering is intentionally exhaustive here. The result is self-contained for
  * local images, formulas and diagrams and has no executable document scripts. */
-export async function renderMarkdownForExport(source: string, documentId: string): Promise<string> {
+export async function renderMarkdownForExport(source: string, documentId: string, resource?: (path: string, kind?: 'image'|'media') => Promise<{ url: string }>): Promise<string> {
+  const resolveResource = resource ?? (async (path: string) => (await import('./transport')).call<{url:string}>('markdown-resource', {documentId,path}));
   if (/:[a-z0-9_+\-]+:/.test(source)) await loadMarkdownEmoji();
   const renders: Render[] = [];
   const body = source.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/, '');
-  const html = renderToStaticMarkup(<ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, typoraExtensions]} rehypePlugins={[rehypeRaw]} urlTransform={(url, key, node) => url.startsWith('agentviewer-asset:') || key === 'src' && node.tagName === 'img' && url.length <= 32 * 1024 * 1024 * 1.4 && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,/i.test(url) ? url : defaultUrlTransform(url)} components={{
+  const html = renderToStaticMarkup(<ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath, typoraInlineSyntax, typoraExtensions]} rehypePlugins={[rehypeRaw]} urlTransform={(url, key, node) => url.startsWith('agentviewer-asset:') || key === 'src' && node.tagName === 'img' && url.length <= 32 * 1024 * 1024 * 1.4 && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,/i.test(url) ? url : defaultUrlTransform(url)} components={{
     code: ({ className, children }) => { const classes = className?.split(/\s+/) ?? [], language = classes.find(name => name.startsWith('language-'))?.slice(9); if (classes.includes('language-math')) { const index = renders.push({ kind: 'math', source: String(children).replace(/\n$/, ''), block: classes.includes('math-display') }) - 1; return <span data-av-render={index} />; } if (language && ['mermaid', 'sequence', 'flow'].includes(language)) { const index = renders.push({ kind: 'diagram', source: String(children).replace(/\n$/, ''), block: true, language: language as 'mermaid' | 'sequence' | 'flow' }) - 1; return <span data-av-render={index} />; } return <code className={className}>{children}</code>; },
   }}>{body}</ReactMarkdown>);
   const parsed = new DOMParser().parseFromString('<article>' + html + '</article>', 'text/html'), article = parsed.querySelector('article')!;
@@ -56,7 +57,11 @@ export async function renderMarkdownForExport(source: string, documentId: string
   const slugs = new Map<string, number>();
   for (const heading of article.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')) { const base = (heading.textContent ?? '').toLowerCase().replace(/[^\p{L}\p{N}_\-\s]/gu, '').trim().replace(/\s+/g, '-'); const count = slugs.get(base) ?? 0; slugs.set(base, count + 1); heading.id = base + (count ? '-' + count : ''); }
   for (const toc of article.querySelectorAll<HTMLElement>('[data-av-toc]')) { toc.removeAttribute('data-av-toc'); for (const heading of article.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')) { const link = parsed.createElement('a'); link.href = '#' + heading.id; link.textContent = heading.textContent; link.style.paddingLeft = (Number(heading.tagName[1]) - 1) * 14 + 'px'; toc.append(link); } }
-  for (const image of article.querySelectorAll<HTMLImageElement>('img')) { const path = image.getAttribute('src') ?? ''; if (!path || /^https?:/i.test(path)) continue; try { image.src = (await call<{ url: string }>('markdown-resource', { documentId, path })).url; } catch { const label = parsed.createElement('span'); label.className = 'av-render-error'; label.textContent = '图片无法加载：' + (image.alt || path.slice(0, 200)); image.replaceWith(label); } }
+  for (const image of article.querySelectorAll<HTMLImageElement>('img')) { const path = image.getAttribute('src') ?? ''; if (!path || /^https?:/i.test(path)) continue; try { image.src = (await resolveResource(path)).url; } catch (cause) { if(resource)throw cause; const label = parsed.createElement('span'); label.className = 'av-render-error'; label.textContent = '图片无法加载：' + (image.alt || path.slice(0, 200)); image.replaceWith(label); } }
+  for(const media of article.querySelectorAll<HTMLMediaElement|HTMLSourceElement>('audio[src],video[src],source[src]')) {
+    const path=media.getAttribute('src')??'';if(!path||/^https?:/i.test(path))continue;
+    try{if(!resource)throw new Error('媒体导出需要桌面资源通道。');const result=await resource(path,'media');if(result.url)media.setAttribute('src',result.url);else media.removeAttribute('src');}catch(cause){if(resource)throw cause;media.removeAttribute('src');const label=parsed.createElement('span');label.className='av-render-error';label.textContent='媒体无法导出：'+path.slice(0,200);media.after(label);}
+  }
   for (const frame of article.querySelectorAll('iframe')) { if (!/^https?:/i.test(frame.getAttribute('src') ?? '')) frame.remove(); else { frame.setAttribute('sandbox', 'allow-scripts allow-presentation'); frame.setAttribute('referrerpolicy', 'no-referrer'); frame.setAttribute('loading', 'lazy'); } }
   for (const quote of article.querySelectorAll('blockquote')) { const first = quote.querySelector('p'); if (first && /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(first.textContent ?? '')) { quote.classList.add('av-callout'); first.innerHTML = first.innerHTML.replace(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i, '<strong>$1</strong>'); } }
   const safe = DOMPurify.sanitize(article.outerHTML, { USE_PROFILES: { html: true, svg: true, svgFilters: true }, ADD_TAGS: ['mjx-container', 'iframe'], ADD_ATTR: ['style', 'sandbox', 'referrerpolicy', 'allowfullscreen'] });

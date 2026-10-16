@@ -52,11 +52,13 @@ class KitRequestQueue:
     def get_nowait(self):
         with self.condition:
             if not self.items:raise queue.Empty()
-            chosen=0
+            chosen=next((index for index,value in enumerate(self.items) if value['method']!='warmup'),0)
             if self.burst<8:
-                for index,value in enumerate(self.items):
+                for index in range(chosen,len(self.items)):
+                    value=self.items[index]
                     method=value['method']
                     if method in self.interactions:chosen=index;break
+                    if method=='warmup':continue
                     if method not in self.reads:break
             value=self.items.pop(chosen);self.burst=self.burst+1 if chosen else 0
             self.pending-=1+len(value.get('_followers',[]));self.condition.notify_all();return value
@@ -64,10 +66,13 @@ class KitRequestQueue:
         with self.condition:return not self.items
 config=json.loads(os.environ.pop('AGENTVIEWER_OFFICE_KIT_CONFIG'))
 ROOT=pathlib.Path(config['directory']).resolve();PROGRAM=pathlib.Path(config['program']).resolve();ROOT.mkdir(parents=True,exist_ok=True)
-sessions={};epoch=str(uuid.uuid4());quitting=False;output_lock=threading.RLock();request_queue=KitRequestQueue(maxsize=64);callback_refs=[];office=None;adapter=None;rpc=None
+sessions={};warmup_document=None;epoch=str(uuid.uuid4());quitting=False;output_lock=threading.RLock();request_queue=KitRequestQueue(maxsize=64);callback_refs=[];office=None;adapter=None;rpc=None
 ${officeKitBinarySource}
 def emit(value):return kit_emit(value)
 def fail(code,message):raise RuntimeError(code+'|'+message)
+def open_trace(args,stage,started=None):
+    if not args.get('_openRequestId'):return
+    emit({'type':'open-trace','requestId':args['_openRequestId'],'sessionId':args['sessionId'],'viewId':args['viewId'],'stage':stage,**({'durationMs':round((time.monotonic()-started)*1000,2)} if started is not None else {})})
 ${officeKitBootstrapSource}
 ${officeKitUpdatePolicySource}
 ${nativeOfficeAppearanceProfileSource}
@@ -568,12 +573,14 @@ def tiles(session,view,args):
     if args['layoutRevision']!=view['layoutRevision'] or args['partIndex']!=view.get('partIndex',0):fail('STALE_OFFICE_SURFACE_LAYOUT','Office 图块视口已经更新。')
     requested=args.get('tiles',[])
     if not isinstance(requested,list) or len(requested)>96:fail('OFFICE_TILE_LIMIT','单次 Office 图块请求过大。')
-    output=[];total=0;mode=doc_call(session,'getTileMode',I)()
+    output=[];total=0;mode=doc_call(session,'getTileMode',I)();paint_started=time.monotonic()
     for spec in requested:
         rectangle=rect_values(spec['rectTwips']);w=checked_integer(spec['pixelWidth'],1,2048);h=checked_integer(spec['pixelHeight'],1,2048);total+=w*h*4
         if total>64*1024*1024 or rectangle['width']<=0 or rectangle['height']<=0:fail('OFFICE_TILE_LIMIT','Office 图块内存或区域无效。')
         buffer=(C.c_ubyte*(w*h*4))();doc_call(session,'paintTile',None,P,I,I,I,I,I,I)(buffer,w,h,*(round(rectangle[k]) for k in ['x','y','width','height']))
         output.append({'key':spec['key'],'rectTwips':rectangle,'width':w,'height':h,'pixelFormat':'bgra' if mode==1 else 'rgba','alphaMode':'premultiplied','data':kit_pixel_data(buffer)})
+    if output and not view.get('firstTileTraced'):
+        view['firstTileTraced']=True;open_trace(view,'paint-first-tiles',paint_started)
     return {'state':state(session,view),'partIndex':view.get('partIndex',0),'renderGeneration':view['renderGeneration'],'layoutRevision':view['layoutRevision'],'tiles':output}
 `;
 
@@ -706,14 +713,54 @@ def input_request(session,view,args,window=None):
 def attach_kit_view(session,controller,args,identifier):
     view={'sessionId':session['sessionId'],'viewId':args['viewId'],'kitViewId':identifier,'controller':controller,'frame':controller.getFrame(),'disposed':False,'selectionEpoch':0,'layoutRevision':0,'renderGeneration':0,'eventSequence':0,'visible':False,'focused':False,'deviceScaleFactor':1,'bounds':{'x':0,'y':0,'width':0,'height':0},'viewportCss':{'width':0,'height':0},'inputStreams':{},'windows':{},'selectionRects':[],'partIndex':0,'actor':'human'}
     view['contextProjectionEnabled']=False
+    if args.get('_openRequestId'):view['_openRequestId']=args['_openRequestId']
     session['views'][view['viewId']]=view;session['activeViewId']=view['viewId'];activate(session,view)
-    doc_call(session,'initializeForRendering',None,S)(b'{}');sync_native_view_appearance(view);callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None);view['kitRegistrations']={'callback':'attached'}
+    initialize_started=time.monotonic();doc_call(session,'initializeForRendering',None,S)(b'{}');open_trace(args,'initialize-render',initialize_started)
+    attach_started=time.monotonic();sync_native_view_appearance(view);callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None);view['kitRegistrations']={'callback':'attached'}
     doc_call(session,'setAccessibilityState',None,I,B)(identifier,True)
     interceptor=ManagedInterceptor(view);view['managedInterceptor']=interceptor;view['frame'].registerDispatchProviderInterceptor(interceptor);view['kitRegistrations']['dispatch']='attached'
     listener=SelectionChanged(session,view);view['selectionListener']=listener;controller.addSelectionChangeListener(listener);view['kitRegistrations']['selection']='attached'
     if 'bounds' in args:layout_view(view,args)
+    open_trace(args,'attach-controller',attach_started)
     return view
+def close_warmup_document():
+    global warmup_document
+    if warmup_document is None:return
+    value=warmup_document
+    # Keep ownership on failure; a real open must not import alongside an
+    # uncertain hidden model or silently discard its disposal error.
+    doc_call(value,'destroy',None)();warmup_document=None
+    try:value['path'].unlink()
+    except OSError:pass
+def warmup_step(args):
+    global warmup_document
+    stage=args.get('stage');identifier=args.get('warmupId')
+    if stage=='close':
+        if warmup_document and warmup_document['warmupId']==identifier:close_warmup_document()
+        return {'completed':True}
+    if sessions:
+        close_warmup_document();return {'completed':False}
+    if stage=='load':
+        close_warmup_document();format=args.get('format')
+        if format not in ['docx','xlsx','pptx']:fail('INVALID_OFFICE_WARMUP','Office 预热格式无效。')
+        data=base64.b64decode(args['bytes'],validate=True)
+        if len(data)>1024*1024:fail('INVALID_OFFICE_WARMUP','Office 预热样本过大。')
+        path=ROOT/('warmup-'+str(uuid.uuid4())+'.'+format);path.write_bytes(data)
+        pointer=office_call('documentLoadWithOptions',P,S,S)(path.as_uri().encode(),b'MacroSecurityLevel=3,EnableMacrosExecution=false')
+        if not pointer:
+            try:path.unlink()
+            except OSError:pass
+            fail('OFFICE_WARMUP_FAILED','Office 预热样本加载失败。')
+        warmup_document={'kit':pointer,'path':path,'warmupId':identifier,'stage':'load'}
+    else:
+        if not warmup_document or warmup_document['warmupId']!=identifier:return {'completed':False}
+        if stage=='initialize' and warmup_document['stage']=='load':doc_call(warmup_document,'initializeForRendering',None,S)(b'{}');warmup_document['stage']='initialize'
+        elif stage=='paint' and warmup_document['stage']=='initialize':
+            buffer=(C.c_ubyte*(256*256*4))();doc_call(warmup_document,'setClientZoom',None,I,I,I,I)(256,256,3840,3840);doc_call(warmup_document,'paintTile',None,P,I,I,I,I,I,I)(buffer,256,256,0,0,3840,3840);warmup_document['stage']='paint'
+        else:fail('INVALID_OFFICE_WARMUP','Office 预热阶段顺序无效。')
+    return {'completed':True}
 def open_session(args):
+    close_warmup_document()
     existing=next((s for s in sessions.values() if s['documentId']==args['documentId']),None)
     if existing:
         require_kit_session_available(existing)
@@ -724,14 +771,14 @@ def open_session(args):
         view=attach_kit_view(existing,new[0],args,identifier);return view
     format=args['format']
     if format not in ['docx','xlsx','pptx']:fail('NATIVE_FORMAT_UNSUPPORTED','Office 文档格式不受支持。')
-    data=base64.b64decode(args['bytes'],validate=True)
+    decode_started=time.monotonic();data=base64.b64decode(args['bytes'],validate=True);open_trace(args,'decode-bytes',decode_started)
     if len(data)>100*1024*1024:fail('NATIVE_DOCUMENT_LIMIT','Office 文档内容过大。')
-    path=ROOT/(str(uuid.uuid4())+'.'+format);path.write_bytes(data)
-    pointer=office_call('documentLoadWithOptions',P,S,S)(path.as_uri().encode(),b'MacroSecurityLevel=3,EnableMacrosExecution=false')
+    write_started=time.monotonic();path=ROOT/(str(uuid.uuid4())+'.'+format);path.write_bytes(data);open_trace(args,'write-managed-file',write_started)
+    load_started=time.monotonic();pointer=office_call('documentLoadWithOptions',P,S,S)(path.as_uri().encode(),b'MacroSecurityLevel=3,EnableMacrosExecution=false');open_trace(args,'load-document',load_started)
     if not pointer:fail('NATIVE_OPEN_FAILED','Office 内置引擎未打开文档。')
     provisional={'kit':pointer};expected_type={'docx':0,'xlsx':1,'pptx':2}[format]
     if doc_call(provisional,'getDocumentType',I)()!=expected_type:doc_call(provisional,'destroy',None)();fail('NATIVE_FORMAT_MISMATCH','Office 模型类型与文档身份不一致。')
-    enum=desktop.getComponents().createEnumeration();matches=[]
+    bind_started=time.monotonic();enum=desktop.getComponents().createEnumeration();matches=[]
     while enum.hasMoreElements():
         item=enum.nextElement()
         if getattr(item,'URL','')==path.as_uri():matches.append(item)
@@ -739,6 +786,7 @@ def open_session(args):
     doc=matches[0];session={'sessionId':args['sessionId'],'documentId':args['documentId'],'format':format,'revision':args['revision'],'engineRevision':0,'doc':doc,'kit':pointer,'unsavedContentChanges':bool(doc.isModified()),'views':{},'disposed':False,'path':path,'lastSnapshot':None,'mappingBytes':data,'operationActor':None,'actor':'human','requests':{}}
     sessions[session['sessionId']]=session;listener=Modified(session);session['modifyListener']=listener;doc.addModifyListener(listener);session['kitRegistrations']={'modify':'attached'}
     events=DocumentEvents(session);session['documentEvents']=events;doc.addDocumentEventListener(events);session['kitRegistrations']['document']='attached'
+    open_trace(args,'bind-model',bind_started)
     identifier=doc_call(session,'getView',I)();view=attach_kit_view(session,doc.getCurrentController(),args,identifier)
     return view
 def close_session(session,discard=False):
@@ -1027,6 +1075,7 @@ def remember_request_receipt(session,key,signature,result):
 def handle_request(request):
     method=request.get('method');args=request.get('args',{});identifier=request.get('id')
     if method=='ping':return {'engineEpoch':epoch,'sessions':len(sessions),'surfaceKind':'tiled'}
+    if method=='warmup':return warmup_step(args)
     if method=='initializeBootstrapSeed':
         try:publish_docless_bootstrap_seed(bootstrap_context)
         except (OSError,ValueError,TypeError,KeyError):emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_CACHE_UNAVAILABLE'})
@@ -1040,8 +1089,11 @@ def handle_request(request):
             for view in session['views'].values():invalidate(session,view)
         return result
     if method=='open':
-        open_session(args);yield;return state(sessions[args['sessionId']],sessions[args['sessionId']]['views'][args['viewId']])
+        args['_openRequestId']=identifier;open_trace(args,'worker-queue',request.get('_queuedAt'))
+        open_session(args);yield
+        state_started=time.monotonic();result=state(sessions[args['sessionId']],sessions[args['sessionId']]['views'][args['viewId']]);open_trace(args,'initial-state',state_started);return result
     if method=='shutdown':
+        close_warmup_document()
         for session in list(sessions.values()):
             if session.get('unavailable'):
                 if not args.get('discard',False):require_kit_session_available(session)
@@ -1054,7 +1106,10 @@ def handle_request(request):
     if method=='enableContextProjection':return enable_context_projection(session,view)
     if method=='observeState':return observe_state(session,view,args)
     if method in ['state','surfaceState','office-surface-state']:return state(session,view)
-    if method in ['layout','surfaceLayout','office-surface-layout']:layout_view(view,args);yield;return state(session,view)
+    if method in ['layout','surfaceLayout','office-surface-layout']:
+        layout_started=time.monotonic();layout_view(view,args)
+        if method!='layout' and not view.get('firstLayoutTraced'):view['firstLayoutTraced']=True;open_trace(view,'first-layout',layout_started)
+        yield;return state(session,view)
     if method in ['surfaceTiles','office-surface-tiles']:return tiles(session,view,args)
     if method in ['surfaceInput','office-surface-input']:return (yield from input_request(session,view,args))
     if method in ['surfaceWindowPaint','office-surface-window-paint']:return paint_window(session,view,args)
@@ -1160,7 +1215,7 @@ def receive_rpc():
                 if len(line)>KIT_REQUEST_BYTES_MAX:emit({'type':'diagnostic','code':'NATIVE_PROTOCOL_LIMIT'});break
                 value=json.loads(line)
                 if not isinstance(value,dict) or not isinstance(value.get('method'),str):fail('NATIVE_PROTOCOL_ERROR','Office 请求结构无效。')
-                request_queue.put(value);async_service.addCallback(pump,None)
+                value['_queuedAt']=time.monotonic();request_queue.put(value);async_service.addCallback(pump,None)
     except:emit({'type':'diagnostic','code':'OFFICE_KIT_CONNECTION_LOST'})
     finally:
         if not quitting:kit_transport_fail()
@@ -1178,6 +1233,9 @@ try:
 except BaseException as error:
     emit({'type':'diagnostic','code':'OFFICE_KIT_STARTUP_FAILED'});emit({'type':'startup-error','message':str(error).partition('|')[2] or 'Office 内置引擎启动失败。'})
 finally:
+    if warmup_document:
+        try:close_warmup_document()
+        except:emit({'type':'diagnostic','code':'OFFICE_WARMUP_CLEANUP_FAILED'})
     if rpc:
         try:rpc.shutdown(socket.SHUT_RDWR)
         except:pass

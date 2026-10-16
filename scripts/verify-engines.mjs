@@ -16,6 +16,9 @@ const libreoffice = join(root, '.engines', 'libreoffice-stage', 'program', 'soff
 for (const path of [python, libreoffice, join(home, '.cache', 'babeldoc', 'models')]) assert.ok(existsSync(path), `缺少内置引擎资源：${path}`);
 for (const [name, expected] of Object.entries(lock.ocr.languages)) await checkHash(join(root, 'assets', 'ocr', 'lang', name + '.traineddata.gz'), expected);
 const downloads = join(root, '.engines', 'downloads');
+await checkHash(join(downloads,`pandoc-${lock.pandoc.version}-windows-x86_64.zip`),lock.pandoc.archiveSha256);
+const pandoc=spawnSync(join(root,lock.pandoc.runtimeFolder,'pandoc.exe'),['--version'],{encoding:'utf8',windowsHide:true,timeout:10000});
+assert.equal(pandoc.status,0,pandoc.stderr||String(pandoc.error));assert.ok(pandoc.stdout.startsWith('pandoc '+lock.pandoc.version));
 for (const [name, expected] of [['python-3.12.10-embed-amd64.zip', lock.babeldoc.pythonEmbedSha256], ['LibreOffice_26.8.1_Win_x86-64.msi', lock.libreoffice.installerSha256]]) {
   const path = join(downloads, name); if (existsSync(path)) await checkHash(path, expected);
 }

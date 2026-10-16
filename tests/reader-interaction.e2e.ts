@@ -26,8 +26,11 @@ const port = await new Promise<number>((done, reject) => {
 const env: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), AGENTVIEWER_DATA_DIR: directory, AGENTVIEWER_PORT: String(port), AGENTVIEWER_TEST_MODE: '1' };
 delete env.ELECTRON_RUN_AS_NODE;
 const app = await electron.launch({ executablePath: require('electron'), args: ['--force-device-scale-factor=1', '.'], cwd: resolve('.'), env, timeout: 45000 });
-const main = await app.firstWindow(), errors: string[] = [], results: Record<string, unknown> = {};
-const watch = (target: Page) => target.on('pageerror', error => errors.push(`${target.url()}: ${error.stack ?? error.message}`));
+const main = await app.firstWindow(), errors: string[] = [], consoleErrors: { url: string; text: string; location: { url: string; lineNumber: number; columnNumber: number } }[] = [], results: Record<string, unknown> = {};
+const watch = (target: Page) => {
+  target.on('pageerror', error => errors.push(`${target.url()}: ${error.stack ?? error.message}`));
+  target.on('console', entry => { if (entry.type() === 'error') consoleErrors.push({ url: target.url(), text: entry.text(), location: entry.location() }); });
+};
 app.context().pages().forEach(watch); app.context().on('page', watch);
 const invoke = <T = unknown>(target: Page, method: string, args: Record<string, unknown> = {}) => target.evaluate(input => window.agentViewer!.call(input.method, input.args), { method, args }) as Promise<T>;
 const state = () => invoke<WorkspaceState>(main, 'state');
@@ -112,8 +115,9 @@ try {
   // delayed renderer and sidebar command paths rather than many isolated tests.
   const authoringSource = '---\ntitle: "Authoring"\nauthor: "Original"\n---\n\n# Authoring workflow\n\n[TOC]\n\nPlain text. Footnote[^check]. Emoji :rocket:.\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\nInline $x^2$ formula.\n\n$$\na^2+b^2=c^2\n$$\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```sequence\nAlice->Bob: Hello\nNote right of Bob: A note\nBob-->Alice: Reply\n```\n\n```flow\nst=>start: Start\nop=>operation: Action\ne=>end: End\nst->op->e\n```\n\n[^check]: Footnote content.\n\n<div><strong>Safe embedded HTML</strong><script>window.unsafeMarkdown=true</script></div>\n';
   const embeddedImage='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6eFQAAAAASUVORK5CYII=';
+  const authoringInline = '\nInline extensions ==**nested bold** and *nested italic*==, ~sub~, ~**nested sub**~, ^super^, ^*nested super*^.\n\nEscaped \\==literal highlight== and entity &#61;&#61;entity highlight==; `==literal code== ~code~ ^code^`.\n\n- [ ] Outer task\n  - [x] Nested task\n';
   const localImageName='local image#%.png'; await writeFile(join(directory,localImageName),Buffer.from(embeddedImage.split(',')[1],'base64'));
-  const authoringPath = join(directory, 'authoring-workflow.md'); await writeFile(authoringPath, authoringSource+'\n![Embedded fixture]('+embeddedImage+')\n\n![Local special filename]('+encodeURIComponent(localImageName)+')\n\nFootnote with colon[^a:b].\n\n[^a:b]: Colon footnote.\n');
+  const authoringPath = join(directory, 'authoring-workflow.md'); await writeFile(authoringPath, authoringSource+authoringInline+'\n![Embedded fixture]('+embeddedImage+')\n\n![Local special filename]('+encodeURIComponent(localImageName)+')\n\nFootnote with colon[^a:b].\n\n[^a:b]: Colon footnote.\n');
   const authoring = await invoke<ViewInfo>(main, 'open', { uri: authoringPath, windowId: 'main' });
   await until(async () => await main.locator('[data-markdown-view=' + JSON.stringify(authoring.id) + ']').count() === 1, 'new source editor activates');
   const authoredText = async () => (await state()).documents.find(item => item.id === authoring.documentId)!.model.text!;
@@ -145,11 +149,20 @@ try {
   await revealPreview((await authoredText()).indexOf('[^check]:'));
   const footnote = sourceEditor.getByLabel('脚注内容 check', { exact: true }); await footnote.fill('Edited footnote.'); await footnote.press('Tab'); await until(async () => (await authoredText()).includes('[^check]: Edited footnote.'), 'footnote visual edit updates definition');
   assert.equal(await main.evaluate(() => (window as Window & { unsafeMarkdown?: boolean }).unsafeMarkdown), undefined, 'raw HTML never executes document scripts');
+  await revealPreview((await authoredText()).indexOf('Inline extensions'));
+  await sourceEditor.locator('.md-highlight .md-strong').filter({ hasText: 'nested bold' }).waitFor();
+  await sourceEditor.locator('.md-highlight .md-emphasis').filter({ hasText: 'nested italic' }).waitFor();
+  await sourceEditor.locator('.md-sub .md-strong').filter({ hasText: 'nested sub' }).waitFor(); await sourceEditor.locator('.md-super .md-emphasis').filter({ hasText: 'nested super' }).waitFor();
+  assert.equal(await sourceEditor.locator('.md-highlight').filter({ hasText: 'literal highlight' }).count(), 0, 'escaped highlight stays literal in the live editor');
+  assert.equal(await sourceEditor.locator('.md-highlight').filter({ hasText: 'entity highlight' }).count(), 0, 'entity-decoded equals do not create live delimiters');
+  await revealPreview((await authoredText()).indexOf('- [ ] Outer task')); await until(async () => await sourceEditor.locator('.md-task-checkbox').count() === 2, 'nested GFM tasks produce both actual checkboxes');
+  assert.equal(await sourceEditor.locator('.md-task-checkbox').nth(0).isChecked(), false); assert.equal(await sourceEditor.locator('.md-task-checkbox').nth(1).isChecked(), true);
   const localLiveImage=sourceEditor.getByAltText('Local special filename',{exact:true});await localLiveImage.scrollIntoViewIfNeeded();await until(async()=>localLiveImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'relative local image with spaces/hash/percent decodes in live mode');await localLiveImage.evaluate(image=>(image as HTMLImageElement).decode());
   const exportChunk = (await readdir(resolve('dist/renderer/assets'))).find(name => /^markdown-export-.*\.js$/.test(name)); assert.ok(exportChunk);
   const exported = await main.evaluate(async input => { const module = await import(input.url); return module.renderMarkdownForExport(input.source, input.documentId) as Promise<string>; }, { url: new URL('assets/' + exportChunk, main.url()).href, source: await authoredText(), documentId: authoring.documentId });
-  const exportContents = await main.evaluate(html => { const document = new DOMParser().parseFromString(html, 'text/html'); return { svg: document.querySelectorAll('svg').length, footnote: document.body.textContent!.includes('Edited footnote.'), script: document.querySelectorAll('script').length, toc: document.querySelectorAll('.av-toc a').length, html: document.body.textContent!.includes('Safe embedded HTML'), emoji: document.body.textContent!.includes('🚀') }; }, exported);
+  const exportContents = await main.evaluate(html => { const document = new DOMParser().parseFromString(html, 'text/html'); return { svg: document.querySelectorAll('svg').length, footnote: document.body.textContent!.includes('Edited footnote.'), script: document.querySelectorAll('script').length, toc: document.querySelectorAll('.av-toc a').length, html: document.body.textContent!.includes('Safe embedded HTML'), emoji: document.body.textContent!.includes('🚀'), nestedHighlight: [...document.querySelectorAll('mark')].some(mark => mark.querySelector('strong')?.textContent === 'nested bold' && mark.querySelector('em')?.textContent === 'nested italic'), sub: [...document.querySelectorAll('sub')].some(node => node.textContent === 'sub'), nestedSub: document.querySelector('sub strong')?.textContent === 'nested sub', super: [...document.querySelectorAll('sup')].some(node => node.textContent === 'super'), nestedSuper: document.querySelector('sup em')?.textContent === 'nested super', literalEscapes: document.body.textContent!.includes('==literal highlight==') && document.body.textContent!.includes('==entity highlight=='), literalCode: [...document.querySelectorAll('code')].some(node => node.textContent === '==literal code== ~code~ ^code^'), nestedTasks: document.querySelectorAll('li.task-list-item li.task-list-item input[checked]').length }; }, exported);
   assert.ok(exportContents.svg >= 5, 'frozen full source exports both formulas and all three diagram languages'); assert.equal(exportContents.script, 0); assert.equal(exportContents.footnote, true); assert.ok(exportContents.toc >= 1); assert.equal(exportContents.html, true); assert.equal(exportContents.emoji, true);
+  assert.equal(exportContents.nestedHighlight, true); assert.equal(exportContents.sub, true); assert.equal(exportContents.nestedSub, true); assert.equal(exportContents.super, true); assert.equal(exportContents.nestedSuper, true); assert.equal(exportContents.literalEscapes, true); assert.equal(exportContents.literalCode, true); assert.equal(exportContents.nestedTasks, 1, 'export retains nested GFM tasks and inline syntax without flattening their children');
   assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html,'text/html').querySelector('img[alt="Embedded fixture"]')?.getAttribute('src'),exported),embeddedImage,'embedded PNG survives full-source export and backend image validation');
   assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html,'text/html').querySelector('img[alt="Local special filename"]')?.getAttribute('src'),exported),embeddedImage,'relative local image becomes a self-contained data URI in full-source export');
   await writeFile(join(evidence, 'markdown-export.html'), exported);
@@ -158,7 +171,7 @@ try {
   for (const format of ['html', 'pdf', 'png']) {
     const destination = join(evidence, 'authoring-export.' + format);
     await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, destination);
-    if (format === 'png') await app.evaluate(({ app }) => { const captures: unknown[] = []; (globalThis as typeof globalThis & { qaPngViewports?: unknown[] }).qaPngViewports = captures; app.once('browser-window-created', (_event, window) => { const capture = window.webContents.capturePage.bind(window.webContents); window.webContents.capturePage = async (...args) => { captures.push(await window.webContents.executeJavaScript('({clientWidth:document.documentElement.clientWidth,innerWidth,scrollY})')); return capture(...args); }; }); });
+    if (format === 'png') await app.evaluate(({ app }) => { const captures: unknown[] = []; (globalThis as typeof globalThis & { qaPngViewports?: unknown[] }).qaPngViewports = captures; app.on('browser-window-created', (_event, window) => { const capture = window.webContents.capturePage.bind(window.webContents); window.webContents.capturePage = async (...args) => { captures.push(await window.webContents.executeJavaScript('({clientWidth:document.documentElement.clientWidth,innerWidth,scrollY})')); return capture(...args); }; }); });
     const output = await invoke<{ paths: string[]; revision: number }>(main, 'markdown-export', { documentId: authoring.documentId, expectedRevision: revision, format, html: exported });
     assert.equal(output.revision, revision); assert.ok(output.paths.length > 0);
     const buffers = await Promise.all(output.paths.map(path => readFile(path))); assert.ok(buffers.every(buffer => buffer.length > 100));
@@ -180,18 +193,54 @@ try {
   }
   assert.equal((await state()).documents.find(item => item.id === authoring.documentId)!.revision, revision, 'export does not mutate the source revision');
   assert.match(await sourceEditor.getByLabel('文档统计').innerText(), /字词.*字符.*行/);
+  const writingPreferences = main.getByLabel('Markdown 偏好配置', { exact: true });
+  await writingPreferences.getByLabel('Markdown 主题 CSS', { exact: true }).fill('.markdown-editor { --qa-markdown-theme: applied; }');
+  await writingPreferences.getByLabel('Markdown 快捷键配置', { exact: true }).fill(JSON.stringify({ bold: 'Alt-b', undo: '', find: '' }));
+  await writingPreferences.getByRole('button', { name: '保存配置', exact: true }).click();
+  await until(async () => (await sourceEditor.evaluate(node => getComputedStyle(node).getPropertyValue('--qa-markdown-theme'))).trim() === 'applied', 'saved custom CSS applies within the real editor');
+  await sourceEditor.locator('.cm-content').focus(); await main.keyboard.press('Control+End'); await main.keyboard.insertText('\n\nShortcut proof'); await main.keyboard.press('Shift+Home');
+  await main.keyboard.press('Control+b'); await main.waitForTimeout(200);
+  assert.ok((await authoredText()).endsWith('Shortcut proof') && !(await authoredText()).endsWith('**Shortcut proof**'), 'rebound formatting no longer runs its original default key');
+  await main.keyboard.press('Alt+b'); await until(async () => (await authoredText()).endsWith('**Shortcut proof**'), 'configured formatting key runs the normal command');
+  const beforeDisabledUndo = await authoredText(); await main.keyboard.press('Control+z'); await main.waitForTimeout(200);
+  assert.equal(await authoredText(), beforeDisabledUndo, 'empty undo binding blocks the inherited CodeMirror key as well');
+  await main.keyboard.press('Control+f'); assert.equal(await sourceEditor.locator('.cm-search').count(), 0, 'empty find binding blocks the inherited search key');
+  await tools.getByRole('button', { name: '撤销', exact: true }).click(); await until(async () => !(await authoredText()).endsWith('**Shortcut proof**'), 'disabled keyboard binding does not disable the sidebar command');
+  await writingPreferences.getByLabel('Markdown 主题 CSS', { exact: true }).fill(''); await writingPreferences.getByLabel('Markdown 快捷键配置', { exact: true }).fill('{}');
+  await writingPreferences.getByRole('button', { name: '保存配置', exact: true }).click();
+  await until(async () => !(await sourceEditor.evaluate(node => getComputedStyle(node).getPropertyValue('--qa-markdown-theme'))).trim(), 'clearing custom CSS restores the document theme');
+  await tools.getByRole('button', { name: '拼写检查', exact: true }).click(); await tools.getByRole('button', { name: '自动配对', exact: true }).click();
+  assert.equal(await sourceEditor.locator('.cm-content').getAttribute('spellcheck'), 'false');
+  await main.getByRole('button', { name: '文件与快速打开', exact: true }).click(); await main.getByRole('button', { name: 'Markdown工具', exact: true }).click();
+  await until(async () => await tools.getByRole('button', { name: '拼写检查', exact: true }).getAttribute('aria-pressed') === 'false' && await tools.getByRole('button', { name: '自动配对', exact: true }).getAttribute('aria-pressed') === 'false', 'remounted sidebar reflects the persistent source editor toggles');
+  await tools.getByRole('button', { name: '拼写检查', exact: true }).click(); await tools.getByRole('button', { name: '自动配对', exact: true }).click();
+  results.markdownPreferences = { scopedTheme: true, reboundFormatKey: true, disabledInheritedKeys: ['undo', 'find'], independentSidebarCommand: true, remountedToggles: true };
   await changeMode('分栏');
   const splitPreview = main.locator('[data-markdown-preview=' + JSON.stringify(authoring.id) + ']'); await splitPreview.waitFor();
-  const localSplitImage=splitPreview.getByAltText('Local special filename',{exact:true});await localSplitImage.scrollIntoViewIfNeeded();await until(async()=>localSplitImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'same local image decodes in the virtual split preview');await localSplitImage.evaluate(image=>(image as HTMLImageElement).decode());
-  assert.equal(await splitPreview.locator('.cm-content').getAttribute('contenteditable'), 'false'); assert.equal(await splitPreview.locator('.md-table-widget input').count(), 0, 'mirror table has static cells rather than independent editable inputs');
   let codeMirrorChunk: string | undefined;
   for (const name of await readdir(resolve('dist/renderer/assets'))) if (name.endsWith('.js') && (await readFile(resolve('dist/renderer/assets', name), 'utf8')).includes('findFromDOM')) { codeMirrorChunk = name; break; }
   assert.ok(codeMirrorChunk);
-  const blockedWrite = await splitPreview.evaluate(async (node, url) => { const module = await import(url); const Editor = Object.values(module).find((value: any) => typeof value?.findFromDOM === 'function') as { findFromDOM(node: Element): { state: { doc: { length: number } }; dispatch(input: unknown): void } }; if (!Editor) throw new Error('Missing public EditorView.findFromDOM'); const view = Editor.findFromDOM(node.querySelector('.cm-content')!)!; const length = view.state.doc.length; view.dispatch({ changes: { from: 0, insert: 'Forbidden mirror write' } }); view.dispatch({ changes: { from: 0, insert: 'Forbidden unfiltered mirror write' }, filter: false }); return { before: length, after: view.state.doc.length }; }, new URL('assets/' + codeMirrorChunk, main.url()).href);
+  const codeMirrorUrl = new URL('assets/' + codeMirrorChunk, main.url()).href;
+  // The virtual mirror cannot scroll a DOM node that is not mounted yet.
+  // Navigate by source position first; the selections below still use real Ranges.
+  const revealSplitPreview = async (from: number) => {
+    assert.ok(from >= 0, 'preview navigation has a source position');
+    await splitPreview.evaluate(async (node, input) => {
+      const module = await import(input.url);
+      const Editor = Object.values(module).find((value: any) => typeof value?.findFromDOM === 'function') as { findFromDOM(node: Element): { dispatch(input: unknown): void }; scrollIntoView(from: number, options: { y: string }): unknown };
+      if (!Editor) throw new Error('Missing public EditorView.findFromDOM');
+      Editor.findFromDOM(node.querySelector('.cm-content')!)!.dispatch({ effects: Editor.scrollIntoView(input.from, { y: 'center' }) });
+    }, { url: codeMirrorUrl, from });
+  };
+  await revealSplitPreview((await authoredText()).indexOf('![Local special filename]'));
+  const localSplitImage=splitPreview.getByAltText('Local special filename',{exact:true});await localSplitImage.scrollIntoViewIfNeeded();await until(async()=>localSplitImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'same local image decodes in the virtual split preview');await localSplitImage.evaluate(image=>(image as HTMLImageElement).decode());
+  await revealSplitPreview((await authoredText()).indexOf('| Name |')); await splitPreview.locator('.md-table-widget').waitFor();
+  assert.equal(await splitPreview.locator('.cm-content').getAttribute('contenteditable'), 'false'); assert.equal(await splitPreview.locator('.md-table-widget input').count(), 0, 'mirror table has static cells rather than independent editable inputs');
+  const blockedWrite = await splitPreview.evaluate(async (node, url) => { const module = await import(url); const Editor = Object.values(module).find((value: any) => typeof value?.findFromDOM === 'function') as { findFromDOM(node: Element): { state: { doc: { length: number } }; dispatch(input: unknown): void } }; if (!Editor) throw new Error('Missing public EditorView.findFromDOM'); const view = Editor.findFromDOM(node.querySelector('.cm-content')!)!; const length = view.state.doc.length; view.dispatch({ changes: { from: 0, insert: 'Forbidden mirror write' } }); view.dispatch({ changes: { from: 0, insert: 'Forbidden unfiltered mirror write' }, filter: false }); return { before: length, after: view.state.doc.length }; }, codeMirrorUrl);
   assert.equal(blockedWrite.after, blockedWrite.before, 'preview transaction filter blocks programmatic widget writes as well as keyboard input');
+  const previewFrom = (await authoredText()).indexOf('Plain text.'); await revealSplitPreview(previewFrom);
   await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().scrollIntoViewIfNeeded();
   await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().evaluate(node => { const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const offset = text.textContent!.indexOf('Plain text.'); if (offset < 0) continue; const range = document.createRange(); range.setStart(text, offset); range.setEnd(text, offset + 'Plain text.'.length); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); return; } throw new Error('Missing preview text'); });
-  const previewFrom = (await authoredText()).indexOf('Plain text.');
   await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === 'Plain text.' && context.selection.locator?.from === previewFrom && context.selection.locator?.to === previewFrom + 'Plain text.'.length; }, 'preview reports the true UTF16 source range without stale source selection overwriting it');
   const floatingSelection = main.getByRole('toolbar', { name: '选区工具', exact: true });
   console.log('Markdown full exports and split source mapping: PASS; checking floating toolbar history');
@@ -202,11 +251,25 @@ try {
   await tools.getByRole('button', { name: '重做', exact: true }).click(); await until(async () => (await authoredText()).includes('**Plain text.**'), 'sidebar redo shares floating toolbar history');
   const topUndo = main.getByRole('button', { name: '撤销最近修改', exact: true }); if (!await topUndo.isVisible()) await main.getByRole('button', { name: '更多导航工具', exact: true }).click();
   await topUndo.click(); await until(async () => !(await authoredText()).includes('**Plain text.**'), 'top navigation undo shares floating toolbar history');
+  for (let turn = 0; turn < 3; turn++) {
+    await revealSplitPreview((await authoredText()).indexOf('Plain text.'));
+    await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().waitFor();
+    await splitPreview.evaluate(node => { node.querySelector<HTMLElement>('.cm-content')!.focus({ preventScroll: true }); const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const at = text.textContent!.indexOf('Plain text.'); if (at < 0) continue; const range = document.createRange(); range.setStart(text, at); range.setEnd(text, at + 'Plain text.'.length); window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); return; } throw new Error('Missing fast-undo preview selection'); });
+    await until(async () => (await invoke<ReadingContext>(main, 'context', { viewId: authoring.id })).selection.text === 'Plain text.', 'fast sequence starts with the intended preview selection');
+    await floatingSelection.getByRole('button', { name: '加粗选区', exact: true }).click();
+    await until(async () => (await authoredText()).includes('**Plain text.**'), 'format acknowledged before immediate undo and reselection');
+    await sourceEditor.locator('.cm-content').focus(); await main.keyboard.press('Control+z');
+    // Deliberately do not wait for the draft timer, Core revision or preview
+    // props. A new real DOM Range must survive all of those late arrivals.
+    await splitPreview.evaluate(node => { node.querySelector<HTMLElement>('.cm-content')!.focus({ preventScroll: true }); const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const at = text.textContent!.indexOf('Footnote'); if (at < 0) continue; const range = document.createRange(); range.setStart(text, at); range.setEnd(text, at + 'Footnote'.length); window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); return; } throw new Error('Missing immediate reselection text'); });
+    await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return !(await authoredText()).includes('**Plain text.**') && context.quality === 'confirmed' && context.selection.text === 'Footnote'; }, 'late undo acknowledgement preserves the newer preview range');
+    assert.equal(await main.evaluate(() => window.getSelection()?.toString()), 'Footnote', 'native Range survives Core/preview synchronization');
+  }
   console.log('Floating toolbar keyboard/sidebar/navigation undo and redo: PASS');
   for (const [selector, visibleText, sourceText] of [['.md-table-widget td', 'Changed|cell', 'Changed\\|cell'], ['.md-render-metadata dd span', '"Updated"', '"Updated"'], ['.md-render-footnote span', 'Colon footnote.', 'Colon footnote.']]) {
+    const from = (await authoredText()).indexOf(sourceText); assert.ok(from >= 0); await revealSplitPreview(from);
     const field = splitPreview.locator(selector).filter({ hasText: visibleText }).first(); await field.scrollIntoViewIfNeeded();
     await field.evaluate(node => { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
-    const from = (await authoredText()).indexOf(sourceText); assert.ok(from >= 0);
     await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === sourceText && context.selection.locator?.from === from && context.selection.locator?.to === from + sourceText.length; }, 'readonly widget maps its exact source range: ' + visibleText);
   }
   await changeMode('阅读');
@@ -244,6 +307,48 @@ try {
   const reopenedAssetPath = join(directory, 'reopened-image-fixture.md'); await writeFile(reopenedAssetPath, savedAssetSource); const reopenedAsset = await invoke<ViewInfo>(main, 'open', { uri: reopenedAssetPath, windowId: 'main' });
   const reopenedImage = main.locator('[data-markdown-view=' + JSON.stringify(reopenedAsset.id) + ']').getByAltText(localImageName, { exact: true }); await reopenedImage.scrollIntoViewIfNeeded(); await until(async () => reopenedImage.evaluate(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth === 1), 'freshly parsed saved relative image decodes'); await reopenedImage.evaluate(image => (image as HTMLImageElement).decode());
   results.markdownImages = { backedPaste: true, unsavedAsset: true, consecutiveResize: ['50%', '75%'], liveAndSplitDecode: true, fullHtmlExport: true, savedRelativeSource: true, freshParseFromDisk: true };
+  // Decode real local media through the bounded protocol and seek via Range.
+  const wav=Buffer.alloc(44+16000);wav.write('RIFF',0);wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(8000,24);wav.writeUInt32LE(16000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(16000,40);
+  await writeFile(join(directory,'local sound#%.wav'),wav);
+  const videoBytes=await readFile(resolve('tests/fixtures/markdown-video.webm'));
+  await writeFile(join(directory,'local movie.webm'),Buffer.from(videoBytes));
+  const mediaPath=join(directory,'media.md');await writeFile(mediaPath,'# Local media\n\n<audio controls src="local%20sound%23%25.wav"></audio>\n\n<video controls src="local%20movie.webm"></video>\n');
+  const mediaView=await invoke<ViewInfo>(main,'open',{uri:mediaPath,windowId:'main'}),mediaEditor=main.locator('[data-markdown-view='+JSON.stringify(mediaView.id)+']');
+  for(const tag of ['audio','video']){const element=mediaEditor.locator(tag);await element.scrollIntoViewIfNeeded();await until(async()=>element.evaluate(node=>(node as HTMLMediaElement).readyState>=1),'local '+tag+' metadata decodes');await element.evaluate(async node=>{const media=node as HTMLMediaElement;media.muted=true;await media.play();});}
+  const mediaCapability=await invoke<{url:string}>(main,'markdown-media',{documentId:mediaView.documentId,path:'local%20sound%23%25.wav'});
+  const rangeRead=await main.evaluate(async url=>{const response=await fetch(url,{headers:{Range:'bytes=4-15'}});return {status:response.status,range:response.headers.get('content-range'),bytes:[...new Uint8Array(await response.arrayBuffer())]};},mediaCapability.url);
+  assert.equal(rangeRead.status,206);assert.equal(rangeRead.range,'bytes 4-15/'+wav.length);assert.deepEqual(rangeRead.bytes,[...wav.subarray(4,16)]);
+  await assert.rejects(()=>invoke(main,'markdown-media',{documentId:mediaView.documentId,path:'../outside.wav'}));
+  const mediaExport=join(evidence,'portable-media.html');await app.evaluate(({dialog},path)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:path});},mediaExport);
+  const mediaOutput=await invoke<{paths:string[];revision:number}>(main,'markdown-export',{documentId:mediaView.documentId,expectedRevision:(await state()).documents.find(item=>item.id===mediaView.documentId)!.revision,format:'html'});assert.equal(mediaOutput.paths.length,3);
+  const portableMedia=await app.evaluate(async({BrowserWindow},path)=>{const preview=new BrowserWindow({show:false,webPreferences:{sandbox:true,nodeIntegration:false,contextIsolation:true,partition:'reader-media-export-qa'}});try{await preview.loadFile(path);return await preview.webContents.executeJavaScript(`new Promise((resolve,reject)=>{let n=0;const check=async()=>{const a=document.querySelector('audio'),v=document.querySelector('video');if(a?.readyState>=1&&v?.readyState>=1){try{a.muted=true;v.muted=true;await Promise.all([a.play(),v.play()]);resolve({audio:a.duration,videoWidth:v.videoWidth,audioPaused:a.paused,videoPaused:v.paused,bridge:!!window.agentViewer});}catch(error){reject(error);}}else if(++n>100)reject(new Error('Portable media metadata timeout'));else setTimeout(check,50)};check()})`);}finally{preview.destroy();}},mediaExport);
+  assert.equal(portableMedia.audio,1);assert.equal(portableMedia.videoWidth,160);assert.equal(portableMedia.audioPaused,false);assert.equal(portableMedia.videoPaused,false);assert.equal(portableMedia.bridge,false);
+  await app.evaluate(({dialog},path)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:path});},mediaPath);await assert.rejects(()=>invoke(main,'markdown-export',{documentId:mediaView.documentId,expectedRevision:mediaOutput.revision,format:'html'}));assert.ok((await readFile(mediaPath,'utf8')).startsWith('# Local media'));
+  results.markdownMedia={audio:true,video:true,range:true,confined:true,portableHtml:true};
+  // Bundled Pandoc round-trips native document formats with staged raw <img>.
+  assert.equal((await invoke<{pandoc:boolean}>(main,'markdown-export-capabilities')).pandoc,true);
+  for(const format of ['docx','odt','epub','rtf','latex']) {
+    const output=join(evidence,'converted.'+(format==='latex'?'tex':format)),imported=join(directory,'roundtrip-'+format+'.md');
+    await app.evaluate(({dialog},path)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:path});},output);
+    await invoke(main,'markdown-export',{documentId:reopenedAsset.documentId,expectedRevision:(await state()).documents.find(item=>item.id===reopenedAsset.documentId)!.revision,format});
+    const convertedBytes=await readFile(output);if(['docx','odt','epub'].includes(format))assert.equal(convertedBytes.subarray(0,2).toString(),'PK');else if(format==='rtf')assert.ok(convertedBytes.toString().startsWith('{\\rtf'));else {assert.match(convertedBytes.toString(),/includegraphics/);assert.ok(!convertedBytes.toString().includes(directory.replaceAll('\\','/')),'LaTeX carries relative image assets');}
+    await app.evaluate(({dialog},input)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[input.output]});dialog.showSaveDialog=async()=>({canceled:false,filePath:input.imported});},{output,imported});
+    const converted=await invoke<ViewInfo>(main,'markdown-import',{windowId:'main'});assert.ok(converted);
+    const convertedText=await readFile(imported,'utf8');assert.match(convertedText,/Unsaved image fixture/);assert.ok(!convertedText.includes('agentviewer-asset:'));assert.match(convertedText,/\.assets-/);
+    const resource=await invoke<{url:string}>(main,'markdown-resource',{documentId:converted.documentId,path:convertedText.match(/(?:<|\(|src=")([^<>"\s()]+\.assets-[^<>"\s()]+)(?:>|"|\))/)![1]});assert.ok(resource.url.startsWith('data:image/png;base64,'));
+  }
+  results.markdownPandoc={bundled:true,formats:['docx','odt','epub','rtf','latex'],roundtripImages:true};
+  const hugeLineSource = 'x'.repeat(256 * 1024), hugeLine = await invoke<ViewInfo>(main, 'create-text', { title: 'Huge line input.md', text: hugeLineSource, windowId: 'main' });
+  const hugeEditor = main.locator('[data-markdown-view=' + JSON.stringify(hugeLine.id) + '] .cm-content'), hugeText = async () => (await state()).documents.find(item => item.id === hugeLine.documentId)!.model.text!;
+  await hugeEditor.focus(); await main.keyboard.press('Control+End'); await main.keyboard.insertText('(');
+  await until(async () => (await hugeText()) === hugeLineSource + '()', 'huge-line beforeinput still invokes CodeMirror bracket input handlers');
+  await main.keyboard.press('Control+z'); await until(async () => (await hugeText()) === hugeLineSource, 'huge-line paired insertion belongs to ordinary undo');
+  await main.keyboard.press('Control+y'); await until(async () => (await hugeText()) === hugeLineSource + '()', 'huge-line paired insertion redoes without a DOM diff');
+  // CodeMirror redo restores the end of the inserted pair. Move explicitly
+  // into it before checking a multi-code-unit insertion at that source range.
+  await main.keyboard.press('ArrowLeft');
+  await main.keyboard.insertText('中文🙂'); await until(async () => (await hugeText()) === hugeLineSource + '(中文🙂)', 'huge-line direct Unicode insertion retains UTF16 source positions');
+  results.markdownHugeLineInput = { codeMirrorPairHandler: true, undo: true, redo: true, unicode: true, size: hugeLineSource.length };
   await activate(markdown.id);
   console.log('Markdown authoring selection, table, source/live history, modes, search and deferred renders: PASS');
 
@@ -373,13 +478,13 @@ try {
   }
   results.settings = { themeClick, themeDrag, themeKeyboard, switchBefore: beforeSwitch.revision, switchAfter: afterSwitch.revision, switchBox, sourceSwitch, compactLayout, globalUndo: true, nativeSelects: 0 };
   assert.deepEqual(errors, [], 'reader and settings retain valid renderer behavior');
-  await writeFile(join(evidence, 'results.json'), JSON.stringify({ ...results, errors }, null, 2));
+  await writeFile(join(evidence, 'results.json'), JSON.stringify({ ...results, errors, consoleErrors }, null, 2));
   console.log('Settings click/drag/keyboard, one transaction, global undo, source switch and both themes: PASS');
   console.log('Reader interaction evidence:', evidence);
 } catch (error) {
   await main.screenshot({ path: join(evidence, 'failure-main.png'), scale: 'css' }).catch(() => {});
   for (const target of app.context().pages().filter(page => page.url().includes('#/settings') || page.url().includes('#/web-toolbar'))) await target.screenshot({ path: join(evidence, pageName(target) + '-failure.png'), scale: 'css' }).catch(() => {});
-  await writeFile(join(evidence, 'failure.json'), JSON.stringify({ ...results, error: String(error), errors }, null, 2)); throw error;
+  await writeFile(join(evidence, 'failure.json'), JSON.stringify({ ...results, error: String(error), errors, consoleErrors }, null, 2)); throw error;
 } finally { await app.close(); }
 
 function pageName(page: Page) { return page.url().includes('#/settings') ? 'settings' : 'native-toolbar'; }

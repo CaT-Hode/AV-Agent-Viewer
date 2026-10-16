@@ -37,7 +37,7 @@ const originals = new Map<string, Buffer>();
 const originalPaths = new Map<string, string>();
 for (const name of Object.values(names)) { const source = resolve('examples/moon-tide', name); const bytes = await readFile(source); originalPaths.set(name, source); originals.set(name, bytes); await writeFile(join(directory, name), bytes); }
 const port = await new Promise<number>((done, reject) => { const server = createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); assert.ok(address && typeof address !== 'string'); server.close(error => error ? reject(error) : done(address.port)); }); });
-const env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), AGENTVIEWER_DATA_DIR: directory, AGENTVIEWER_PORT: String(port), AGENTVIEWER_CONNECTION_FILE: join(directory, 'runtime', 'connection.json') };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), AGENTVIEWER_ISOLATED_QA:'1', AGENTVIEWER_DATA_DIR: directory, AGENTVIEWER_PORT: String(port), AGENTVIEWER_CONNECTION_FILE: join(directory, 'runtime', 'connection.json') };
 for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE']) delete (env as Record<string, string>)[key];
 const scale = Number(process.env.AGENTVIEWER_QA_SCALE ?? 1), token = randomUUID().slice(0, 8), marker = 'Kit人类编辑-' + token;
 
@@ -151,6 +151,8 @@ const open = async (format: keyof typeof names) => {
   await until(async () => (await workspace()).activeViewId === view.id, 'MCP opened view');const activeAt=Date.now();
   await main.locator(`.embedded-office-document[data-office-ready="true"] .embedded-office-content[data-office-surface="${view.id}"]`).waitFor({timeout:120000});const canvasReadyAt=Date.now();
   await ready(view);const paintedAt=Date.now(),runtime=await invoke<any>('office-statistics');
+  const firstLayout=await app.evaluate(({ipcMain},viewId)=>((ipcMain as any).__officeQaTrace as any[]).find(item=>item.viewId===viewId&&item.method==='office-surface-layout'&&item.args?.visible===true),view.id);
+  assert.ok(firstLayout?.result?.visible&&firstLayout.result.nativeGeometry,'the mounted renderer receives drawable geometry before its first presentation, without waiting for a heartbeat refresh');
   ((results.openTimings??=[]) as unknown[]).push({format,viewId:view.id,sampleBytes:originals.get(names[format])!.length,engineProcessStarted:before.started,engineWasReady:typeof before.startupMs==='number',appElapsedAtOpenMs:started-launchedAt,rpcMs:openedAt-started,activeMs:activeAt-started,canvasReadyMs:canvasReadyAt-started,verifiedPaintMs:paintedAt-started,runtime});
   return view;
 };
@@ -444,6 +446,7 @@ await leftCategory('幻灯片', 'slides');
 const totalParts = (await status(slides)).parts.length;
 await until(async () => (await main.locator('.native-office-slide-list > button').count()) === totalParts, 'real slides live in the left sidebar');
 if (totalParts > 1) { await main.getByRole('button', { name: '第 2 张幻灯片', exact: true }).click(); await until(async () => (await status(slides)).partIndex === 1, 'left slide previews navigate actual page'); }
+await ready(slides); // A changed part index precedes the actual replacement tiles.
 assert.equal(await main.locator('.office-slide-strip,.office-presentation-footer').count(), 0);
 results.impress = { shapeName: shape.name, state: await status(slides), pixels: await screenshot('impress-canvas') };
 const slidesSaved = await saveReopen(slides, 'pptx', value => assert.ok(value.slides?.some(slide => slide.blocks.some(block => block.text === marker))));
@@ -648,12 +651,18 @@ await inspector.getByRole('spinbutton', { name: '文字 · 字号' }).press('Ent
 await until(async () => (await style(word, 'text')).data.fields.fontSize?.value === 23, 'left Writer tools edit the same native model');
 results.writerStyleConfirmedMs=Date.now()-writerStyleStarted;
 const beforeObscured=await status(word);
+const beforeObscuredLease=await app.evaluate(({ipcMain},viewId)=>[...((ipcMain as any).__officeQaTrace as any[])].reverse().find(item=>item.viewId===viewId&&item.method==='office-surface-layout')?.args?.leaseId,word.id);
+assert.ok(beforeObscuredLease,'the mounted renderer has an actual display lease');
 await main.getByRole('button',{name:'关闭 '+names.docx,exact:true}).click();
 const closeConfirmation=main.getByRole('dialog',{name:'保存文档更改？',exact:true});
 await closeConfirmation.waitFor();
 const withdrawnForDialog=await status(word);
 assert.equal(withdrawnForDialog.visible,false);
 assert.equal(withdrawnForDialog.nativeGeometry,false);
+const publicWithdrawnForDialog=await tool<NativeOfficeState>('office_status',{viewId:word.id});
+assert.equal(publicWithdrawnForDialog.visible,false);assert.equal(publicWithdrawnForDialog.nativeGeometry,false,'public SDK geometry remains withdrawn while an overlay obscures the renderer');
+await assert.rejects(()=>invoke('office-surface-input',{viewId:word.id,leaseId:beforeObscuredLease,streamId:'qa-obscured-'+randomUUID(),sequence:1,layoutRevision:beforeObscured.layoutRevision,expectedPartIndex:beforeObscured.partIndex,event:{kind:'pointer',phase:'down',pointTwips:{x:0,y:0},button:0,buttons:1,clickCount:1,modifiers:{shift:false,control:false,alt:false,meta:false}}}),/OFFICE_DISPLAY_EXPIRED|OFFICE_DISPLAY_NOT_PRESENTED/,'the same pre-overlay lease cannot deliver a native click while presentation is withdrawn');
+assert.equal((await status(word)).engineRevision,beforeObscured.engineRevision,'the rejected old-lease input never reaches the native model');
 await closeConfirmation.getByRole('button',{name:'取消',exact:true}).click();
 await closeConfirmation.waitFor({state:'hidden'});
 const afterObscured=await ready(word);
@@ -661,7 +670,7 @@ assert.equal(afterObscured.sessionId,beforeObscured.sessionId);
 assert.equal(afterObscured.engineEpoch,beforeObscured.engineEpoch);
 await main.locator('.selection-tools[role="toolbar"]').waitFor();
 assert.equal((await status(word)).selection?.text,chosen,'canceling close restores the same real selection tools');
-results.displayObscuredRestored={before:beforeObscured,withdrawn:withdrawnForDialog,restored:afterObscured};
+results.displayObscuredRestored={before:beforeObscured,withdrawn:withdrawnForDialog,publicWithdrawn:publicWithdrawnForDialog,oldLeaseInputRejected:true,restored:afterObscured};
 await humanFocus(word);
 await main.keyboard.press('Control+Home');
 await main.keyboard.press('End');

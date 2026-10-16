@@ -22,3 +22,18 @@ export function previewSourcePosition(view: EditorView, node: Node, offset: numb
   }
   try { return view.posAtDOM(node, offset); } catch { return undefined; }
 }
+
+/** Inverse mapping for retaining a native preview Range across a source
+ * transaction. Only rendered text participates; complex unmapped HTML/SVG
+ * remains unavailable instead of inventing a source position. */
+export function previewDOMPosition(view: EditorView, position: number): { node: Node; offset: number } | undefined {
+  const walker = document.createTreeWalker(view.contentDOM, NodeFilter.SHOW_TEXT);
+  for (let node: Node | null; (node = walker.nextNode());) {
+    const start = previewSourcePosition(view, node, 0), end = previewSourcePosition(view, node, node.textContent?.length ?? 0);
+    if (start === undefined || end === undefined || position < start || position > end) continue;
+    let low = 0, high = node.textContent?.length ?? 0;
+    while (low < high) { const middle = (low + high) >>> 1, value = previewSourcePosition(view, node, middle); if (value === undefined) break; if (value < position) low = middle + 1; else high = middle; }
+    if (previewSourcePosition(view, node, low) === position) return { node, offset: low };
+  }
+  return undefined;
+}

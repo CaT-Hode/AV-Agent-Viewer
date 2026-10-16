@@ -11,6 +11,13 @@ export function engineRoots(appRoot: string) {
 }
 function onPath(command: string) { return spawnSync(process.platform === 'win32' ? 'where.exe' : 'which', [command], { windowsHide: true }).status === 0; }
 
+export function pandocExecutable(appRoot: string) {
+  const override = process.env.AGENTVIEWER_PANDOC;
+  if (override) return existsSync(override) ? {path:override,source:'override' as const} : undefined;
+  for (const base of engineRoots(appRoot)) { const path=join(base,'pandoc',process.platform==='win32'?'pandoc.exe':'pandoc'); if(existsSync(path))return {path,source:'bundled' as const}; }
+  return onPath('pandoc') ? {path:'pandoc',source:'system' as const} : undefined;
+}
+
 export function babelDocLaunch(appRoot: string): EngineLaunch | undefined {
   const override = process.env.AGENTVIEWER_BABELDOC;
   if (override) return existsSync(override) || onPath(override) ? { command: override, argsPrefix: [], source: 'override' } : undefined;

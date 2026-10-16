@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { Capabilities, DocumentModel, EditOperation, Format, FormatAdapter } from '../../contracts/src/index';
 import { ViewerError, PROTOCOL_VERSION } from '../../contracts/src/index';
+import { encodeDocumentText } from '../../persistence/src/background-codec';
+import { OfficeModelBackground, backgroundOfficeAdapter } from './office-model-background';
 
-const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 function cap(engine: string, editKinds: string[], format: Format, limitations: string[] = []): Capabilities {
   return { engine, protocolVersion: PROTOCOL_VERSION, readText: format !== 'pdf', readSelection: true, readViewport: true, editKinds, saveFormats: [format], limitations };
@@ -27,9 +28,7 @@ export class TextAdapter implements FormatAdapter {
     this.preview(model, op);
     if (op.kind !== 'text.replace') return unsupported();
     const text = (model.text ?? '').slice(0, op.from) + op.text + (model.text ?? '').slice(op.to);
-    const encoded = encoder.encode(text);
-    let bytes = encoded;
-    if (_bytes[0] === 0xef && _bytes[1] === 0xbb && _bytes[2] === 0xbf) { bytes = new Uint8Array(encoded.length + 3); bytes.set([0xef, 0xbb, 0xbf]); bytes.set(encoded, 3); }
+    const bytes = await encodeDocumentText(text, _bytes[0] === 0xef && _bytes[1] === 0xbb && _bytes[2] === 0xbf);
     return { bytes, model: { ...model, text }, warnings: [] };
   }
 }
@@ -90,4 +89,8 @@ export class AdapterRegistry {
   resolve(format: Format) { const adapter = this.adapters.get(format); if (!adapter) throw new ViewerError('CAPABILITY_UNSUPPORTED', `格式 ${format} 尚无可用引擎。`); return adapter; }
   describe() { return [...this.adapters.entries()].map(([format, adapter]) => ({ format, ...adapter.capabilities(format) })); }
 }
-export function createRegistry() { const registry = new AdapterRegistry(); [new TextAdapter(), new OfficeXmlAdapter(), new SheetAdapter(), new PdfAdapter()].forEach(a => registry.register(a)); return registry; }
+export function createRegistry(options: { officeModelWorkerPath?: string } = {}) {
+  const registry = new AdapterRegistry(), parser = options.officeModelWorkerPath ? new OfficeModelBackground(options.officeModelWorkerPath) : undefined;
+  [new TextAdapter(), new OfficeXmlAdapter(), new SheetAdapter(), new PdfAdapter()].forEach(adapter => registry.register(parser && adapter.formats.some(format => ['docx','pptx','xlsx'].includes(format)) ? backgroundOfficeAdapter(adapter, parser) : adapter));
+  return registry;
+}

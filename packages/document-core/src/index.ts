@@ -15,7 +15,9 @@ import type { NativeOfficeNavigateTarget, NativeOfficeExportFormat, UNOProperty 
 import { nativeOfficeCommandPolicy } from '../../contracts/src/native-office-policy';
 import { normalizeNativeOfficeDriver } from './native-office-errors';
 import { NativeOfficeSnapshotModels } from './native-snapshot-models';
-import { DocumentSessions, DocumentHistory } from './document-session';
+import { DocumentSessions, DocumentHistory, DocumentSnapshots, retainedValueBytes } from './document-session';
+import { documentCodec, fingerprintDocumentValue, hashDocumentBytes } from '../../persistence/src/background-codec';
+import { ReceiptLedger, type ReceiptRecord } from './receipt-ledger';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const clone = <T>(value: T): T => structuredClone(value);
@@ -30,7 +32,7 @@ const fingerprint = (payload: string) => /^sha256:[0-9a-f]{64}$/.test(payload) ?
 interface InternalDocument { info: DocumentInfo; bytes: Uint8Array; sourceHash?: string }
 export interface FrozenDocumentSource { document: DocumentInfo; bytes: Uint8Array; sha256: string }
 import type { Annotation } from '../../selection-tools/src/index';
-interface StoredWorkspace { annotations?: Annotation[]; schemaVersion: string; documents: { info: DocumentInfo; bytes: string | Uint8Array; sourceHash?: string }[]; views: ViewInfo[]; activeViewId?: string; lastHumanViewId?: string; receipts?: [string, { payload: string; receipt: unknown; patchId?: string }][]; patches?: [string, PreparedPatch][] }
+interface StoredWorkspace { annotations?: Annotation[]; schemaVersion: string; documents: { info: DocumentInfo; bytes: string | Uint8Array; sourceHash?: string }[]; views: ViewInfo[]; activeViewId?: string; lastHumanViewId?: string; receipts?: [string, ReceiptRecord][]; patches?: [string, PreparedPatch][] }
 type UndoEntry =
   | { kind: 'snapshot'; documentId: string; viewId?: string; before: InternalDocument; afterRevision: number; native?: never }
   | { kind: 'text'; documentId: string; viewId?: string; inverse: Extract<EditOperation, { kind: 'text.replace' }>; afterRevision: number; native?: never }
@@ -43,14 +45,14 @@ export class ViewerCore extends EventEmitter {
   readonly extensions = new Map<string, (args: Record<string, any>, actor: Actor) => Promise<unknown>>();
   readonly documents = new Map<string, InternalDocument>();
   readonly views = new Map<string, ViewInfo>();
-  readonly snapshots = new Map<string, ReadingSnapshot>();
+  readonly snapshots = new DocumentSnapshots<ReadingSnapshot>(() => new Set([...this.tasks.values()].filter(task => task.status === 'running').map(task => task.snapshotId)));
   private readonly selectionContexts = new Map<string, SelectionContext>();
   private readonly snapshotModels = new NativeOfficeSnapshotModels();
-  readonly patches = new DocumentHistory<PreparedPatch>(patch => JSON.stringify(patch).length * 2);
-  readonly transactions = new DocumentHistory<UndoEntry>(entry => entry.kind === 'snapshot' ? entry.before.bytes.byteLength + JSON.stringify(entry.before.info.model).length * 2 : entry.kind === 'text' ? (entry.inverse.text.length + entry.inverse.expectedText.length) * 2 + 256 : 512);
+  readonly patches = new DocumentHistory<PreparedPatch>(patch => retainedValueBytes(patch));
+  readonly transactions = new DocumentHistory<UndoEntry>(entry => entry.kind === 'snapshot' ? retainedValueBytes(entry.before) : entry.kind === 'text' ? (entry.inverse.text.length + entry.inverse.expectedText.length) * 2 + 256 : 512);
   readonly tasks = new Map<string, HarnessTask>();
   readonly drivers = new Map<string, HarnessDriver>();
-  readonly receipts = new Map<string, { payload: string; receipt: unknown; patchId?: string }>();
+  readonly receipts: ReceiptLedger;
   readonly agentControl = new Map<string, 'running' | 'paused' | 'stopped'>();
   readonly eventLog: { seq: number; type: string; time: string; data: unknown }[] = [];
   browser?: BrowserRuntime;
@@ -79,7 +81,7 @@ export class ViewerCore extends EventEmitter {
   private readonly nativeCheckpointStarted = new Map<string, number>();
   private recoveryEncodingCounts = { encodes: 0, encodedSourceBytes: 0, sharedCopyBytes: 0 };
   lastPersistenceError?: string;
-  constructor(readonly repository: WorkspaceRepository, readonly registry: AdapterRegistry = createRegistry()) { super(); }
+  constructor(readonly repository: WorkspaceRepository, readonly registry: AdapterRegistry = createRegistry(), options: { receiptLimits?: { perDocumentBytes?: number; totalBytes?: number } } = {}) { super(); this.receipts = new ReceiptLedger(options.receiptLimits?.perDocumentBytes, options.receiptLimits?.totalBytes); }
   async initialize() {
     const saved = await this.repository.load<StoredWorkspace>();
     if (!saved) return;
@@ -123,7 +125,7 @@ export class ViewerCore extends EventEmitter {
       } else { clearTimeout(this.saveTimer); this.saveTimer = setTimeout(save, 300); }
     }
   }
-  get persistenceStatistics() { return { ...this.recoveryEncodingCounts }; }
+  get persistenceStatistics() { return { ...this.recoveryEncodingCounts, snapshotBytes: this.snapshots.retainedBytes, patchBytes: this.patches.retainedBytes, historyBytes: this.transactions.retainedBytes, receipts: this.receipts.statistics, backgroundCodec: documentCodec.statistics }; }
   private recoveryBytes(document: InternalDocument) {
     const shared = typeof SharedArrayBuffer !== 'undefined' && document.bytes.buffer instanceof SharedArrayBuffer;
     const bytes = shared ? new Uint8Array(document.bytes) : document.bytes;
@@ -185,7 +187,19 @@ export class ViewerCore extends EventEmitter {
     return this.documentSessions.run(id, fn);
   }
   /** File-system extensions share the same edit/save barrier as the editor. */
-  runDocumentOperation<T>(documentId: string, operation: () => Promise<T>): Promise<T> { return this.serial(documentId, operation); }
+  runDocumentOperation<T>(documentId: string, operation: () => Promise<T>, options: { reloadFromDisk?: boolean } = {}): Promise<T> {
+    return this.serial(documentId, async () => {
+      const result = await operation();
+      if (options.reloadFromDisk) await this.reloadFromDiskInside(documentId);
+      return result;
+    });
+  }
+  /** Trusted mutation entrypoints reserve durable identity/result capacity
+   * before invoking adapters, native drivers or side-effecting extensions. */
+  async withReceiptCapacity<T>(key: string, documentId: string, identity: { payload: string; patchId?: string }, resultBytes: number, operation: () => Promise<T>): Promise<T> {
+    const release = this.receipts.reserve(key, documentId, identity, resultBytes);
+    try { return await operation(); } finally { release(); }
+  }
   private async retryFailedRecovery() { if (this.lastPersistenceError) await this.persist(); }
   getDocument(id: string) { const document = this.documents.get(id); if (!document) throw new ViewerError('TARGET_NOT_FOUND', '文档已关闭或不存在。'); return document; }
   registerNativeOfficeDriver(driver: NativeOfficeDriver) {
@@ -330,7 +344,7 @@ export class ViewerCore extends EventEmitter {
     const binding = this.nativeBinding(documentId), driver = this.nativeDriver();
     for (let attempt = 0; attempt < 3; attempt++) {
       const document = this.getDocument(documentId);
-      const reuse = binding.mirrorEngineRevision < 0 ? undefined : { bytes: document.bytes, sha256: hash(document.bytes), engineEpoch: binding.state.engineEpoch, engineRevision: binding.mirrorEngineRevision };
+      const reuse = binding.mirrorEngineRevision < 0 ? undefined : { bytes: document.bytes, sha256: await hashDocumentBytes(document.bytes), engineEpoch: binding.state.engineEpoch, engineRevision: binding.mirrorEngineRevision };
       const minimumRevision = Math.max(binding.state.engineRevision, binding.mirrorEngineRevision);
       let result: NativeOfficeSnapshot;
       try { result = await driver.snapshot(binding.state.sessionId, reuse); }
@@ -338,14 +352,14 @@ export class ViewerCore extends EventEmitter {
       if (result.state.documentId !== documentId || result.state.sessionId !== binding.state.sessionId || result.state.engineEpoch !== binding.state.engineEpoch || result.format !== this.getDocument(documentId).info.format) throw new ViewerError('NATIVE_SESSION_EXPIRED', '原生Office来源已更换。');
       if (result.state.pendingInput) throw new ViewerError('NATIVE_EDIT_IN_PROGRESS', '原生编辑器仍有未提交输入，请完成输入后重试。');
       if (!result.stable || !Number.isSafeInteger(result.engineRevisionAfter) || result.engineRevisionAfter < minimumRevision || result.engineRevisionBefore !== result.engineRevisionAfter || result.engineRevisionAfter !== result.state.engineRevision) continue;
-      const digest = hash(result.bytes);
+      const digest = await hashDocumentBytes(result.bytes);
       if (result.sha256 && result.sha256 !== digest) throw new ViewerError('NATIVE_SNAPSHOT_INVALID', '原生文件镜像校验失败。');
       return { ...result, sha256: digest };
     }
     throw new ViewerError('NATIVE_SNAPSHOT_BUSY', '原生文档正在变化，未取得完整稳定快照。');
   }
   private async acceptNativeSnapshot(documentId: string, result: NativeOfficeSnapshot, actor: Actor) {
-    const doc = this.getDocument(documentId), binding = this.nativeBinding(documentId), digest = result.sha256 ?? hash(result.bytes), changed = digest !== hash(doc.bytes);
+    const doc = this.getDocument(documentId), binding = this.nativeBinding(documentId), digest = result.sha256 ?? await hashDocumentBytes(result.bytes), changed = digest !== await hashDocumentBytes(doc.bytes);
     const model = changed ? await this.registry.resolve(doc.info.format).open(result.bytes, doc.info.format) : doc.info.model;
     if (changed) { doc.bytes = result.bytes.slice(); doc.info.model = model; doc.info.revision++; for (const view of this.views.values()) if (view.documentId === documentId && view.context) view.context = { ...view.context, contentRevision: doc.info.revision, quality: 'not-ready', visibleText: '', selection: { kind: 'none', text: '' } }; }
     binding.mirrorEngineRevision = result.engineRevisionAfter;
@@ -402,7 +416,7 @@ export class ViewerCore extends EventEmitter {
       // Buffer is also a Uint8Array, but Buffer.slice() aliases its backing
       // store. A frozen job must own bytes for either input representation.
       const source = this.getDocument(documentId), bytes = new Uint8Array(source.bytes);
-      return { document: clone(source.info), bytes, sha256: hash(bytes) };
+      return { document: clone(source.info), bytes, sha256: await hashDocumentBytes(bytes) };
     });
   }
   async nativeOfficeCommands(viewId: string) { const view = this.getView(viewId), binding = this.nativeBinding(view.documentId); return this.nativeDriver().commands(binding.state.sessionId, viewId); }
@@ -431,7 +445,7 @@ export class ViewerCore extends EventEmitter {
     return this.serial(key, async () => {
       const prior = this.receipts.get(key); if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '输入幂等键冲突。'); await this.retryFailedRecovery(); return clone(prior.receipt); }
       const view = this.getView(input.viewId);
-      return this.serial(view.documentId, async () => {
+      return this.serial(view.documentId, () => this.withReceiptCapacity(key, view.documentId, { payload }, retainedValueBytes(this.nativeOfficeBindings.get(view.documentId)?.state) * 2 + retainedValueBytes(input) * 2 + 16384, async () => {
         const state = await this.nativeOfficeState(view.id), driver = this.nativeDriver();
         if (!driver.input) throw new ViewerError('CAPABILITY_UNSUPPORTED', '原生引擎尚未提供鼠标键盘输入。');
         if (!state.visible || !state.nativeGeometry) throw new ViewerError('NATIVE_VIEW_HIDDEN', '输入目标没有当前可见的真实原生区域。');
@@ -453,7 +467,7 @@ export class ViewerCore extends EventEmitter {
         const value = { status: 'dispatched' as const, state: clone(replyState), idempotencyKey: input.idempotencyKey, warning, ...(controlReleased ? { controlReleased } : {}) };
         const action = input.action, point = 'x' in action ? { x: action.x, y: action.y } : action.kind === 'drag' ? clone(action.to) : undefined;
         this.receipts.set(key, { payload, receipt: value }); this.event('office.input', { viewId: view.id, documentId: view.documentId, action: action.kind, actor, ...(controlReleased ? { controlReleased } : {}), ...(point ? { point } : {}), ...(action.kind === 'drag' ? { from: clone(action.from), to: clone(action.to) } : {}) }); return clone(value);
-      });
+      }));
     });
   }
   async nativeOfficeCommandStatus(viewId: string, commands: string[]) {
@@ -495,7 +509,7 @@ export class ViewerCore extends EventEmitter {
     return this.serial(key, async () => {
       const prior = this.receipts.get(key); if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '同一幂等键不能执行不同原生命令。'); await this.retryFailedRecovery(); return clone(prior.receipt); }
       const view = this.getView(input.viewId);
-      return this.serial(view.documentId, async () => {
+      return this.serial(view.documentId, () => this.withReceiptCapacity(key, view.documentId, { payload }, retainedValueBytes(this.nativeOfficeBindings.get(view.documentId)?.state) * 2 + retainedValueBytes(input) * 2 + 16384, async () => {
         const interactive = actor === 'human' && input.completion === 'applied';
         // Exporting a mirror first can end PPT text editing and lose its range.
         if (!interactive) await this.syncNativeInside(view.documentId, 'engine');
@@ -552,7 +566,7 @@ export class ViewerCore extends EventEmitter {
         if (interactive) { this.scheduleNativeCheckpoint(view.documentId); void this.persist('checkpoint').catch(error => this.emit('diagnostic', error)); }
         else { await this.persist(); if (binding.mirrorEngineRevision === binding.state.engineRevision) value.durability.status = 'recoverable'; }
         return value;
-      });
+      }));
     });
   }
   async navigateNativeOffice(input: { viewId: string; target: NativeOfficeNavigateTarget; expectedEngineEpoch: string; expectedEngineRevision: number; expectedSelectionEpoch?: number; idempotencyKey: string }, actor: Actor = 'agent') {
@@ -560,7 +574,7 @@ export class ViewerCore extends EventEmitter {
     return this.serial(key, async () => {
       const prior = this.receipts.get(key); if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '导航幂等键冲突。'); await this.retryFailedRecovery(); return clone(prior.receipt); }
       const view = this.getView(input.viewId);
-      return this.serial(view.documentId, async () => {
+      return this.serial(view.documentId, () => this.withReceiptCapacity(key, view.documentId, { payload }, retainedValueBytes(this.nativeOfficeBindings.get(view.documentId)?.state) * 2 + retainedValueBytes(input) * 2 + 16384, async () => {
         await this.nativeOfficeState(view.id);
         const { binding } = this.checkNativeExpected(view.id, input.expectedEngineEpoch, input.expectedEngineRevision, input.expectedSelectionEpoch), driver = this.nativeDriver();
         if (actor === 'agent') this.assertAgentRunning(view.documentId, view.id);
@@ -568,14 +582,14 @@ export class ViewerCore extends EventEmitter {
         const requestId = randomUUID(), result = await driver.navigate({ sessionId: binding.state.sessionId, viewId: view.id, target: input.target, expectedEngineEpoch: input.expectedEngineEpoch, expectedEngineRevision: input.expectedEngineRevision, expectedSelectionEpoch: input.expectedSelectionEpoch, requestId, actor });
         this.updateNativeOfficeState(result.state); const value = { status: result.status, state: await this.nativeOfficeState(view.id), requestId };
         this.receipts.set(key, { payload, receipt: value }); this.event('office.navigated', { viewId: view.id, requestId, status: result.status, target: input.target }); return clone(value);
-      });
+      }));
     });
   }
   async undoNativeOffice(input: { viewId: string; expectedEngineEpoch: string; expectedEngineRevision: number; undoToken: string; idempotencyKey: string }, actor: Actor = 'agent') {
     const view = this.getView(input.viewId), key = 'office-undo:' + input.idempotencyKey, payload = fingerprint(JSON.stringify({ input, actor }));
     return this.serial(key, async () => {
       const prior = this.receipts.get(key); if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '撤销幂等键冲突。'); await this.retryFailedRecovery(); return clone(prior.receipt); }
-      return this.serial(view.documentId, async () => {
+      return this.serial(view.documentId, () => this.withReceiptCapacity(key, view.documentId, { payload }, retainedValueBytes(this.nativeOfficeBindings.get(view.documentId)?.state) * 2 + retainedValueBytes(input) * 2 + 16384, async () => {
         await this.syncNativeInside(view.documentId, 'engine'); await this.nativeOfficeState(view.id);
         const { binding } = this.checkNativeExpected(view.id, input.expectedEngineEpoch, input.expectedEngineRevision);
         const agentBinding = { viewId: view.id, documentId: view.documentId, agentControlId: view.agentState?.controlId, agentStateEpoch: this.agentStateEpochs.get(view.id) ?? 0 };
@@ -592,21 +606,21 @@ export class ViewerCore extends EventEmitter {
         let controlled = true; if (actor === 'agent') { try { this.assertAgentPatchBinding(agentBinding); } catch { controlled = false; receipt.controlReleased = true; } }
         if (controlled && actor === 'agent' && status === 'undone' && receipt.revision !== before) this.markAgentEdit({ viewId: view.id, documentId: view.documentId, operation: { kind: 'native.undo' } }, receipt);
         const value = { receipt, state: await this.nativeMutationReply(view.id, result, receipt) }; this.receipts.set(key, { payload, receipt: value }); await this.persist(); return value;
-      });
+      }));
     });
   }
   async exportNativeOffice(input: { viewId: string; path: string; format: NativeOfficeExportFormat; expectedEngineEpoch: string; expectedEngineRevision: number; idempotencyKey: string }) {
     const view = this.getView(input.viewId), key = 'office-export:' + input.idempotencyKey, payload = fingerprint(JSON.stringify(input));
     return this.serial(key, async () => {
       const prior = this.receipts.get(key); if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '导出幂等键冲突。'); await this.retryFailedRecovery(); return clone(prior.receipt); }
-      return this.serial(view.documentId, async () => {
+      return this.serial(view.documentId, () => this.withReceiptCapacity(key, view.documentId, { payload }, retainedValueBytes(input) * 2 + 16384, async () => {
         const mirror = await this.syncNativeInside(view.documentId, 'engine'); const { binding } = this.checkNativeExpected(view.id, input.expectedEngineEpoch, input.expectedEngineRevision), doc = this.getDocument(view.documentId), driver = this.nativeDriver(), target = resolve(input.path);
         if (!driver.exportCopy) throw new ViewerError('CAPABILITY_UNSUPPORTED', '原生引擎尚未提供此副本导出。');
         if (doc.info.path && resolve(doc.info.path).toLowerCase() === target.toLowerCase()) throw new ViewerError('INVALID_TARGET', '导出副本不能覆盖原文路径。');
         if (!target.toLowerCase().endsWith('.' + input.format)) throw new ViewerError('FORMAT_MISMATCH', '导出文件扩展名与内容格式不一致。');
         try { await readFile(target); throw new ViewerError('FILE_EXISTS', '导出文件已存在，请使用新的副本路径。'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         const result = await driver.exportCopy(binding.state.sessionId, { format: input.format, expectedEngineEpoch: input.expectedEngineEpoch, expectedEngineRevision: input.expectedEngineRevision });
-        const digest = hash(result.bytes);
+        const digest = await hashDocumentBytes(result.bytes);
         if (!result.stable || result.engineRevisionBefore !== input.expectedEngineRevision || result.engineRevisionAfter !== result.engineRevisionBefore || result.state.engineRevision !== result.engineRevisionAfter || result.state.documentId !== view.documentId || result.state.engineEpoch !== binding.state.engineEpoch || result.state.sessionId !== binding.state.sessionId || result.format !== input.format || !result.bytes.length || result.sha256 && result.sha256 !== digest) throw new ViewerError('NATIVE_EXPORT_INVALID', '导出来源或文件校验不完整。');
         // The current queued mirror has already been parsed/validated. Only an
         // exact same-format digest match reuses that validation; the worker is
@@ -617,10 +631,10 @@ export class ViewerCore extends EventEmitter {
           else { const { default: JSZip } = await import('jszip'), zip = await JSZip.loadAsync(result.bytes); if (['odt','ods','odp'].includes(input.format)) { const mime = await zip.file('mimetype')?.async('string'); const expected = ({ odt: 'text', ods: 'spreadsheet', odp: 'presentation' } as Record<string,string>)[input.format]; if (mime !== 'application/vnd.oasis.opendocument.' + expected) throw new ViewerError('NATIVE_EXPORT_INVALID', '导出ODF类型不匹配。'); } else await this.registry.resolve(input.format as NativeOfficeState['format']).open(result.bytes, input.format as NativeOfficeState['format']); }
         }
         await mkdir(dirname(target), { recursive: true }); const temp = target + '.agentviewer-' + randomUUID() + '.tmp';
-        try { await writeFile(temp, result.bytes, { flag: 'wx' }); if (hash(new Uint8Array(await readFile(temp))) !== digest) throw new ViewerError('SAVE_VERIFY_FAILED', '导出临时文件校验失败。'); await import('node:fs/promises').then(fs => fs.link(temp, target)); } finally { await unlink(temp).catch(() => {}); }
+        try { await writeFile(temp, result.bytes, { flag: 'wx' }); if (await hashDocumentBytes(new Uint8Array(await readFile(temp))) !== digest) throw new ViewerError('SAVE_VERIFY_FAILED', '导出临时文件校验失败。'); await import('node:fs/promises').then(fs => fs.link(temp, target)); } finally { await unlink(temp).catch(() => {}); }
         const value = { status: 'exported', documentId: view.documentId, viewId: view.id, path: target, format: input.format, sha256: digest, byteLength: result.bytes.length, engineEpoch: result.state.engineEpoch, engineRevision: result.engineRevisionAfter };
         this.receipts.set(key, { payload, receipt: value }); this.event('office.exported', value); await this.persist(); return clone(value);
-      });
+      }));
     });
   }
   async closeNativeOffice(documentId: string) {
@@ -704,8 +718,9 @@ export class ViewerCore extends EventEmitter {
     return this.openBytes(basename(fullPath), bytes, format, fullPath, windowId, activate);
   }
   async openBytes(title: string, bytes: Uint8Array, format: Format, path?: string, windowId = 'main', activate = true) {
-    const adapter = this.registry.resolve(format), model = await adapter.open(bytes, format), id = randomUUID();
-    this.documents.set(id, { bytes: bytes.slice(), sourceHash: path ? hash(bytes) : undefined, info: { id, title, path, format, revision: 0, diskRevision: path ? 0 : -1, dirty: !path, capabilities: adapter.capabilities(format), model, warnings: [] } });
+    const id = randomUUID(), modelStarted = performance.now(), adapter = this.registry.resolve(format), model = await adapter.open(bytes, format);
+    if (['docx','xlsx','pptx'].includes(format)) this.emit('diagnostic', { code: 'OFFICE_AUX_MODEL_OPEN', documentId: id, format, sourceBytes: bytes.byteLength, elapsedMs: Math.round((performance.now() - modelStarted) * 100) / 100 });
+    this.documents.set(id, { bytes: bytes.slice(), sourceHash: path ? await hashDocumentBytes(bytes) : undefined, info: { id, title, path, format, revision: 0, diskRevision: path ? 0 : -1, dirty: !path, capabilities: adapter.capabilities(format), model, warnings: [] } });
     return this.addView(id, windowId, activate);
   }
   async importArtifact(path: string, bytes: Uint8Array, format: Format) {
@@ -927,7 +942,6 @@ export class ViewerCore extends EventEmitter {
     const retained = this.snapshotModels.capture(info, context, this.nativeOfficeBindings.has(info.id));
     const snapshot: ReadingSnapshot = { id: randomUUID(), schemaVersion: PROTOCOL_VERSION, ...retained, createdAt: new Date().toISOString() };
     this.snapshots.set(snapshot.id, snapshot);
-    if (this.snapshots.size > 100) { const referenced = new Set([...this.tasks.values()].filter(t => t.status === 'running').map(t => t.snapshotId)); for (const id of this.snapshots.keys()) { if (!referenced.has(id) && id !== snapshot.id) { this.snapshots.delete(id); break; } } }
     this.event('snapshot.created', { id: snapshot.id }); return clone(snapshot);
   }
   private checkedTextSelection(viewId: string, revision: number, expected?: TextSelectionLease['selection']) {
@@ -998,12 +1012,14 @@ export class ViewerCore extends EventEmitter {
     return clone(patch);
   }
   async commit(patchId: string, idempotencyKey: string, actor: Actor = 'agent') {
+    return this.serial('receipt-commit:' + idempotencyKey, async () => {
     const prior = this.receipts.get(idempotencyKey);
     if (prior?.patchId === patchId) { await this.retryFailedRecovery(); return clone(prior.receipt) as Receipt; }
     if (prior?.patchId) throw new ViewerError('IDEMPOTENCY_CONFLICT', '同一幂等键不能提交不同修改。');
     const patch = this.patches.get(patchId); if (!patch) throw new ViewerError('TARGET_NOT_FOUND', '修改计划不存在或已过期。');
-    const payload = fingerprint(JSON.stringify(patch));
+    const payload = await fingerprintDocumentValue(patch, retainedValueBytes(patch));
     if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '同一幂等键不能提交不同修改。'); await this.retryFailedRecovery(); return clone(prior.receipt) as Receipt; }
+    return this.withReceiptCapacity(idempotencyKey, patch.documentId, { payload, patchId }, retainedValueBytes(patch.preview.warnings) + 16384, async () => {
     if (this.getDocument(patch.documentId).info.revision !== patch.expectedRevision) throw new ViewerError('VERSION_CONFLICT', '预览之后内容已改变，请重新准备。');
     if (actor === 'agent') this.assertAgentPatchBinding(patch);
     if (actor === 'agent') await this.extensions.get('before-agent-edit')?.({ documentId: patch.documentId, operation: clone(patch.operation) }, actor);
@@ -1045,12 +1061,16 @@ export class ViewerCore extends EventEmitter {
       this.event('document.changed', { ...receipt, actor, target, viewId: patch.viewId });
       if (actor === 'agent') this.markAgentEdit(patch, receipt);
       await this.persist(); return receipt;
+      });
+    });
     });
   }
   async undo(transactionId: string, actor: Actor = 'agent') {
+    return this.serial('receipt-undo:' + transactionId, async () => {
     const undoKey = 'native-transaction-undo:' + transactionId, cached = this.receipts.get(undoKey);
     if (cached) { await this.retryFailedRecovery(); return clone(cached.receipt) as Receipt; }
     const tx = this.transactions.get(transactionId); if (!tx) throw new ViewerError('TARGET_NOT_FOUND', '撤销事务不存在。');
+    return this.withReceiptCapacity(undoKey, tx.documentId, { payload: transactionId }, retainedValueBytes(this.getDocument(tx.documentId).info.warnings) + 16384, async () => {
     // Check renderer drafts before entering the document queue: the human may
     // finish an edit while this asynchronous guard is waiting. Recheck both
     // control identity and content revision inside the queue before restoring.
@@ -1087,7 +1107,8 @@ export class ViewerCore extends EventEmitter {
         const updated = await this.registry.resolve(current.info.format).apply(current.bytes, current.info.model, tx.inverse);
         restored = { ...current, bytes: updated.bytes, info: { ...current.info, model: updated.model, warnings: updated.warnings } };
       } else restored = clone(tx.before);
-      restored.info.revision = current.info.revision + 1; restored.info.diskRevision = current.info.diskRevision; restored.sourceHash = current.sourceHash; restored.info.path = current.info.path; restored.info.dirty = hash(restored.bytes) !== current.sourceHash;
+      restored.info.revision = current.info.revision + 1; restored.info.diskRevision = current.info.diskRevision; restored.sourceHash = current.sourceHash; restored.info.path = current.info.path; restored.info.dirty = await hashDocumentBytes(restored.bytes) !== current.sourceHash;
+      if (snapshotBinding) this.assertAgentPatchBinding(snapshotBinding);
       this.documents.set(tx.documentId, restored); this.transactions.delete(transactionId);
       for (const view of this.views.values()) if (view.documentId === tx.documentId && view.context) view.context = { ...view.context, contentRevision: restored.info.revision, quality: 'not-ready', visibleText: '', selection: { kind: 'none', text: '' } };
       const receipt: Receipt = { transactionId: randomUUID(), documentId: tx.documentId, revision: restored.info.revision, status: 'undone' };
@@ -1096,6 +1117,8 @@ export class ViewerCore extends EventEmitter {
       this.receipts.set(undoKey, { payload: transactionId, receipt });
       this.event('document.changed', { ...receipt, viewId: tx.viewId, actor, kind: 'document.undo' });
       await this.persist(); return receipt;
+      });
+    });
     });
   }
   async save(documentId: string, path?: string, allowOverwrite = false) {
@@ -1110,7 +1133,8 @@ export class ViewerCore extends EventEmitter {
       let disk: Uint8Array | undefined;
       try { disk = new Uint8Array(await readFile(target)); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
       const sameSource = doc.info.path !== undefined && (process.platform === 'win32' ? resolve(target).toLowerCase() === resolve(doc.info.path).toLowerCase() : resolve(target) === resolve(doc.info.path));
-      if (sameSource && doc.sourceHash && (!disk || hash(disk) !== doc.sourceHash)) throw new ViewerError('FILE_CONFLICT', '源文件被其他程序修改或删除，请另存副本。');
+      const diskHash = disk ? await hashDocumentBytes(disk) : undefined;
+      if (sameSource && doc.sourceHash && (!disk || diskHash !== doc.sourceHash)) throw new ViewerError('FILE_CONFLICT', '源文件被其他程序修改或删除，请另存副本。');
       if (!sameSource && disk && !allowOverwrite) throw new ViewerError('FILE_EXISTS', '目标文件已存在，需明确覆盖授权。');
       await mkdir(dirname(target), { recursive: true }); const temp = target + '.agentviewer-' + randomUUID() + '.tmp';
       let savedBytes=doc.bytes, savedModel=doc.info.model, assetChange: Extract<EditOperation,{kind:'text.replace'}> | undefined;
@@ -1124,10 +1148,11 @@ export class ViewerCore extends EventEmitter {
           const updated=await this.registry.resolve('markdown').apply(doc.bytes,doc.info.model,assetChange); savedBytes=updated.bytes; savedModel=updated.model;
         }
       }
+      const savedHash = await hashDocumentBytes(savedBytes);
       try {
-        await writeFile(temp, savedBytes,{flag:'wx'}); if (hash(new Uint8Array(await readFile(temp))) !== hash(savedBytes)) throw new ViewerError('SAVE_VERIFY_FAILED', '临时文件校验失败。');
+        await writeFile(temp, savedBytes,{flag:'wx'}); if (await hashDocumentBytes(new Uint8Array(await readFile(temp))) !== savedHash) throw new ViewerError('SAVE_VERIFY_FAILED', '临时文件校验失败。');
         let latest: Uint8Array | undefined;try{latest=new Uint8Array(await readFile(target));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-        if (!!disk!==!!latest || disk && latest && hash(disk)!==hash(latest)) throw new ViewerError('FILE_CONFLICT','保存准备期间目标文件发生变化，原文件已保留，请另存副本。');
+        if (!!disk!==!!latest || latest && diskHash !== await hashDocumentBytes(latest)) throw new ViewerError('FILE_CONFLICT','保存准备期间目标文件发生变化，原文件已保留，请另存副本。');
         // Creation must remain exclusive through publication, including files
         // created by another program after the earlier conflict check.
         if (!disk) { try { await link(temp,target); } catch(error) {if((error as NodeJS.ErrnoException).code==='EEXIST')throw new ViewerError('FILE_CONFLICT','目标文件刚被其他程序创建，请另存副本。');throw error;} }
@@ -1141,7 +1166,7 @@ export class ViewerCore extends EventEmitter {
         this.event('document.changed',{documentId,revision:doc.info.revision,transactionId,actor:'human',kind:'markdown.assets.materialize'});
       }
       const savedRevision = doc.info.revision;
-      doc.info.path = target; doc.info.title = basename(target); doc.sourceHash = hash(doc.bytes); doc.info.diskRevision = savedRevision;
+      doc.info.path = target; doc.info.title = basename(target); doc.sourceHash = savedHash; doc.info.diskRevision = savedRevision;
       let warnings: string[] | undefined;
       if (nativeSnapshot) {
         try {
@@ -1160,14 +1185,16 @@ export class ViewerCore extends EventEmitter {
     });
   }
   async reloadFromDisk(documentId: string) {
-    return this.serial(documentId, async () => {
+    return this.serial(documentId, () => this.reloadFromDiskInside(documentId));
+  }
+  private async reloadFromDiskInside(documentId: string) {
       if (this.nativeOfficeBindings.has(documentId)) throw new ViewerError('NATIVE_SESSION_ACTIVE', '请先保存并关闭原生Office会话，再重新载入磁盘文件。');
       const doc = this.getDocument(documentId);
       if (!doc.info.path) throw new ViewerError('SAVE_PATH_REQUIRED', '文档尚未保存到磁盘。');
       if (doc.info.dirty) throw new ViewerError('UNSAVED_CHANGES', '请先保存或另存当前修改，再重新载入。');
       const bytes = new Uint8Array(await readFile(doc.info.path));
       if (bytes.byteLength > 100 * 1024 * 1024) throw new ViewerError('FILE_TOO_LARGE', '文件超过 100 MB。');
-      const nextHash = hash(bytes);
+      const nextHash = await hashDocumentBytes(bytes);
       if (nextHash === doc.sourceHash) return clone(doc.info);
       const model = await this.registry.resolve(doc.info.format).open(bytes, doc.info.format);
       doc.bytes = bytes; doc.sourceHash = nextHash; doc.info.model = model;
@@ -1176,7 +1203,6 @@ export class ViewerCore extends EventEmitter {
       for (const view of this.views.values()) if (view.documentId === documentId && view.context) view.context = { ...view.context, contentRevision: doc.info.revision, quality: 'not-ready', visibleText: '', selection: { kind: 'none', text: '' } };
       this.event('document.reloaded', { documentId, revision: doc.info.revision });
       await this.persist(); return clone(doc.info);
-    });
   }
   async browserInput(raw: BrowserRequest) {
     if (!this.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '原生鼠标键盘输入只能在桌面应用执行。');
@@ -1186,8 +1212,11 @@ export class ViewerCore extends EventEmitter {
     if (prior) { if (prior.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '输入幂等键冲突。'); await this.retryFailedRecovery(); return clone(prior.receipt); }
     return this.serial('browser:' + request.viewId, async () => {
       const existing = this.receipts.get(request.idempotencyKey); if (existing) { if (existing.payload !== payload) throw new ViewerError('IDEMPOTENCY_CONFLICT', '输入幂等键冲突。'); await this.retryFailedRecovery(); return clone(existing.receipt); }
+      const view = this.getView(request.viewId);
+      return this.withReceiptCapacity(request.idempotencyKey, view.documentId, { payload }, retainedValueBytes(view.context) * 2 + retainedValueBytes(request) * 2 + 1024 * 1024, async () => {
       if (this.agentControl.get(request.viewId) && this.agentControl.get(request.viewId) !== 'running') throw new ViewerError('AGENT_PAUSED', '此页面的 Agent 操作已暂停或停止。');
       const result = await this.browser!.input(request); this.updateContext(request.viewId, result.context, 'agent'); this.receipts.set(request.idempotencyKey, { payload, receipt: result }); this.event('browser.input', { viewId: request.viewId, kind: request.action.kind, point: 'x' in request.action ? { x: request.action.x, y: request.action.y } : 'to' in request.action ? request.action.to : undefined, actor: 'agent' }); await this.persist(); return result;
+      });
     });
   }
   async browserCopy(viewId: string) { if (!this.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请在桌面应用创建网页副本。'); const view = this.getView(viewId); const source = this.getDocument(view.documentId).info; const html = await this.browser.html(viewId); const copy = await this.openBytes(source.title + '.html', new TextEncoder().encode(html), 'html', undefined, view.windowId); this.getDocument(copy.documentId).info.warnings.push('来源：' + source.model.url, '这是本地阅读副本，未修改远程站点。外部资源未归档，相对链接可能失效。', '副本移除脚本、嵌入 frame、事件属性与已知敏感表单值。'); return copy; }

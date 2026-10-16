@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Compartment, EditorSelection, EditorState, Prec, Transaction } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
-import { basicSetup } from 'codemirror';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { languages } from '@codemirror/language-data';
@@ -18,6 +17,9 @@ import { typoraMarkdownSyntax } from '../lib/markdown-syntax';
 import { boundedMarkdownLanguage } from '../lib/markdown-language';
 import { MARKDOWN_EXTERNAL_EDIT_EVENT, type MarkdownExternalEdit } from '../lib/markdown-external-edit';
 import { activateMarkdownSurface, markdownSurface } from '../lib/markdown-surfaces';
+import { MARKDOWN_PROJECTION_EVENT, MARKDOWN_PROJECTION_REQUEST, type MarkdownProjection } from '../lib/markdown-projection';
+import { boundedMarkdownInput } from '../lib/markdown-input';
+import { markdownEditorSetup } from '../lib/markdown-editor-setup';
 import '../markdown-editor.css';
 
 export type TextEditorContext = { text: string; from: number; to: number; scrollTop: number; visibleText: string; actor: 'human' | 'agent'; ready: boolean; composing: boolean; rect?: { x: number; y: number; width: number; height: number } };
@@ -29,6 +31,7 @@ const editingKeys: [string, MarkdownCommandName][] = [
   ['Mod-Shift-[', 'ordered'], ['Mod-Shift-]', 'bullet'], ['Mod-t', 'table'], ['Mod-\\', 'clear'],
   ...Array.from({ length: 7 }, (_, level) => ['Mod-' + level, 'heading' + level] as [string, MarkdownCommandName]),
 ];
+const inheritedKeys: Record<string, string[]> = { undo: ['Mod-z'], redo: ['Mod-y', 'Mod-Shift-z'], find: ['Mod-f'] };
 
 /** One persistent source editor owns both the live document and source mode. */
 export function TextEditor(props: Props) {
@@ -44,6 +47,7 @@ export function TextEditor(props: Props) {
     let serializedDocument: EditorState['doc'] | undefined, serializedText = '', emittedText = latest.current.value;
     let changeTimer: ReturnType<typeof setTimeout> | undefined, localDirty = false, synchronized = true, contextFrame = 0, sourceRevision = latest.current.revision ?? 0;
     let externalEdit: { requestId: string; baseRevision: number; document: EditorState['doc']; revision?: number } | undefined, externalHuman = false;
+    const pendingHistory: ('undo' | 'redo')[] = [];
     const externalConflict = () => window.dispatchEvent(new CustomEvent('agentviewer:markdown-error', { detail: { viewId: latest.current.viewId, message: '选区操作同步期间内容已变化；本地草稿已保留，该操作未混入当前撤销记录。' } }));
     let publishedOutline: unknown;
     const identity = { documentId: latest.current.documentId, viewId: latest.current.viewId, revision: latest.current.revision ?? 0 }, imports = new Map<string, { from: number; to: number }>(), importTasks = new Set<Promise<void>>();
@@ -70,6 +74,7 @@ export function TextEditor(props: Props) {
       if (window.agentViewer?.testMode) performance.measure('agentviewer:markdown-flush', { start: started, end: performance.now(), detail: { characters: view.state.doc.length } });
     };
     const emit = (view: EditorView, actor: 'human' | 'agent' = 'human') => {
+      project(view, actor);
       if (markdownSurface(identity.viewId) !== 'preview') {
       const selected = view.state.selection.main, visible = view.visibleRanges[0], box = view.coordsAtPos(selected.to);
       const native = window.getSelection(), nativeRect = !selected.empty && native?.rangeCount && view.dom.contains(native.anchorNode) ? native.getRangeAt(0).getBoundingClientRect() : undefined;
@@ -81,8 +86,11 @@ export function TextEditor(props: Props) {
         scrollTop: scroll?.scrollTop ?? 0, visibleText: visible ? view.state.doc.sliceString(visible.from, Math.min(visible.to, visible.from + 24000), eol.current) : '',
       });
       }
-      window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, canUndo: undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0 } }));
+      window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, canUndo: !!externalEdit || undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, spellcheck, autoPair, focus: !!host.current?.classList.contains('markdown-focus'), typewriter: !!host.current?.classList.contains('markdown-typewriter') } }));
       setStatistics(view.state.field(markdownStatistics));
+    };
+    const project = (view: EditorView, actor: 'human' | 'agent' = 'human', previous?: EditorState['doc'], changes?: MarkdownProjection['changes']) => {
+      if (latest.current.format === 'markdown') window.dispatchEvent(new CustomEvent<MarkdownProjection>(MARKDOWN_PROJECTION_EVENT, { detail: { ...identity, document: view.state.doc, previous, changes, eol: eol.current, ready: !latest.current.pending && !composing.current && !view.composing && !localDirty && synchronized, actor } }));
     };
     const format = (view: EditorView, command: MarkdownCommandName, value?: unknown) => {
       if (view.composing || composing.current) return false;
@@ -97,22 +105,43 @@ export function TextEditor(props: Props) {
     const execute = (command: string, value?: unknown): boolean => {
       if (composing.current || view.composing) return false;
       flushWidget(view);
-      if (command === 'undo') return undo(view);
-      if (command === 'redo') return redo(view);
+      if (command === 'undo' || command === 'redo') {
+        // Core may acknowledge the toolbar write before React installs its
+        // human transaction. Consume the intent now instead of undoing an
+        // unrelated older event (or silently doing nothing).
+        if (externalEdit) { pendingHistory.push(command); return true; }
+        return runHistory(command);
+      }
       if (command === 'spellcheck') { spellcheck = !spellcheck; view.dispatch({ effects: spelling.reconfigure(EditorView.contentAttributes.of({ spellcheck: String(spellcheck) })) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, spellcheck } })); return true; }
       if (command === 'autoPair') { autoPair = !autoPair; view.dispatch({ effects: pairs.reconfigure(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets: autoPair ? ['(', '[', '{', '"', "'", '`'] : [] } }]))) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, autoPair } })); return true; }
       if (command === 'find' || command === 'replace') { openSearchPanel(view); if (command === 'replace') queueMicrotask(() => view.dom.querySelector<HTMLInputElement>('.cm-search input[name="replace"]')?.focus()); return true; }
       if (command === 'focus' || command === 'typewriter') { const active = host.current?.classList.toggle('markdown-' + command); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, canUndo: undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, focus: host.current?.classList.contains('markdown-focus'), typewriter: host.current?.classList.contains('markdown-typewriter') } })); if (active && command === 'typewriter') view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: 'center' }) }); view.requestMeasure(); return true; }
       return format(view, command as MarkdownCommandName, value);
     };
+    const runHistory = (command: 'undo' | 'redo') => {
+      const selected = markdownSurface(identity.viewId) === 'preview' ? view.state.selection : undefined;
+      return (command === 'undo' ? undo : redo)({ state: view.state, dispatch: transaction => {
+        const mapped = selected?.map(transaction.changes); view.dispatch(transaction);
+        // A later preview Range belongs to the user. The history transaction
+        // restores its own old source selection, so remap the current Range
+        // separately without adding another undoable event.
+        if (mapped && !mapped.eq(view.state.selection)) view.dispatch({ selection: mapped, annotations: Transaction.addToHistory.of(false) });
+      } });
+    };
+    const replayHistory = () => { while (!externalEdit && pendingHistory.length && !composing.current && !view.composing) runHistory(pendingHistory.shift()!); };
     const keybindings = (overrides: Record<string, string> = {}) => Prec.highest(keymap.of([
       ...Object.entries(overrides).filter(([command, key]) => key && key.length < 100 && [...MARKDOWN_COMMANDS, 'find', 'replace', 'undo', 'redo', 'focus', 'typewriter', 'spellcheck', 'autoPair'].includes(command)).map(([command, key]) => ({ key, run: () => execute(command) })),
+      // Removing our entry does not remove lower-precedence history/search
+      // bindings. Consume the replaced default keys after explicit overrides.
+      ...Object.keys(overrides).flatMap(command => (inheritedKeys[command] ?? []).map(key => ({ key, run: () => true, preventDefault: true, scope: 'editor search-panel' }))),
+      ...(['undo', 'redo'] as const).filter(command => !Object.hasOwn(overrides, command)).flatMap(command => inheritedKeys[command].map(key => ({ key, run: () => execute(command), preventDefault: true }))),
       ...(latest.current.format === 'markdown' ? editingKeys.filter(([, command]) => !Object.hasOwn(overrides, command)).map(([key, command]) => ({ key, run: (view: EditorView) => format(view, command) })) : []),
       ...(!Object.hasOwn(overrides, 'replace') ? [{ key: 'Mod-h', run: () => execute('replace') }] : []),
       { key: 'Mod-d', run: selectNextOccurrence }, ...(!Object.hasOwn(overrides, 'focus') ? [{ key: 'F8', run: () => execute('focus') }] : []), ...(!Object.hasOwn(overrides, 'typewriter') ? [{ key: 'F9', run: () => execute('typewriter') }] : []), indentWithTab,
     ]));
     const view: EditorView = new EditorView({ parent: host.current!, state: EditorState.create({ doc: normalize(latest.current.value), extensions: [
-      basicSetup, latest.current.format === 'html' ? html() : boundedMarkdownLanguage(markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [typoraMarkdownSyntax] })), EditorView.lineWrapping, search({ top: true }), markdownStatistics, markdownOutline,
+      Prec.highest(EditorView.domEventHandlers({ beforeinput: event => event.inputType === 'historyUndo' ? execute('undo') : event.inputType === 'historyRedo' ? execute('redo') : false })),
+      markdownEditorSetup, boundedMarkdownInput, latest.current.format === 'html' ? html() : boundedMarkdownLanguage(markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [typoraMarkdownSyntax] })), EditorView.lineWrapping, search({ top: true }), markdownStatistics, markdownOutline,
       spelling.of(EditorView.contentAttributes.of({ spellcheck: 'true' })), pairs.of([]),
       bindings.of(keybindings()),
       liveMode.current.of(latest.current.live && latest.current.format === 'markdown' ? markdownLivePreview(latest.current.documentId ?? '') : []),
@@ -120,6 +149,7 @@ export function TextEditor(props: Props) {
         publishOutline(update.state);
         if (update.docChanged && !externalUpdate.current) { if (!localDirty) { localDirty = true; stateChanged(); } if (changeTimer) clearTimeout(changeTimer); changeTimer = setTimeout(() => { flush(view); emit(view); }, 120); }
         if (update.docChanged && externalUpdate.current) { emittedText = latest.current.value; synchronized = true; }
+        if (update.docChanged) project(view, externalUpdate.current && !externalHuman ? 'agent' : 'human', update.startState.doc, update.changes);
         if (update.docChanged) for (const [id, range] of imports) imports.set(id, { from: update.changes.mapPos(range.from, -1), to: update.changes.mapPos(range.to, 1) });
         if (update.docChanged || update.selectionSet || update.viewportChanged) { if (contextFrame) cancelAnimationFrame(contextFrame); const actor = externalUpdate.current && !externalHuman ? 'agent' : 'human'; contextFrame = requestAnimationFrame(() => { contextFrame = 0; if (editor.current === view) emit(view, actor); }); }
         if (host.current?.classList.contains('markdown-typewriter') && update.docChanged && !externalUpdate.current) queueMicrotask(() => { if (editor.current === view) view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: 'center' }) }); });
@@ -149,23 +179,24 @@ export function TextEditor(props: Props) {
       if (externalEdit) {
         if (externalEdit.revision === undefined || (latest.current.revision ?? 0) < externalEdit.revision) { if ((latest.current.revision ?? 0) > externalEdit.baseRevision) synchronized = false; return; }
         humanHistory = latest.current.revision === externalEdit.revision && externalEdit.document === view.state.doc && !localDirty && !composing.current && !view.composing;
-        if (!humanHistory) externalConflict();
+        if (!humanHistory) { pendingHistory.length = 0; externalConflict(); }
         externalEdit = undefined;
       }
       if (localDirty || composing.current || view.composing) return;
-      if (latest.current.value === emittedText) { synchronized = true; sourceRevision = latest.current.revision ?? sourceRevision; return; }
+      if (latest.current.value === emittedText) { synchronized = true; sourceRevision = latest.current.revision ?? sourceRevision; replayHistory(); return; }
       const change = textReplacement(view.state.doc.toString(), normalize(latest.current.value));
       if (change) { externalUpdate.current = true; externalHuman = humanHistory; try { view.dispatch({ changes: { from: change.from, to: change.to, insert: change.text }, annotations: [Transaction.addToHistory.of(humanHistory), Transaction.userEvent.of(humanHistory ? 'input.selection-tool' : 'input.remote'), ...(humanHistory ? [isolateHistory.of('full')] : [])] }); } finally { externalUpdate.current = false; externalHuman = false; } }
       emittedText = latest.current.value;
       sourceRevision = latest.current.revision ?? sourceRevision;
       synchronized = true;
+      replayHistory();
     };
     const externalEditEvent = (event: Event) => {
       const detail = (event as CustomEvent<MarkdownExternalEdit>).detail;
       if (latest.current.format !== 'markdown' || detail?.documentId !== identity.documentId || detail.viewId !== identity.viewId) return;
       if (detail.phase === 'pending') {
         if (externalEdit || localDirty || composing.current || view.composing || !synchronized || latest.current.revision !== detail.baseRevision) { externalConflict(); return; }
-        externalEdit = { requestId: detail.requestId, baseRevision: detail.baseRevision, document: view.state.doc }; return;
+        externalEdit = { requestId: detail.requestId, baseRevision: detail.baseRevision, document: view.state.doc }; emit(view); return;
       }
       if (externalEdit?.requestId !== detail.requestId || externalEdit.baseRevision !== detail.baseRevision) return;
       if (detail.phase === 'canceled') externalEdit = undefined;
@@ -201,12 +232,14 @@ export function TextEditor(props: Props) {
     }
     const command = (event: Event) => { const detail = (event as CustomEvent<MarkdownCommandEventDetail & { handled?: boolean; error?: string }>).detail; if (detail?.viewId !== latest.current.viewId) return; try { detail.handled = execute(detail.command, detail.value); } catch (error) { detail.error = error instanceof Error ? error.message : String(error); window.dispatchEvent(new CustomEvent('agentviewer:markdown-error', { detail: { viewId: latest.current.viewId, message: detail.error } })); } };
     const previewSelection = (event: Event) => {
-      const detail = (event as CustomEvent<{ viewId: string; from: number; to: number; accepted: boolean }>).detail;
-      if (detail?.viewId !== identity.viewId || localDirty || composing.current || view.composing || !synchronized || !Number.isInteger(detail.from) || !Number.isInteger(detail.to) || detail.from < 0 || detail.to < detail.from || detail.to > view.state.doc.length) return;
-      detail.accepted = true;
+      const detail = (event as CustomEvent<{ viewId: string; from: number; to: number; document?: EditorState['doc']; accepted: boolean }>).detail;
+      if (detail?.viewId !== identity.viewId || detail.document !== view.state.doc || composing.current || view.composing || !Number.isInteger(detail.from) || !Number.isInteger(detail.to) || detail.from < 0 || detail.to < detail.from || detail.to > view.state.doc.length) return;
+      detail.accepted = !localDirty && synchronized && !latest.current.pending;
       const current = view.state.selection.main;
       if (current.from !== detail.from || current.to !== detail.to) view.dispatch({ selection: { anchor: detail.from, head: detail.to } });
     };
+    const projectionRequest = (event: Event) => { if ((event as CustomEvent<{ viewId: string }>).detail?.viewId === identity.viewId) project(view); };
+    const editorStateRequest = (event: Event) => { if ((event as CustomEvent<{ viewId: string }>).detail?.viewId === identity.viewId) emit(view); };
     const barrier = (event: Event) => {
       const detail = (event as CustomEvent<TextEditorBarrier>).detail;
       if (detail.viewId && detail.viewId !== latest.current.viewId || detail.documentId && detail.documentId !== latest.current.documentId) return;
@@ -228,9 +261,11 @@ export function TextEditor(props: Props) {
     window.addEventListener('agentviewer:markdown-outline-request', outlineRequest); publishOutline(view.state);
     window.addEventListener('agentviewer:markdown-preview-selection', previewSelection);
     window.addEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent);
+    window.addEventListener(MARKDOWN_PROJECTION_REQUEST, projectionRequest);
+    window.addEventListener('agentviewer:markdown-editor-state-request', editorStateRequest);
     window.dispatchEvent(new CustomEvent('agentviewer:markdown-preferences-request', { detail: { viewId: identity.viewId } }));
     emit(view);
-    return () => { if (changeTimer) clearTimeout(changeTimer); if (contextFrame) cancelAnimationFrame(contextFrame); if (!composing.current) { flushWidget(view); flush(view); } imports.clear(); observer.disconnect(); window.removeEventListener('agentviewer:markdown-command', command); window.removeEventListener('agentviewer:text-editor-barrier', barrier); window.removeEventListener('agentviewer:markdown-navigate', navigate); window.removeEventListener('agentviewer:markdown-anchor', anchor); window.removeEventListener('agentviewer:markdown-reveal-line', revealLine); window.removeEventListener('agentviewer:markdown-preferences', preferenceChange); window.removeEventListener('agentviewer:markdown-outline-request', outlineRequest); window.removeEventListener('agentviewer:markdown-preview-selection', previewSelection); window.removeEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent); if (!composing.current) stateChanged(); view.destroy(); editor.current = null; };
+    return () => { if (changeTimer) clearTimeout(changeTimer); if (contextFrame) cancelAnimationFrame(contextFrame); if (!composing.current) { flushWidget(view); flush(view); } imports.clear(); observer.disconnect(); window.removeEventListener('agentviewer:markdown-command', command); window.removeEventListener('agentviewer:text-editor-barrier', barrier); window.removeEventListener('agentviewer:markdown-navigate', navigate); window.removeEventListener('agentviewer:markdown-anchor', anchor); window.removeEventListener('agentviewer:markdown-reveal-line', revealLine); window.removeEventListener('agentviewer:markdown-outline-request', outlineRequest); window.removeEventListener('agentviewer:markdown-preferences', preferenceChange); window.removeEventListener('agentviewer:markdown-preview-selection', previewSelection); window.removeEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent); window.removeEventListener(MARKDOWN_PROJECTION_REQUEST, projectionRequest); window.removeEventListener('agentviewer:markdown-editor-state-request', editorStateRequest); if (!composing.current) stateChanged(); view.destroy(); editor.current = null; };
   }, [props.format, props.documentId, props.viewId]);
   useEffect(() => { const view = editor.current; if (view) view.dispatch({ effects: liveMode.current.reconfigure(props.live && props.format === 'markdown' ? markdownLivePreview(props.documentId ?? '') : []) }); }, [props.live, props.format, props.documentId]);
   useEffect(() => { synchronizeRef.current(); }, [props.value, props.revision]);

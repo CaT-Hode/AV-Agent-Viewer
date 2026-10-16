@@ -23,7 +23,7 @@ npm.cmd run package:portable
 
 [engines.lock.json](../../engines.lock.json)锁定引擎和校验值。portable 流程准备引擎、bootstrap seed 与发行目录；普通前端构建不自动下载全部外部引擎。
 
-Markdown 的 HTML/PDF/PNG 使用应用导出；DOCX、ODT、RTF、EPUB、LaTeX 等导入导出依赖 PATH 中可选 Pandoc。图片上传执行用户明确配置的可执行文件和参数，保存配置不触发上传。
+Markdown 的 HTML/PDF/PNG 使用应用导出；DOCX、ODT、RTF、EPUB、LaTeX 等转换使用随包提供、校验锁定的 Pandoc 3.12.1；AGENTVIEWER_PANDOC 可覆盖路径。图片上传执行用户明确配置的可执行文件和参数，保存配置不触发上传。
 
 ## 数据与调试
 
@@ -42,6 +42,6 @@ Markdown 的 HTML/PDF/PNG 使用应用导出；DOCX、ODT、RTF、EPUB、LaTeX �
 
 每轮相关修改完成后再验证，当前实绩与覆盖边界见[测试记录](../../tests/README.md)。测试总预算 50，以[清单](../../tests/suite.json)统计为准；文档按[manifest](../manifest.json)限制每模块两篇、每篇完整 Unicode 字符≤2000。日志与轨迹留 TEMP，依赖报告放 artifacts。
 
-本机替换需明确授权并先退出已安装应用，不强行结束用户进程；安装保留用户数据。不要把本地构建当作安装或发布完成。
+install:local 先复制到同级暂存目录，校验关键文件后切换安装目录，旧版本留作回退。发现已安装进程运行时拒绝替换；用户数据位于独立的 APPDATA 目录。安装和远端推送分别验证，不把工作区构建当作已安装。
 
 [测试](../../tests/README.md) · [依赖许可](dependencies.md) · [原生适配](../../packages/office-runtime/native/README.md)

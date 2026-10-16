@@ -69,14 +69,20 @@ class PrefixWidget extends WidgetType {
 }
 
 const stagedImageSource = 'data-markdown-asset-source';
+const stagedMediaSource = 'data-av-local-media';
 /** Preserve only image resource references across the normal HTML sanitizer.
  * They become live src values only after backend ownership and byte validation. */
 function sanitizedMarkdownHtml(source: string, block = false) {
   const inert = new DOMParser().parseFromString(source, 'text/html');
   for (const node of inert.querySelectorAll('[' + stagedImageSource + ']')) node.removeAttribute(stagedImageSource);
+  for (const node of inert.querySelectorAll('[' + stagedMediaSource + ']')) node.removeAttribute(stagedMediaSource);
   for (const image of inert.querySelectorAll('img[src]')) {
     const path = image.getAttribute('src')!;
     if (path.startsWith('agentviewer-asset:')) { image.setAttribute(stagedImageSource, path); image.removeAttribute('src'); }
+  }
+  for (const media of inert.querySelectorAll('audio[src],video[src],source[src]')) {
+    const path = media.getAttribute('src')!;
+    if (!/^[a-z][\w+.-]*:/i.test(path) || /^file:/i.test(path) || /^[a-z]:[\\/]/i.test(path)) { media.setAttribute(stagedMediaSource, path); media.removeAttribute('src'); }
   }
   return new DOMParser().parseFromString(DOMPurify.sanitize(inert.body.innerHTML, block ? { ADD_TAGS: ['iframe'], ADD_ATTR: ['allowfullscreen', 'controls'] } : {}), 'text/html');
 }
@@ -84,6 +90,12 @@ function standaloneImage(source: string) {
   const template = document.createElement('template'); template.innerHTML = source;
   const nodes = [...template.content.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent!.trim());
   return nodes.length === 1 && nodes[0].nodeType === Node.ELEMENT_NODE && (nodes[0] as Element).tagName === 'IMG';
+}
+function standaloneMedia(source: string) {
+  if (!/^\s*<(?:audio|video|iframe)\b/i.test(source)) return false;
+  const template = document.createElement('template'); template.innerHTML = source;
+  const nodes = [...template.content.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent!.trim());
+  return nodes.length === 1 && nodes[0].nodeType === Node.ELEMENT_NODE && ['AUDIO', 'VIDEO', 'IFRAME'].includes((nodes[0] as Element).tagName);
 }
 
 class RenderWidget extends WidgetType {
@@ -104,7 +116,7 @@ class RenderWidget extends WidgetType {
         else if (!/^[a-z][\w+.-]*:/i.test(url) || url.startsWith('agentviewer-asset:')) void call<{ url: string }>('markdown-resource', { documentId: this.documentId, path: url }).then(result => { if (host.isConnected) image.src = result.url; }).catch(() => image.dispatchEvent(new Event('error')));
         image.addEventListener('error', () => { image.hidden = true; const label = document.createElement('span'); label.textContent = '图片无法加载 · ' + image.alt; host.append(label); }); host.append(image);
         const tools = document.createElement('span'); tools.className = 'md-image-toolbar';
-        for (const width of ['25%', '50%', '75%', '100%']) { const button = document.createElement('button'); button.type = 'button'; button.textContent = width; button.setAttribute('aria-label', '图片宽度 ' + width); button.addEventListener('mousedown', preventWidgetSelection); button.addEventListener('click', event => { event.stopPropagation(); const from = view.posAtDOM(host); if (view.state.sliceDoc(from, from + this.source.length) !== this.source) return; const tag = document.createElement('img'); tag.setAttribute('src', url); tag.alt = image.alt; tag.style.width = width; view.dispatch({ changes: { from, to: from + this.source.length, insert: tag.outerHTML }, userEvent: 'input.image-size' }); }); tools.append(button); }
+        for (const width of ['25%', '50%', '75%', '100%']) { const button = document.createElement('button'); button.type = 'button'; button.textContent = width; button.setAttribute('aria-label', '图片宽度 ' + width); button.addEventListener('mousedown', preventWidgetSelection); button.addEventListener('click', event => { event.stopPropagation(); const from = view.posAtDOM(host); if (view.state.sliceDoc(from, from + this.source.length) !== this.source) return; const template = document.createElement('template'); template.innerHTML = '<img>'; const tag = template.content.firstElementChild as HTMLImageElement; tag.setAttribute('src', url); tag.alt = image.alt; tag.style.width = width; view.dispatch({ changes: { from, to: from + this.source.length, insert: tag.outerHTML }, userEvent: 'input.image-size' }); }); tools.append(button); }
         if (!readOnly) host.append(tools);
       } else host.textContent = this.source;
     } else if (this.kind === 'metadata') {
@@ -119,6 +131,11 @@ class RenderWidget extends WidgetType {
       for (const link of host.querySelectorAll('a[href]')) { (link as HTMLElement).dataset.markdownLink = link.getAttribute('href') ?? ''; link.addEventListener('click', event => event.preventDefault()); }
       for (const frame of host.querySelectorAll('iframe')) { if (!/^https?:/i.test(frame.getAttribute('src') ?? '')) frame.remove(); else { frame.setAttribute('sandbox', 'allow-scripts allow-presentation'); frame.setAttribute('referrerpolicy', 'no-referrer'); frame.setAttribute('loading', 'lazy'); } }
       for (const image of host.querySelectorAll('img')) { const path = image.getAttribute(stagedImageSource) ?? image.getAttribute('src') ?? ''; image.removeAttribute(stagedImageSource); if (path && (!/^[a-z][\w+.-]*:/i.test(path) || path.startsWith('agentviewer-asset:'))) void call<{ url: string }>('markdown-resource', { documentId: this.documentId, path }).then(result => { if (host.isConnected) image.src = result.url; }).catch(() => { image.alt = '图片无法加载 · ' + image.alt; }); }
+      for (const media of host.querySelectorAll<HTMLMediaElement>('audio,video')) { media.controls = true; media.preload = 'metadata'; }
+      for (const source of host.querySelectorAll<HTMLMediaElement | HTMLSourceElement>('audio[' + stagedMediaSource + '],video[' + stagedMediaSource + '],source[' + stagedMediaSource + ']')) {
+        const path = source.getAttribute(stagedMediaSource)!; source.removeAttribute(stagedMediaSource);
+        void call<{ url: string }>('markdown-media', { documentId: this.documentId, path }).then(result => { if (!host.isConnected) return; source.src = result.url; const player = source instanceof HTMLMediaElement ? source : source.closest('audio,video') as HTMLMediaElement | null; player?.load(); }).catch(() => { if (!host.isConnected) return; const message = document.createElement('span'); message.className = 'md-media-error'; message.textContent = '媒体无法加载 · ' + path; host.append(message); });
+      }
       const source = document.createElement('button'); source.className = 'md-html-source-button'; source.type = 'button'; source.textContent = '编辑 HTML 源码'; source.addEventListener('mousedown', preventWidgetSelection); source.addEventListener('click', event => { event.stopPropagation(); const from = view.posAtDOM(host); view.dispatch({ effects: revealMarkdownBlock.of({ from, to: from + this.source.length }), selection: { anchor: from } }); view.focus(); }); host.append(source);
     } else if (this.kind === 'toc') {
       host.setAttribute('aria-label', '文档目录'); const title = document.createElement('strong'); title.textContent = '目录'; host.append(title);
@@ -249,8 +266,8 @@ export function markdownLivePreview(documentId: string) {
       const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(name);
       if (heading) { addLine(node.from, 'md-heading md-heading-' + heading[1]); if (name.startsWith('Setext')) { const last = state.doc.lineAt(node.to).from; if (!selected(state, last - 1, node.to + 1)) hide(last > 0 ? last - 1 : last, node.to); } }
       if (name === 'HeaderMark') { if (!selected(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(state.doc.lineAt(node.to).to, node.to + 1)); }
-      if (['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Subscript', 'Superscript', 'InlineCode'].includes(name)) {
-        decorations.push(Decoration.mark({ class: ({ StrongEmphasis: 'md-strong', Emphasis: 'md-emphasis', Strikethrough: 'md-strike', Subscript: 'md-sub', Superscript: 'md-super', InlineCode: 'md-inline-code' } as Record<string, string>)[name] }).range(node.from, node.to));
+      if (['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Highlight', 'Subscript', 'Superscript', 'InlineCode'].includes(name)) {
+        decorations.push(Decoration.mark({ class: ({ StrongEmphasis: 'md-strong', Emphasis: 'md-emphasis', Strikethrough: 'md-strike', Highlight: 'md-highlight', Subscript: 'md-sub', Superscript: 'md-super', InlineCode: 'md-inline-code' } as Record<string, string>)[name] }).range(node.from, node.to));
         if (!active) for (let child = node.firstChild; child; child = child.nextSibling) if (/Mark$/.test(child.name)) hide(child.from, child.to);
       }
       if (name === 'Blockquote') for (let p = state.doc.lineAt(Math.max(span.from, node.from)).number; p <= state.doc.lineAt(Math.min(span.to, node.to)).number; p++) addLine(state.doc.line(p).from, 'md-quote');
@@ -262,6 +279,10 @@ export function markdownLivePreview(documentId: string) {
       if (name === 'Table' && node.to - node.from > 24000 && node.from >= span.from) decorations.push(Decoration.widget({ widget: new TableSourceNoticeWidget(), block: true, side: -1 }).range(node.from));
       if (name === 'Image' && !active && node.to - node.from <= 24000) { hide(node.from, node.to, new RenderWidget('image', text(), node.from, false, documentId)); return false; }
       if (name === 'HTMLTag' && node.to - node.from <= 24000 && /^<img\b/i.test(text()) && !active) { hide(node.from, node.to, new RenderWidget('image', text(), node.from, false, documentId)); return false; }
+      // CommonMark treats same-line <audio ...></audio> as inline HTML inside
+      // a paragraph rather than HTMLBlock. Typora-style standalone players
+      // still need the same sanitized, resource-resolved block projection.
+      if (name === 'Paragraph' && !active && node.to - node.from <= 65536 && !(reveal && reveal.from <= node.from && reveal.to >= node.to) && standaloneMedia(text())) { hide(node.from, node.to, new RenderWidget('html', text(), node.from, true, documentId), true); return false; }
       if (name === 'HTMLBlock' && !active && node.to - node.from <= 65536 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { const source = text(); hide(node.from, node.to, new RenderWidget(standaloneImage(source) ? 'image' : 'html', source, node.from, true, documentId), true); return false; }
       if (name === 'BlockMath' && node.to - node.from <= 24000) { const first = state.doc.lineAt(node.from), last = state.doc.lineAt(node.to), body = state.sliceDoc(Math.min(first.to + 1, node.to), Math.max(first.to + 1, last.from - 1)); if (last.number > first.number && /^\$\$[ \t]*$/.test(last.text.trim())) { if (!active) hide(node.from, node.to, new RenderWidget('math', body, node.from, true, documentId), true); else { decorations.push(Decoration.mark({ class: 'md-math-source' }).range(node.from, node.to)); decorations.push(Decoration.widget({ widget: new RenderWidget('math', body, node.from, true, documentId), block: true, side: 1 }).range(last.to)); } } return false; }
       if (name === 'Link' && node.to - node.from <= 24000) {
@@ -289,11 +310,6 @@ export function markdownLivePreview(documentId: string) {
       else { decorations.push(Decoration.mark({ class: 'md-math-source' }).range(from, to)); if (block) decorations.push(Decoration.widget({ widget: new RenderWidget('math', tex, from, true, documentId), block: true, side: 1 }).range(state.doc.lineAt(to).to)); }
     }
     for (const match of source.matchAll(/^\[toc\][ \t]*$/gim)) { const from = span.from + match.index!, to = from + match[0].length; if (!inside(from) && !selected(state, from, to)) hide(from, to, new RenderWidget('toc', '', from, true, documentId, state.doc), true); }
-    for (const match of source.matchAll(/==([^\n=]+)==/g)) { const from = span.from + match.index!, to = from + match[0].length; if (!inside(from)) { decorations.push(Decoration.mark({ class: 'md-highlight' }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + 2); hide(to - 2, to); } } }
-    for (const match of source.matchAll(/(?:~([^~\s][^~\n]*?)~|\^([^\^\s][^\^\n]*?)\^)/g)) {
-      const from = span.from + match.index!, to = from + match[0].length;
-      if (!inside(from) && source[match.index! - 1] !== match[0][0] && source[match.index! + match[0].length] !== match[0][0]) { decorations.push(Decoration.mark({ class: match[1] ? 'md-sub' : 'md-super' }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + 1); hide(to - 1, to); } }
-    }
     for (const match of source.matchAll(/^ {0,3}>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/gim)) addLine(span.from + match.index!, 'md-callout md-callout-' + match[1].toLowerCase());
     for (const match of source.matchAll(/<(u|sub|sup)>([^\n]*?)<\/\1>/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: match[1] === 'u' ? 'md-underline' : match[1] === 'sub' ? 'md-sub' : 'md-super' }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + match[1].length + 2); hide(to - match[1].length - 3, to); } }
     for (const match of source.matchAll(/\[\^([^\]\n]+)\](?!:)/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: 'md-footnote-reference', attributes: { 'data-markdown-footnote': match[1] } }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + 2); hide(to - 1, to); } }

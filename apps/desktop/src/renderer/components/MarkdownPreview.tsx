@@ -7,7 +7,8 @@ import { defaultHighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirr
 import { markdownLivePreview, refreshMarkdownPreview } from '../lib/markdown-live-preview';
 import { typoraMarkdownSyntax } from '../lib/markdown-syntax';
 import { boundedMarkdownLanguage } from '../lib/markdown-language';
-import { activateMarkdownSurface, markdownSurface, previewSourcePosition } from '../lib/markdown-surfaces';
+import { activateMarkdownSurface, markdownSurface, previewSourcePosition, previewDOMPosition } from '../lib/markdown-surfaces';
+import { MARKDOWN_PROJECTION_EVENT, MARKDOWN_PROJECTION_REQUEST, type MarkdownProjection } from '../lib/markdown-projection';
 import { textReplacement } from '../lib/text-drafts';
 import type { TextEditorContext } from './TextEditor';
 
@@ -21,22 +22,23 @@ export function MarkdownPreview(props: Props) {
   const synchronize = useRef<() => void>(() => {});
   const republish = useRef<() => void>(() => {});
   useEffect(() => {
-    let frame = 0, previous = latest.current.value, selected = { from: 0, to: 0 }, synchronizing = false, eol = previous.includes('\r\n') ? '\r\n' : '\n';
+    let frame = 0, previous = latest.current.value, selected = { from: 0, to: 0 }, selectedValid = false, actor: 'human' | 'agent' = 'human', eol = previous.includes('\r\n') ? '\r\n' : '\n';
+    let sourceDocument: MarkdownProjection['document'] | undefined, sourceReady = false;
     const publish = () => {
-      frame = 0; const actor = synchronizing ? 'agent' : 'human'; synchronizing = false; if (editor.current !== view || markdownSurface(props.viewId) !== 'preview') return;
+      frame = 0; if (editor.current !== view || markdownSurface(props.viewId) !== 'preview') return;
       const selection = window.getSelection(), contained = !!selection?.anchorNode && !!selection.focusNode && view.contentDOM.contains(selection.anchorNode) && view.contentDOM.contains(selection.focusNode);
       const from = contained ? previewSourcePosition(view, selection!.anchorNode!, selection!.anchorOffset) : selected.from;
       const to = contained ? previewSourcePosition(view, selection!.focusNode!, selection!.focusOffset) : selected.to;
       const start = Math.min(from ?? 0, to ?? from ?? 0), end = Math.max(from ?? 0, to ?? from ?? 0);
-      if (contained && from !== undefined && to !== undefined) selected = { from: start, to: end };
-      const detail = { viewId: props.viewId, from: start, to: end, accepted: false };
-      if (from !== undefined && to !== undefined) window.dispatchEvent(new CustomEvent('agentviewer:markdown-preview-selection', { detail }));
+      if (contained) { selectedValid = from !== undefined && to !== undefined; if (selectedValid) selected = { from: start, to: end }; }
+      const detail = { viewId: props.viewId, from: start, to: end, document: sourceDocument, accepted: false };
+      if (selectedValid && sourceDocument) window.dispatchEvent(new CustomEvent('agentviewer:markdown-preview-selection', { detail }));
       const sourceOffset = (position: number) => position + (eol === '\r\n' ? view.state.doc.lineAt(position).number - 1 : 0);
       const rect = contained && selection!.rangeCount ? selection!.getRangeAt(0).getBoundingClientRect() : undefined, visible = view.visibleRanges[0];
-      latest.current.onContext({ actor, ready: !latest.current.pending && detail.accepted, composing: false, from: sourceOffset(start), to: sourceOffset(end), text: contained && from !== undefined && to !== undefined ? view.state.doc.sliceString(start, end, eol) : '', visibleText: visible ? view.state.doc.sliceString(visible.from, Math.min(visible.to, visible.from + 24000), eol) : '', scrollTop: view.scrollDOM.scrollTop || view.dom.closest<HTMLElement>('.document-content')?.scrollTop || 0, ...(rect ? { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } } : {}) });
+      latest.current.onContext({ actor, ready: sourceReady && !latest.current.pending && detail.accepted, composing: false, from: sourceOffset(start), to: sourceOffset(end), text: selectedValid ? view.state.doc.sliceString(start, end, eol) : '', visibleText: visible ? view.state.doc.sliceString(visible.from, Math.min(visible.to, visible.from + 24000), eol) : '', scrollTop: view.scrollDOM.scrollTop || view.dom.closest<HTMLElement>('.document-content')?.scrollTop || 0, ...(rect ? { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } } : {}) });
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(publish); };
-    const activate = () => { activateMarkdownSurface(props.viewId, 'preview'); schedule(); };
+    const activate = () => { actor = 'human'; activateMarkdownSurface(props.viewId, 'preview'); schedule(); };
     const link = (event: MouseEvent) => {
       activate(); if (!event.ctrlKey && !event.metaKey) return false;
       const target = (event.target as HTMLElement).closest<HTMLElement>('[data-markdown-link],[data-markdown-reference],[data-markdown-footnote]'); if (!target) return false;
@@ -58,11 +60,33 @@ export function MarkdownPreview(props: Props) {
     ] }) });
     editor.current = view;
     republish.current = schedule;
-    synchronize.current = () => { if (latest.current.value === previous) return; const change = textReplacement(view.state.doc.toString(), latest.current.value.replace(/\r\n?/g, '\n')); previous = latest.current.value; eol = previous.includes('\r\n') ? '\r\n' : '\n'; if (change) { synchronizing = true; view.dispatch({ changes: { from: change.from, to: change.to, insert: change.text }, annotations: [synchronizePreview.of(true), Transaction.addToHistory.of(false)] }); } };
-    const nativeSelection = () => { const selection = window.getSelection(); if (selection?.anchorNode && view.contentDOM.contains(selection.anchorNode)) { activateMarkdownSurface(props.viewId, 'preview'); schedule(); } };
+    synchronize.current = () => { if (sourceDocument || latest.current.value === previous) return; const change = textReplacement(view.state.doc.toString(), latest.current.value.replace(/\r\n?/g, '\n')); previous = latest.current.value; eol = previous.includes('\r\n') ? '\r\n' : '\n'; if (change) { actor = 'agent'; view.dispatch({ changes: { from: change.from, to: change.to, insert: change.text }, annotations: [synchronizePreview.of(true), Transaction.addToHistory.of(false)] }); } };
+    const projection = (event: Event) => {
+      const detail = (event as CustomEvent<MarkdownProjection>).detail;
+      if (detail?.documentId !== props.documentId || detail.viewId !== props.viewId) return;
+      const changed = detail.document !== sourceDocument, readyChanged = detail.ready !== sourceReady;
+      const incremental = sourceDocument === detail.previous && detail.changes;
+      sourceDocument = detail.document; sourceReady = detail.ready; eol = detail.eol;
+      if (!changed) { if (readyChanged) schedule(); return; }
+      const native = window.getSelection(), contained = !!native?.anchorNode && !!native.focusNode && view.contentDOM.contains(native.anchorNode) && view.contentDOM.contains(native.focusNode);
+      const anchor = contained ? previewSourcePosition(view, native!.anchorNode!, native!.anchorOffset) : undefined, head = contained ? previewSourcePosition(view, native!.focusNode!, native!.focusOffset) : undefined;
+      const changes = incremental || (view.state.doc.eq(detail.document) ? undefined : view.state.changes({ from: 0, to: view.state.doc.length, insert: detail.document }));
+      if (changes && !changes.empty) {
+        actor = detail.actor;
+        view.dispatch({ changes, annotations: [synchronizePreview.of(true), Transaction.addToHistory.of(false)] });
+        if (anchor !== undefined && head !== undefined) {
+          const from = previewDOMPosition(view, changes.mapPos(anchor)), to = previewDOMPosition(view, changes.mapPos(head));
+          if (from && to) native!.setBaseAndExtent(from.node, from.offset, to.node, to.offset);
+        }
+      }
+      schedule();
+    };
+    const nativeSelection = () => { const selection = window.getSelection(); if (selection?.anchorNode && view.contentDOM.contains(selection.anchorNode)) { actor = 'human'; activateMarkdownSurface(props.viewId, 'preview'); schedule(); } };
     const observer = new MutationObserver(() => { if (editor.current === view) view.dispatch({ effects: refreshMarkdownPreview.of(null) }); }); observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-document-paper'] });
     document.addEventListener('selectionchange', nativeSelection);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); document.removeEventListener('selectionchange', nativeSelection); republish.current = () => {}; view.destroy(); editor.current = null; if (markdownSurface(props.viewId) === 'preview') activateMarkdownSurface(props.viewId, 'source'); };
+    window.addEventListener(MARKDOWN_PROJECTION_EVENT, projection);
+    window.dispatchEvent(new CustomEvent(MARKDOWN_PROJECTION_REQUEST, { detail: { viewId: props.viewId } }));
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); document.removeEventListener('selectionchange', nativeSelection); window.removeEventListener(MARKDOWN_PROJECTION_EVENT, projection); republish.current = () => {}; view.destroy(); editor.current = null; if (markdownSurface(props.viewId) === 'preview') activateMarkdownSurface(props.viewId, 'source'); };
   }, [props.documentId, props.viewId]);
   useEffect(() => { synchronize.current(); }, [props.value]);
   useEffect(() => { republish.current(); }, [props.pending, props.revision]);

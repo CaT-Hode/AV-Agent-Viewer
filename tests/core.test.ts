@@ -9,7 +9,9 @@ import { PDFDocument } from 'pdf-lib';
 import { ViewerCore } from '../packages/document-core/src/index';
 import { JsonWorkspaceRepository, WorkspacePersistenceBusyError, type WorkspaceDocumentSnapshot } from '../packages/persistence/src/index';
 import { blobStorageReference, collectFrozenBlobs, freezeWorkspaceBlob, readWorkspaceBlob } from '../packages/persistence/src/workspace-blobs';
-import { DocumentHistory, DocumentSessions } from '../packages/document-core/src/document-session';
+import { DocumentHistory, DocumentSessions, DocumentSnapshots, retainedValueBytes } from '../packages/document-core/src/document-session';
+import { BackgroundCodec, documentCodec, encodeDocumentText, hashDocumentBytes } from '../packages/persistence/src/background-codec';
+import { ReceiptLedger } from '../packages/document-core/src/receipt-ledger';
 import { blankBytes } from '../packages/document-core/src/fixtures';
 import { dispatch } from '../packages/sdk/src/dispatch';
 import { startServer } from '../apps/local-service/src/server';
@@ -26,6 +28,7 @@ import { SettingsService } from '../packages/settings/src/index';
 import { mergeTextDraft, textReplacement } from '../apps/desktop/src/renderer/lib/text-drafts';
 import { markdownLinks, replaceMarkdownLinks } from '../packages/markdown/src/links';
 import { MarkdownWorkspace } from '../packages/markdown/src/workspace';
+import { AtomicExportSet } from '../apps/desktop/src/main/atomic-export';
 
 async function setup() { const directory = await mkdtemp(join(tmpdir(), 'agentviewer-test-')); const core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); return { directory, core }; }
 async function modify(core: ViewerCore, id: string, operation: EditOperation, key = crypto.randomUUID()) { const patch = core.prepare(id, core.getDocument(id).info.revision, operation); return { patch, receipt: await core.commit(patch.id, key) }; }
@@ -155,6 +158,25 @@ test('提交重试不重复插入；重启后的回执仍可识别', async () =>
   const afterUndo = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); await afterUndo.initialize();
   assert.equal(afterUndo.getDocument(view.documentId).info.model.text, 'a');
   assert.deepEqual(await afterUndo.undo(first.transactionId), undone, 'undo receipt is durable before the response');
+
+  const quotaPath = join(directory, 'quota-workspace.json'), quotaOptions = { receiptLimits: { perDocumentBytes: 32768, totalBytes: 65536 } };
+  const quotaCore = new ViewerCore(new JsonWorkspaceRepository(quotaPath), undefined, quotaOptions), quotaView = await quotaCore.openBytes('quota.md', new TextEncoder().encode('a'), 'markdown');
+  const quotaPatch = quotaCore.prepare(quotaView.documentId, 0, { kind: 'text.replace', from: 1, to: 1, expectedText: '', text: 'b' });
+  await assert.rejects(quotaCore.commit(quotaPatch.id, 'oversized-key-' + 'k'.repeat(20000), 'human'), { code: 'RECEIPT_QUOTA_EXCEEDED' });
+  assert.equal(quotaCore.getDocument(quotaView.documentId).info.revision, 0); assert.equal(quotaCore.transactions.size, 0); assert.equal(quotaCore.receipts.statistics.reservedBytes, 0, 'oversized identity is refused before the adapter changes any content');
+  const accepted = await quotaCore.commit(quotaPatch.id, 'accepted-before-quota', 'human');
+  quotaCore.receipts.set('legacy-oversized-result', { documentId: quotaView.documentId, payload: 'sha256:' + 'a'.repeat(64), receipt: { text: 'legacy result '.repeat(4000) } });
+  assert.equal(quotaCore.receipts.statistics.overBudget, true);
+  assert.deepEqual(await quotaCore.commit(quotaPatch.id, 'accepted-before-quota', 'human'), accepted, 'completed keys always replay even after importing an oversized legacy result');
+  const rejectedPatch = quotaCore.prepare(quotaView.documentId, 1, { kind: 'text.replace', from: 2, to: 2, expectedText: '', text: 'c' });
+  await assert.rejects(quotaCore.commit(rejectedPatch.id, 'new-at-quota', 'human'), { code: 'RECEIPT_QUOTA_EXCEEDED' });
+  assert.equal(quotaCore.getDocument(quotaView.documentId).info.model.text, 'ab'); assert.equal(quotaCore.patches.has(rejectedPatch.id), true);
+  const quotaSaved = join(directory, 'quota-readable.md'); await quotaCore.save(quotaView.documentId, quotaSaved);
+  assert.equal(await readFile(quotaSaved, 'utf8'), 'ab', 'an oversized imported ledger remains readable and saveable');
+  const quotaRestart = new ViewerCore(new JsonWorkspaceRepository(quotaPath), undefined, quotaOptions); await quotaRestart.initialize();
+  assert.equal(quotaRestart.receipts.has('legacy-oversized-result'), true); assert.deepEqual(await quotaRestart.commit(quotaPatch.id, 'accepted-before-quota', 'human'), accepted);
+  const recoveredPatch = quotaRestart.prepare(quotaView.documentId, 1, { kind: 'text.replace', from: 2, to: 2, expectedText: '', text: 'c' });
+  await assert.rejects(quotaRestart.commit(recoveredPatch.id, 'new-after-quota-restart', 'human'), { code: 'RECEIPT_QUOTA_EXCEEDED' });
 });
 
 test('恢复迁移校验二进制与冻结队列，撤销预算和文档队列保持独立', async () => {
@@ -325,6 +347,34 @@ test('恢复迁移校验二进制与冻结队列，撤销预算和文档队列�
   assert.deepEqual(order, ['a-first', 'b'], 'another document does not wait for the blocked lane');
   release.resolve(); await rejected; assert.equal(await next, 'recovered'); await sessions.drain(); assert.equal(sessions.pendingDocuments, 0);
   assert.deepEqual(order, ['a-first', 'b', 'a-next']);
+
+  const codec = new BackgroundCodec(32 * 1024 * 1024, 2), wideSource = '正文😀\ud800\r\n'.repeat(70000);
+  const encodedSource = codec.run({ kind: 'text', text: wideSource, bom: true }, wideSource.length * 5 + 3);
+  const mutableOffset = Uint8Array.from([99, 1, 2, 3, 98]).subarray(1, 4);
+  const originalDigest = createHash('sha256').update(mutableOffset).digest('hex');
+  const frozenDigest = codec.run({ kind: 'hash', bytes: mutableOffset }, mutableOffset.byteLength * 2); mutableOffset.fill(0);
+  await assert.rejects(codec.run({ kind: 'text', text: 'overflow', bom: false }, 40), { code: 'BACKGROUND_CODEC_BUSY' });
+  assert.deepEqual((await encodedSource).bytes, new TextEncoder().encode('\ufeff' + wideSource), 'background encoding preserves BOM, CRLF, astral characters and unpaired surrogates');
+  assert.equal((await frozenDigest).sha256, originalDigest, 'queued hashes freeze offset views at the call boundary');
+  assert.equal(codec.statistics.pendingEntries, 0); assert.equal(codec.statistics.retainedBytes, 0); assert.equal(codec.statistics.rejected, 1);
+  const textBytes = await encodeDocumentText(wideSource, true);
+  assert.equal(await hashDocumentBytes(textBytes), createHash('sha256').update(textBytes).digest('hex'));
+
+  const pinned = new Set<string>(), smallSnapshot = (id: string) => ({ document: { id }, text: 'snapshot '.repeat(4) });
+  const snapshotBytes = retainedValueBytes(smallSnapshot('a')), snapshots = new DocumentSnapshots<ReturnType<typeof smallSnapshot>>(() => pinned, snapshotBytes * 2, snapshotBytes * 3, 3);
+  snapshots.set('a-first', smallSnapshot('a')); snapshots.set('b', smallSnapshot('b')); pinned.add('a-first');
+  snapshots.set('a-next', smallSnapshot('a')); snapshots.set('a-latest', smallSnapshot('a'));
+  assert.equal(snapshots.has('a-first'), true); assert.equal(snapshots.has('a-next'), false, 'byte pressure preserves pinned task sources');
+  pinned.add('a-latest'); const retainedBeforeRefusal = [...snapshots.keys()];
+  assert.throws(() => snapshots.set('refused', smallSnapshot('a')), { code: 'SNAPSHOT_BUDGET_EXCEEDED' });
+  assert.deepEqual([...snapshots.keys()], retainedBeforeRefusal, 'failed snapshot admission never evicts previously issued sources');
+  assert.ok(snapshots.retainedBytes <= snapshots.totalBudget); snapshots.clear(); assert.equal(snapshots.retainedBytes, 0);
+  const ledger = new ReceiptLedger(9000, 18000), releaseReceipt = ledger.reserve('pending-a', 'a', { payload: 'a' });
+  assert.throws(() => ledger.reserve('pending-conflict', 'a', { payload: 'b' }, 6000), { code: 'RECEIPT_QUOTA_EXCEEDED' });
+  assert.throws(() => ledger.reserve('pending-a', 'b', { payload: 'different' }), { code: 'IDEMPOTENCY_CONFLICT' });
+  releaseReceipt(); assert.equal(ledger.statistics.reservedBytes, 0, 'failed commands can release their full reservation');
+  const releaseNext = ledger.reserve('next', 'a', { payload: 'next' }, 6000); ledger.set('next', { payload: 'next', receipt: { status: 'applied', documentId: 'a' } }); releaseNext();
+  assert.equal(ledger.statistics.reservedBytes, 0); assert.ok(ledger.statistics.retainedBytes > 0); assert.equal(ledger.get('next')?.documentId, 'a');
 });
 
 test('落盘与外部冲突使用真实文件，撤销不覆盖后续修改', async () => {
@@ -342,6 +392,35 @@ test('落盘与外部冲突使用真实文件，撤销不覆盖后续修改', as
   assert.equal(core.getDocument(view.documentId).info.dirty, false);
   assert.equal(core.transactions.size, 0, 'reload retires undo entries from the old source');
   await core.reloadFromDisk(view.documentId); assert.equal(core.getDocument(view.documentId).info.revision, revision + 1);
+  const largeText = '大文档😀\r\n'.repeat(60000), largeView = await core.openBytes('large-encoded.md', await encodeDocumentText(largeText, true), 'markdown');
+  const completedBeforeEdit = documentCodec.statistics.completed;
+  const replacement = '改写😀\r\n'.repeat(65000), largePatch = core.prepare(largeView.documentId, 0, { kind: 'text.replace', from: 0, to: largeText.length, expectedText: largeText, text: replacement });
+  const largeReceipt = await core.commit(largePatch.id, 'large-background-commit', 'human');
+  assert.ok(documentCodec.statistics.completed > completedBeforeEdit, 'large commit fingerprint and UTF-8 encoding run on the bounded CPU lane');
+  const largeCopy = join(directory, 'large-background.md'); await core.save(largeView.documentId, largeCopy);
+  assert.deepEqual(await readFile(largeCopy), Buffer.from('\ufeff' + replacement, 'utf8'), 'the strict save barrier publishes exactly the encoded revision with its BOM');
+  await core.undo(largeReceipt.transactionId, 'human');
+  assert.equal(core.getDocument(largeView.documentId).info.model.text, largeText);
+  assert.deepEqual(core.getDocument(largeView.documentId).bytes, new TextEncoder().encode('\ufeff' + largeText));
+  assert.deepEqual(await core.commit(largePatch.id, 'large-background-commit', 'human'), largeReceipt, 'background fingerprint receipts remain replayable after their prepared body is released');
+  const exportPath=join(directory,'atomic-export.html'),exports=new AtomicExportSet();await writeFile(exportPath,'original');await exports.write(exportPath,'complete export');
+  await exports.commit(()=>{});await exports.cleanup();assert.equal(await readFile(exportPath,'utf8'),'complete export');
+  const conflictExport=new AtomicExportSet();await conflictExport.write(exportPath,'outdated export');await writeFile(exportPath,'external new file');
+  await assert.rejects(conflictExport.commit(()=>{}),/目标文件已变化/);await conflictExport.cleanup();assert.equal(await readFile(exportPath,'utf8'),'external new file');
+  const part1=join(directory,'atomic-001.png'),part2=join(directory,'atomic-002.png'),batch=new AtomicExportSet();await writeFile(part1,'old part');await batch.write(part1,'new part');await batch.write(part2,'second part');let publishChecks=0;
+  await assert.rejects(batch.commit(async()=>{if(++publishChecks===3)await writeFile(part2,'external second');}));await batch.cleanup();
+  assert.equal(await readFile(part1,'utf8'),'old part','a later output failure restores the already replaced original');assert.equal(await readFile(part2,'utf8'),'external second','publication never replaces an externally created file');
+  const changedBatch=new AtomicExportSet(),newPart=join(directory,'atomic-003.png');await changedBatch.write(part1,'another export');await changedBatch.write(newPart,'third');publishChecks=0;
+  await assert.rejects(changedBatch.commit(async()=>{if(++publishChecks===3){await writeFile(part1,'external edit after publication');await writeFile(newPart,'external third');}}),/备份位于/);await changedBatch.cleanup();
+  assert.equal(await readFile(part1,'utf8'),'external edit after publication','rollback preserves edits made to a newly published output');assert.equal(await readFile(newPart,'utf8'),'external third');
+  const numberedConflict=new AtomicExportSet();await assert.rejects(numberedConflict.write(part2,'replace existing numbered page',false),/分页图片目标已存在/);await numberedConflict.cleanup();
+  const replacementEntered=editGate(),replacementRelease=editGate(),beforeReplacement=core.getDocument(view.documentId).info;
+  const queuedPatch=core.prepare(view.documentId,beforeReplacement.revision,{kind:'text.replace',from:0,to:1,expectedText:beforeReplacement.model.text!.slice(0,1),text:'X'});
+  const replacing=core.runDocumentOperation(view.documentId,async()=>{await writeFile(copy,'published import');replacementEntered.resolve();await replacementRelease.promise;},{reloadFromDisk:true});
+  await replacementEntered.promise;const queuedCommit=core.commit(queuedPatch.id,'queued-before-import-refresh','human'),queuedRejected=assert.rejects(queuedCommit,/内容已改变/);
+  replacementRelease.resolve();await replacing;await queuedRejected;
+  assert.equal(core.getDocument(view.documentId).info.model.text,'published import','replacement and model refresh hold the same document lane');
+  assert.equal(core.getDocument(view.documentId).info.dirty,false);assert.equal(core.patches.has(queuedPatch.id),true,'a queued stale edit is refused without consuming its plan');
 });
 
 test('PPTX 阅读和编辑遵循演示文稿的页序，而非 ZIP 文件名', async () => {
@@ -516,6 +595,17 @@ test('选区工具保留快照与幂等：Markdown/HTML 格式、批注持久化
   assert.equal(parsed.length, changed.length);
   assert.equal(parsed.toString(), parser.parse(changed).toString(), 'a changed long paragraph retains the complete grammar and formatting');
   assert.ok(inputReads < 4096, 'fragment reuse must not search a huge line with per-character input reads');
+  const contextualEdits = ['p'.repeat(128), '> ' + 'q'.repeat(128), '> - ' + 'l'.repeat(128)].map(prefix => {
+    const source = prefix + '\n| A | B |\n| --- | --- |\n', from = source.lastIndexOf('---');
+    return { source, from, to: from + 3, insert: 'x' };
+  });
+  for (let spaces = 1; spaces <= 4; spaces++) contextualEdits.push({ source: '    t\n~\n', from: 0, to: spaces, insert: '' });
+  const positionedNodes = (tree: ReturnType<typeof parser.parse>) => { const nodes: [string, number, number][] = []; tree.iterate({ enter: node => { nodes.push([node.name, node.from, node.to]); } }); return nodes; };
+  for (const edit of contextualEdits) {
+    const text = edit.source.slice(0, edit.from) + edit.insert + edit.source.slice(edit.to);
+    const reused = TreeFragment.applyChanges(TreeFragment.addTree(parser.parse(edit.source)), [{ fromA: edit.from, toA: edit.to, fromB: edit.from, toB: edit.from + edit.insert.length }]);
+    assert.deepEqual(positionedNodes(new BoundedMarkdownParser(parser).parse(text, reused)), positionedNodes(parser.parse(text)), 'table-separator and code-indentation edits retain fresh paragraph/list/quote boundaries');
+  }
   const {core,directory}=await setup();const view=await core.openBytes('selection.md',new TextEncoder().encode('one target two'),'markdown');
   core.updateContext(view.id,{selection:{kind:'text',text:'target',locator:{kind:'source-range',from:4,to:10}}});
   const tools=await dispatch(core,'selection-tools',{viewId:view.id}) as any;
@@ -584,7 +674,7 @@ test('选区工具保留快照与幂等：Markdown/HTML 格式、批注持久化
   const editableHtml=await dispatch(textCore,'selection-tools',{viewId:lightHtml.id,lightweight:true})as any;
   await dispatch(textCore,'selection-action',{selectionContextId:editableHtml.snapshot.id,action:'bold',idempotencyKey:'light-html-bold'});
   assert.match(textCore.getDocument(lightHtml.documentId).info.model.text!,/<strong>safe text<\/strong>/);
-  const nativeCore=new ViewerCore({load:async<T>()=>undefined as T|undefined,save:async()=>{}});await nativeCore.initialize();
+  const nativeCore=new ViewerCore({load:async<T>()=>undefined as T|undefined,save:async()=>{}},undefined,{receiptLimits:{perDocumentBytes:512*1024,totalBytes:1024*1024}});await nativeCore.initialize();
   const ppt=await nativeCore.openBytes('selection.pptx',await blankBytes('pptx'),'pptx');let native:NativeOfficeState,reads=0,inspections=0,exports=0;
   const importEntered=editGate(),importRelease=editGate();
   const driver:NativeOfficeDriver={
@@ -626,6 +716,11 @@ test('选区工具保留快照与幂等：Markdown/HTML 格式、批注持久化
   const readKeys={poll:'view',catalog:'',status:'',navigation:''},initialReadError=updateNativeOfficeReadErrors({},{kind:'poll',key:'view',outcome:'failure',cause:initialNotReady});
   assert.deepEqual(nativeOfficeReadMessages(initialReadError,readKeys,true),[]);
   assert.deepEqual(nativeOfficeReadMessages(updateNativeOfficeReadErrors({},{kind:'poll',key:'view',outcome:'failure',cause:expired}),readKeys,true),[expired.message]);
+  let quotaNativeExecutions=0;driver.execute=async()=>{quotaNativeExecutions++;return{status:'no-change',state:structuredClone(native!)};};
+  nativeCore.receipts.set('legacy-native-over-quota',{documentId:ppt.documentId,payload:'legacy',receipt:{text:'x'.repeat(300000)}});
+  await assert.rejects(nativeCore.executeNativeOffice({viewId:ppt.id,command:'.uno:Bold',expectedEngineEpoch:native!.engineEpoch,expectedEngineRevision:native!.engineRevision,idempotencyKey:'refused-before-native-execute',completion:'applied'},'human'),{code:'RECEIPT_QUOTA_EXCEEDED'});
+  assert.equal(quotaNativeExecutions,0);assert.equal(exports,0,'quota refusal precedes native commands and snapshot side effects');
+  assert.deepEqual(await dispatch(nativeCore,'selection-action',selected),{text:'selected text'},'old lightweight receipts replay even when their native document is over quota');
 });
 
 test('Word 和 PPT 选区字体格式拆分文字 run，保留其他文字并可保存重开', async()=>{

@@ -336,5 +336,7 @@ merged=jobs.get_nowait();assert merged['id']=='read1' and [item['id'] for item i
 assert [jobs.get_nowait()['id'] for _ in range(3)]==['state','save','input3'] and jobs.empty() and jobs.pending==0
 jobs=KitRequestQueue();jobs.put(job('before','state'));jobs.put(job('write','execute'));jobs.put(job('after','state'))
 assert [jobs.get_nowait()['id'] for _ in range(3)]==['write','before','after'],'observations separated by a write retain independent receipts'
+jobs=KitRequestQueue();jobs.put(job('warm','warmup'));jobs.put(job('read','state'));jobs.put(job('open','open'));jobs.put(job('input','surfaceInput'))
+assert [jobs.get_nowait()['id'] for _ in range(4)]==['read','open','input','warm'],'idle importer/font warmup never fences real reads, lifecycle or input'
 `);
 });

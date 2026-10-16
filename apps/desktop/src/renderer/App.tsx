@@ -250,9 +250,8 @@ export function App() {
       const view = stateRef.current.views.find(view=>view.id===detail?.viewId); if(!view)return;
       void (async()=>{ await markdownActions.current!.flushDrafts(view.id); const fresh=await markdownActions.current!.refresh(),document=fresh.documents.find(document=>document.id===view.documentId);if(!document||document.format!=='markdown')return;
         setToast('正在生成完整文档…');
-        const html=['html','pdf','png'].includes(detail.format)?await (await import('./lib/markdown-export')).renderMarkdownForExport(document.model.text??'',document.id):undefined;
-        const result=await call<{paths:string[]}|null>('markdown-export',{documentId:document.id,expectedRevision:document.revision,format:detail.format,html});
-        if(result)setToast(result.paths.length===1?'已导出：'+result.paths[0]:'已导出 '+result.paths.length+' 张完整分页图片。');else setToast('');
+        const result=await call<{paths:string[]}|null>('markdown-export',{documentId:document.id,expectedRevision:document.revision,format:detail.format});
+        if(result)setToast(result.paths.length===1?'已导出：'+result.paths[0]:detail.format==='png'?'已导出 '+result.paths.length+' 张完整分页图片。':'已导出 '+result.paths.length+' 个文件。');else setToast('');
       })().catch(alert);
     };
     const resourcesApplied = () => { void markdownActions.current!.refresh().catch(alert); };

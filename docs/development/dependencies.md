@@ -16,7 +16,7 @@ CodeMirror/Lezer 提供源码、分栏虚拟预览及增量语法；React Markdo
 | underscore | 1.13.7 | MIT |
 | gemoji | 8.1.0 | MIT |
 
-rehype-raw 7.0.0 与 remark-math 6.0.0 元数据声明 MIT；原始许可是否随发行完整携带仍需发行清单核对。旧图表依赖通过 override 统一 Raphael/Underscore；KaTeX 间接依赖锁定使用修复版本。Pandoc 是可选外部命令，不随 npm 安装。
+rehype-raw 7.0.0 与 remark-math 6.0.0 元数据声明 MIT；原始许可是否随发行完整携带仍需发行清单核对。旧图表依赖通过 override 统一 Raphael/Underscore；KaTeX 间接依赖锁定使用修复版本。Pandoc 3.12.1 是随包提供的独立进程，GPL-2.0-or-later；下载地址和 SHA-256 由 engines.lock.json 固定，保留原始 COPYING。
 
 ## 外部运行时
 
@@ -28,7 +28,7 @@ LibreOffice 26.8.1 使用 MPL-2.0/LGPL-3.0+；BabelDOC 0.6.4 声明 AGPL-3.0；T
 npm.cmd run dependencies:report
 ```
 
-2026-10-16 本轮报告已生成，包含 51 个已安装直接 npm 包及实际版本/许可字段，输出 artifacts/dependencies.json。该报告不覆盖全部传递依赖、Electron/Chromium 内嵌组件或外部引擎，不能视作完整发行 NOTICE。
+2026-10-16 本轮报告已生成，包含 58 个已安装直接 npm 包及实际版本/许可字段，输出 artifacts/dependencies.json。该报告不覆盖全部传递依赖、Electron/Chromium 内嵌组件或外部引擎，不能视作完整发行 NOTICE。
 
 发行时保留各包原始许可、归属及适用源码提供义务。[Liquid Glass MIT 原文](../licenses/liquid-glass-frontend-MIT.txt)保持不变；法律原文不为项目说明的字符预算删改。
 

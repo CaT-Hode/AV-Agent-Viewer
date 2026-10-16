@@ -2,7 +2,9 @@ import { mkdir, readFile, writeFile, rename, copyFile, unlink, readdir, lstat, r
 import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
-import { blobStorageReference, collectFrozenBlobs, freezeWorkspaceBlob, hashBytes, markWorkspaceBlob, readWorkspaceBlob, validateBlobReference, type BlobReference, type FrozenBlob, type TextModelReference } from './workspace-blobs';
+import { blobStorageReference, collectFrozenBlobs, freezeWorkspaceBlob, markWorkspaceBlob, readWorkspaceBlob, validateBlobReference, type BlobReference, type FrozenBlob, type TextModelReference } from './workspace-blobs';
+import { hashDocumentBytes, stringifyDocumentValue } from './background-codec';
+import { retainedValueBytes } from './retained-value';
 
 export interface WorkspaceSaveOptions { mode?: 'barrier' | 'checkpoint' }
 export interface WorkspaceDocumentSnapshot {
@@ -25,7 +27,7 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
   private active?: SaveEntry;
   private queue: SaveEntry[] = [];
   private retainedBytes = 0;
-  private counts = { requested: 0, written: 0, coalesced: 0, rejected: 0, maximumRetainedBytes: 0 };
+  private counts = { requested: 0, written: 0, coalesced: 0, rejected: 0, maximumRetainedBytes: 0, maximumMetadataBytes: 0 };
   private readonly maxPendingBytes: number;
   private readonly maxPendingEntries: number;
   private readonly maxWaiters: number;
@@ -51,7 +53,7 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
   private async readStoredBlob(reference: { sha256: string; byteLength: number }) {
     validateBlobReference(reference);
     const bytes = await readFile(join(this.blobDirectory, reference.sha256));
-    if (bytes.byteLength !== reference.byteLength || createHash('sha256').update(bytes).digest('hex') !== reference.sha256) throw new Error('WORKSPACE_BLOB_CORRUPT');
+    if (bytes.byteLength !== reference.byteLength || await hashDocumentBytes(bytes) !== reference.sha256) throw new Error('WORKSPACE_BLOB_CORRUPT');
     this.knownBlobs.add(reference.sha256); return bytes;
   }
   private readBlob(reference: BlobReference, loaded?: (blob: FrozenBlob) => void) { return readWorkspaceBlob(reference, value => this.readStoredBlob(value), loaded); }
@@ -65,7 +67,10 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
     const workspace = stored.workspace;
     // A missing/corrupt blob must fail the whole restore. Never turn it into an
     // empty document and overwrite the only recoverable manifest on next save.
-    workspace.documents = await Promise.all(workspace.documents.map(async (entry: any) => {
+    // Restore one body at a time. Unbounded Promise.all used to retain every
+    // file read at once and could overrun the bounded verification CPU lane.
+    const restoredDocuments: WorkspaceDocumentSnapshot['documents'] = [];
+    for (const entry of workspace.documents) {
       let contentBlob: FrozenBlob | undefined, modelBlob: FrozenBlob | undefined;
       const bytes = new Uint8Array(await this.readBlob(entry.content, blob => { contentBlob = blob; }));
       const textModel = entry.model?.kind === 'text';
@@ -76,8 +81,9 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       if (model && typeof model === 'object') this.modelSnapshots.set(model, { revision: entry.info.revision, ...(textModel ? { text: entry.model as TextModelReference } : { blob: modelBlob! }) });
       if (textModel) this.textSnapshots.set(entry.info.id, { bytes, blob, format: entry.model.format });
       const { content: _content, model: _storedModel, ...document } = entry;
-      return { ...document, bytes, info: { ...entry.info, model } };
-    }));
+      restoredDocuments.push({ ...document, bytes, info: { ...entry.info, model } });
+    }
+    workspace.documents = restoredDocuments;
     return workspace as T;
   }
   private available(blob: FrozenBlob) {
@@ -141,6 +147,7 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
   private enqueue(payload: string, blobs: FrozenBlob[], options: WorkspaceSaveOptions, v2 = false) {
     const mode = options.mode ?? 'barrier', bytes = payload.length * 2 + blobs.reduce((sum, blob) => sum + (blob.data?.byteLength ?? 0), 0);
     this.counts.requested++;
+    this.counts.maximumMetadataBytes = Math.max(this.counts.maximumMetadataBytes, payload.length * 2);
     const tail = this.queue.at(-1) ?? this.active;
     const replace = !!tail && tail !== this.active && tail.mode === 'checkpoint' && mode === 'checkpoint';
     const retained = this.retainedBytes + bytes - (replace ? tail!.bytes : 0);
@@ -250,7 +257,9 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
     const temporary = target + '.' + randomUUID() + '.tmp'; await mkdir(dirname(target), { recursive: true });
     // Linking the completed sibling file publishes it atomically and fails
     // exclusively if a file appeared at the destination during serialization.
-    try { await writeFile(temporary, JSON.stringify({ ...legacy, documents }), { mode: 0o600, flag: 'wx' }); await link(temporary, target); }
+    const exportValue = { ...legacy, documents };
+    const payload = await stringifyDocumentValue(exportValue, retainedValueBytes(exportValue));
+    try { await writeFile(temporary, payload, { mode: 0o600, flag: 'wx' }); await link(temporary, target); }
     finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
   }
   private async writeBlobs(blobs: FrozenBlob[]) {
@@ -260,7 +269,7 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       const stored = blobStorageReference(blob.reference);
       if (this.knownBlobs.has(stored.sha256)) { this.blobCounts.blobReuses++; blob.data = undefined; continue; }
       if (!blob.data) throw new Error('WORKSPACE_BLOB_UNAVAILABLE');
-      if (blob.data.byteLength !== stored.byteLength || hashBytes(blob.data) !== stored.sha256) throw new Error('WORKSPACE_BLOB_CORRUPT');
+      if (blob.data.byteLength !== stored.byteLength || await hashDocumentBytes(blob.data) !== stored.sha256) throw new Error('WORKSPACE_BLOB_CORRUPT');
       const target = join(this.blobDirectory, stored.sha256), temporary = target + '.' + randomUUID() + '.tmp';
       try { await writeFile(temporary, blob.data, { mode: 0o600 }); await rename(temporary, target); }
       finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }

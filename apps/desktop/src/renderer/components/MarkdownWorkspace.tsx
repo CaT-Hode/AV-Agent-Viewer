@@ -150,6 +150,8 @@ export function MarkdownWorkspace(props: Props) {
     const owner = generation.current; setBusy(true); setError('');
     try {
       const destination = action === 'rename' ? joinPath(parentPath(edit!.path), value) : action === 'new-file' || action === 'new-folder' ? joinPath(edit!.path, value) : value;
+      const pending: Promise<void>[] = []; window.dispatchEvent(new CustomEvent('agentviewer:markdown-workspace-before', { detail: { documentId, waitUntil: (promise: Promise<void>) => pending.push(promise) } })); await Promise.all(pending);
+      if (!valid(owner)) return;
       const result = await call<ChangeResponse>('markdown-workspace-change', { documentId, action, ...(reverting ? { transactionId } : action === 'new-file' || action === 'new-folder' ? { path: destination } : { path: edit!.path, ...(action === 'rename' || action === 'move' ? { destination } : {}) }) });
       if (!valid(owner)) return;
       if (reverting) setUndo(rememberUndo(rootPath, undo.slice(0, -1))); else if (result.transactionId) setUndo(rememberUndo(rootPath, [...undo, result.transactionId]));

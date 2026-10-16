@@ -12,7 +12,7 @@
 
 `npm.cmd run build` 经[构建脚本](../../../scripts/build-office-kit-adapter.mjs)使用 vswhere 查找 MSVC x64，并按源码和编译条件校验缓存；运行发布包不需要编译器。
 
-bootstrap seed 仅复用无文档的扩展注册及受限安装标记，不含字体、硬件等运行缓存。`warmup()` 等同 `start()`，完成 DLL/适配器、hook 和 UNO 通用服务初始化；当前没有按格式加载空文档、初始化文档渲染或生成首瓦片。hook 已覆盖多少字体初始化需 trace 确认，不能假定字体完全冷启动。
+bootstrap seed 仅复用无文档的扩展注册及受限安装标记，不含字体、硬件等运行缓存。无参数 warmup 启动 DLL、hook 和 UNO 通用服务；传入样本后按 load→initialize→256px首瓦片→close 分阶段预热，阶段间核对系统空闲和真实请求。真实打开优先清理隐藏模型，已执行LO调用不可抢占。分段trace关联request/session/view，分别记录排队、load、initialize、首瓦片、decode、presented及首次输入回执。
 
 [ABI 声明](../src/kit-abi-source.ts)和 C++ 同时校验固定二进制身份、导出地址、指令前缀；不匹配即停止。引擎版本由[锁文件](../../../engines.lock.json)管理。
 

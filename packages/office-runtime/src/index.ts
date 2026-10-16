@@ -24,6 +24,8 @@ export * from './types';
 interface Pending { method: string; resolve: (value: any) => void; reject: (error: unknown) => void; timer: NodeJS.Timeout }
 interface OpenRecord { documentId: string; viewIds: Set<string>; promise?: Promise<NativeOfficeState> }
 interface AppearanceResult { theme: string; canvasColor: number; whiteDocumentBackground: boolean }
+interface OfficeOpenTrace { requestId: string; sessionId: string; documentId: string; viewId: string; format: string; startedAt: number; stages: { stage: string; atMs: number; durationMs?: number }[] }
+export interface OfficeWarmupSource { format: NativeOfficeOpen['format']; bytes: Uint8Array }
 const observationCounters = ['engineRevision', 'selectionEpoch', 'eventSequence', 'layoutRevision', 'renderGeneration', 'partGeometryGeneration'] as const;
 type ObservationLease = { sessionId: string; documentId: string; viewId: string; engineEpoch: string } & Record<typeof observationCounters[number], number>;
 interface ObservationReceipt { token: string; lease: ObservationLease; state: NativeOfficeState; host?: { state: NativeOfficeState; identity: object } }
@@ -66,9 +68,41 @@ export class NativeOfficeRuntime extends EventEmitter {
   private startupStartedAt = 0;
   private readonly startupStages: { code: string; atMs: number; elapsedMs?: number }[] = [];
   private readonly commandCatalogs = new Map<string, Promise<{ command: string; label?: string; group?: number }[]>>();
-  get statistics() { return { started: !!this.worker, pending: this.pending.size, transport: this.worker ? this.kitTransport : 'not-started', startupMs: this.startupMilliseconds, startupStages: structuredClone(this.startupStages), methods: structuredClone(this.timings) }; }
-  /** Idle warmup shares exactly the same authenticated startup as first open. */
-  warmup() { return this.start(); }
+  private readonly openTraces = new Map<string, OfficeOpenTrace>();
+  private warmupFlight?: Promise<void>;
+  private activityGeneration = 0;
+  get statistics() { return { started: !!this.worker, pending: this.pending.size, transport: this.worker ? this.kitTransport : 'not-started', startupMs: this.startupMilliseconds, startupStages: structuredClone(this.startupStages), opens: [...this.openTraces.values()].map(({ startedAt: _startedAt, ...trace }) => structuredClone(trace)), methods: structuredClone(this.timings) }; }
+  /** Stage boundaries yield to real work. An already executing LO call is never aborted. */
+  async warmup(sources: OfficeWarmupSource[] = [], shouldContinue: () => boolean = () => true) {
+    await this.start();
+    if (!sources.length || this.options.backend !== 'kit' || this.warmupFlight) return this.warmupFlight;
+    const generation = this.activityGeneration, idle = () => !this.closed && !this.sessions.size && !this.pending.size && generation === this.activityGeneration && shouldContinue();
+    const flight = (async () => {
+      for (const source of sources.slice(0, 3)) {
+        if (!idle()) break;
+        if (!['docx','xlsx','pptx'].includes(source.format) || source.bytes.byteLength > 1024 * 1024) continue;
+        const warmupId = randomUUID();
+        try {
+          for (const stage of ['load','initialize','paint'] as const) {
+            if (!idle()) break;
+            const result = await this.request<{ completed: boolean }>('warmup', { warmupId, stage, format: source.format, ...(stage === 'load' ? { bytes: Buffer.from(source.bytes).toString('base64') } : {}) });
+            if (!result.completed) break;
+            await new Promise<void>(done => { const timer = setTimeout(done, 80); timer.unref(); });
+          }
+        } finally {
+          // Cleanup is an ownership operation and must run even after activity cancelled warming.
+          if (!this.closed) await this.request('warmup', { warmupId, stage: 'close' });
+        }
+      }
+    })();
+    this.warmupFlight = flight;
+    try { await flight; } finally { if (this.warmupFlight === flight) this.warmupFlight = undefined; }
+  }
+  recordOpenStage(sessionId: string, viewId: string, stage: string, durationMs?: number) {
+    const trace = [...this.openTraces.values()].reverse().find(value => value.sessionId === sessionId && value.viewId === viewId);
+    if (!trace || trace.stages.some(value => value.stage === stage) || trace.stages.length >= 32) return;
+    trace.stages.push({ stage, atMs: Math.round((performance.now() - trace.startedAt) * 100) / 100, ...(durationMs !== undefined && Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs: Math.round(durationMs * 100) / 100 } : {}) });
+  }
   readonly workerDirectory: string;
   constructor(readonly options: NativeOfficeWorkerOptions) {
     super(); this.workerDirectory = join(resolve(options.dataDir), 'native-office', randomUUID());
@@ -202,6 +236,11 @@ export class NativeOfficeRuntime extends EventEmitter {
     if (this.kitTransport === 'failed' || this.kitTransport === 'binary' && source !== 'socket') return;
     if (!value || typeof value !== 'object') return;
     const message = value as Record<string, any>;
+    if (message.type === 'open-trace') {
+      const trace = this.openTraces.get(message.requestId);
+      if (trace && trace.sessionId === message.sessionId && trace.viewId === message.viewId && typeof message.stage === 'string' && /^[a-z-]{1,40}$/.test(message.stage)) this.recordOpenStage(trace.sessionId, trace.viewId, message.stage, message.durationMs);
+      return;
+    }
     if (message.type === 'diagnostic' && typeof message.code === 'string' && /^OFFICE_KIT_(?:DLL|ADAPTER|BOOTSTRAP|HOOK|UI_RESOURCE|UNO)/.test(message.code) && this.startupStages.length < 64) this.startupStages.push({ code: message.code, atMs: performance.now() - this.startupStartedAt, ...(Number.isFinite(message.elapsedMs) ? { elapsedMs: message.elapsedMs } : {}) });
     if (message.type === 'ready') {
       if (this.kitTransport === 'authenticating') { this.pendingKitReady = { type: 'ready', engineEpoch: String(message.engineEpoch) }; return; }
@@ -220,13 +259,15 @@ export class NativeOfficeRuntime extends EventEmitter {
     for (const value of this.pending.values()) { clearTimeout(value.timer); value.reject(error); }
     this.pending.clear();
   }
-  private async request<T>(method: string, args: Record<string, unknown>, mutation = false): Promise<T> {
+  private async request<T>(method: string, args: Record<string, unknown>, mutation = false, requestId?: string): Promise<T> {
     const requested = performance.now();
+    if (method !== 'warmup') this.activityGeneration++;
     await this.start();
     if (!this.worker || this.closed) throw new NativeOfficeError('NATIVE_WORKER_EXITED', '原生编辑器桥接已经退出。');
     if (!this.rpc || this.kitTransport === 'failed') throw new NativeOfficeError('NATIVE_CONNECTION_LOST', '内嵌 Office 连接已中断。');
     if (mutation && this.uncertain) throw new NativeOfficeError('NATIVE_OUTCOME_UNKNOWN', '上一原生操作尚未确认，请保留恢复内容并重新读取。');
-    const id = randomUUID();
+    const id = requestId ?? randomUUID();
+    if (method === 'open') this.recordOpenStage(String(args.sessionId), String(args.viewId), 'runtime-ready', performance.now() - requested);
     const metrics = this.timings[method] ??= { count: 0, completed: 0, totalMs: 0, maximumMs: 0 }, started = requested; metrics.count++;
     return new Promise<T>((resolveResult, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); this.retirePixelRequest(id, method); if (mutation) this.uncertain = true; reject(new NativeOfficeError('NATIVE_REQUEST_TIMEOUT', '原生操作超时；不会自动重复执行修改。')); }, this.options.requestTimeoutMs ?? 120000);
@@ -245,8 +286,13 @@ export class NativeOfficeRuntime extends EventEmitter {
     if (record && record.documentId !== value.documentId) throw new NativeOfficeError('NATIVE_SESSION_MISMATCH', '原生会话属于另一文档。');
     if (record?.promise) await record.promise;
     if (!record) { record = { documentId: value.documentId, viewIds: new Set() }; this.sessions.set(value.sessionId, record); this.documentSessions.set(value.documentId, value.sessionId); }
-    const opening = this.request<NativeOfficeState>('open', { ...value, ...layout, bytes: Buffer.from(value.bytes).toString('base64') }, true); record.promise = opening;
-    try { const state = await opening; record.viewIds.add(value.viewId); return state; }
+    const requestId = randomUUID(), startedAt = performance.now();
+    this.openTraces.set(requestId, { requestId, sessionId: value.sessionId, documentId: value.documentId, viewId: value.viewId, format: value.format, startedAt, stages: [] });
+    while (this.openTraces.size > 32) this.openTraces.delete(this.openTraces.keys().next().value!);
+    const bytes = Buffer.from(value.bytes.buffer, value.bytes.byteOffset, value.bytes.byteLength).toString('base64');
+    this.recordOpenStage(value.sessionId, value.viewId, 'encode-bytes', performance.now() - startedAt);
+    const opening = this.request<NativeOfficeState>('open', { ...value, ...layout, bytes }, true, requestId); record.promise = opening;
+    try { const state = await opening; this.recordOpenStage(value.sessionId, value.viewId, 'open-reply'); record.viewIds.add(value.viewId); return state; }
     catch (error) { if (!record.viewIds.size) { this.sessions.delete(value.sessionId); this.documentSessions.delete(value.documentId); } throw error; }
     finally { if (record.promise === opening) record.promise = undefined; }
   }
