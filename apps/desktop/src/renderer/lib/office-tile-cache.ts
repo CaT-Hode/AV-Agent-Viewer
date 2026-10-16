@@ -1,7 +1,7 @@
 import type { Rect } from '../../../../../packages/contracts/src/index';
 import { intersectOfficeRect } from './office-surface-geometry';
 
-type TileEntry<T> = { key: string; value: T; bytes: number; rect: Rect; part: number; pinned: boolean };
+type TileEntry<T> = { key: string; value: T; bytes: number; rect: Rect; part: number; pinned: boolean; pixelVersion: number };
 export type OfficeTileTicket = { id: number; key: string; part: number; rect: Rect };
 /** Bounded LRU; resources are released exactly once, including replacement and failed cache admission. */
 export class OfficeTileCache<T> {
@@ -17,6 +17,9 @@ export class OfficeTileCache<T> {
   get byteLength() { return this.resident; }
   /** Raster presentation changes only when actual resident pixels change. Reading LRU order is not a repaint. */
   get version(){return this.revision;}
+  /** Read the exact resident pixels without changing eviction order. Missing
+   * entries use zero; later admissions never reuse a retired pixel version. */
+  pixelVersion(key: string) { return this.entries.get(key)?.pixelVersion ?? 0; }
   get(key: string) { const entry = this.entries.get(key); if (!entry) return; this.entries.delete(key); this.entries.set(key, entry); return entry.value; }
   has(key: string) { return this.entries.has(key); }
   begin(key: string, rect: Rect, part: number): OfficeTileTicket { const ticket = { id: ++this.ticketId, key, part, rect: { ...rect } }; this.pending.set(ticket.id, { ticket, valid: true }); return ticket; }
@@ -29,7 +32,7 @@ export class OfficeTileCache<T> {
   }
   put(key: string, value: T, bytes: number, rect: Rect, part: number): boolean {
     if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > this.budgetBytes) { this.dispose(value); return false; }
-    this.delete(key); this.entries.set(key, { key, value, bytes, rect: { ...rect }, part, pinned: false }); this.resident += bytes;this.revision++;
+    this.delete(key); const pixelVersion = ++this.revision; this.entries.set(key, { key, value, bytes, rect: { ...rect }, part, pinned: false, pixelVersion }); this.resident += bytes;
     this.trim(); return this.entries.has(key);
   }
   pin(keys: ReadonlySet<string>) { for (const entry of this.entries.values()) entry.pinned = keys.has(entry.key); this.trim(); }

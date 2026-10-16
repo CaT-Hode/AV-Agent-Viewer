@@ -3,7 +3,7 @@ import { copyFile, link, mkdir, readFile, readdir, rename, unlink, writeFile } f
 import { constants as fsConstants } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import JSZip from 'jszip';
-import ExcelJS from 'exceljs';
+import { loadExcelJS } from '../../format-adapters/src/exceljs-loader';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { parse, serialize } from 'parse5';
 import type { Format } from '../../contracts/src/index';
@@ -62,6 +62,7 @@ export async function translateDocumentBytes(format: Format, bytes: Uint8Array, 
     }
     output = async () => { for (const item of changed) zip.file(item.path, serializer.serializeToString(item.doc)); return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }); };
   } else if (format === 'xlsx') {
+    const ExcelJS = await loadExcelJS();
     const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(bytes as never);
     workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => {
       if (cell.type !== ExcelJS.ValueType.String || typeof cell.value !== 'string' || !cell.value.trim()) return;
@@ -88,6 +89,9 @@ export class DocumentTranslationService {
   private controllers = new Map<string, AbortController>();
   private running = new Map<string, Promise<void>>();
   private preparing = new Map<string, Promise<void>>();
+  private starting = new Set<Promise<TranslationJob>>();
+  private pauseEpoch = 0;
+  private pauseFlight?: Promise<void>;
   private pausing = new Set<string>();
   private publishing = new Set<string>();
   private publicationQueue: Promise<void> = Promise.resolve();
@@ -116,20 +120,46 @@ export class DocumentTranslationService {
     }
   }
   async start(documentId: string, targetLanguage: string, windowId = 'main', outputMode: 'managed' | 'beside-source' = 'managed') {
+    // Register before the first source-freeze await: shutdown must also account
+    // for requests which do not have a validated source or public job ID yet.
+    const work = this.startSource(documentId, targetLanguage, windowId, outputMode, this.pauseEpoch, !!this.pauseFlight);
+    this.starting.add(work);
+    try { return await work; } finally { this.starting.delete(work); }
+  }
+  private async startSource(documentId: string, targetLanguage: string, windowId: string, outputMode: 'managed' | 'beside-source', epoch: number, pausedAtEntry: boolean) {
     targetLanguage = translationLanguage(targetLanguage);
-    const source = this.core.getDocument(documentId), format = source.info.format;
-    if (format === 'web') throw new ViewerError('CAPABILITY_UNSUPPORTED', '网页翻译请使用原地翻译。');
+    const initialFormat = this.core.getDocument(documentId).info.format;
+    if (initialFormat === 'web') throw new ViewerError('CAPABILITY_UNSUPPORTED', '网页翻译请使用原地翻译。');
     const profile = this.executionProfile();
-    if (format === 'pdf' && !profile.pdfTranslate) throw new ViewerError('ENGINE_REQUIRED', 'PDF 同格式译文需要已配置的 BabelDOC 引擎。');
-    const bytes = source.bytes.slice(), sourceRevision = source.info.revision, sourceHash = sha(bytes), sourceTitle = source.info.title, sourcePath = source.info.path;
+    if (initialFormat === 'pdf' && !profile.pdfTranslate) throw new ViewerError('ENGINE_REQUIRED', 'PDF 同格式译文需要已配置的 BabelDOC 引擎。');
+    // Renderer draft acknowledgement is not a native mirror barrier. Freeze
+    // bytes and their matching model/revision inside Core's one document queue,
+    // including already committed edits not yet checkpointed by the idle poll.
+    const source = await this.core.freezeDocumentSource(documentId), format = source.document.format;
+    const bytes = source.bytes, sourceRevision = source.document.revision, sourceHash = source.sha256, sourceTitle = source.document.title, sourcePath = source.document.path;
     const duplicate = [...this.jobs.values()].find(j => j.sourceDocumentId === documentId && j.sourceRevision === sourceRevision && j.targetLanguage === targetLanguage && ['running','paused'].includes(j.status));
     if (duplicate) return duplicate;
     const job: TranslationJob = { id: randomUUID(), sourceDocumentId: documentId, sourceRevision, targetLanguage, status: 'running', stage: '翻译文本', completed: 0, total: 0 };
     const checkpoint: TranslationCheckpoint = { job, sourceHash, sourceTitle, sourcePath, format, windowId, outputMode, segments: [], modelFingerprint: profile.fingerprint, modelName: profile.model };
     this.jobs.set(job.id, job); const controller = new AbortController(); this.controllers.set(job.id, controller);
-    const preparation = (async () => { await mkdir(dirname(this.snapshotPath(job.id)), { recursive: true }); await writeFile(this.snapshotPath(job.id), bytes); await this.saveCheckpoint(checkpoint); })(); this.preparing.set(job.id, preparation);
-    try { await preparation; this.run(checkpoint, bytes, profile, controller); }
-    catch (error) { job.status = 'failed'; job.error = String(error); this.controllers.delete(job.id); throw error; }
+    const pauseRequested = () => pausedAtEntry || epoch !== this.pauseEpoch || this.pausing.has(job.id);
+    const markPaused = () => { job.status = 'paused'; job.stage = '可恢复'; job.error = undefined; };
+    const preparation = (async () => {
+      await mkdir(dirname(this.snapshotPath(job.id)), { recursive: true }); await writeFile(this.snapshotPath(job.id), bytes);
+      if (pauseRequested()) markPaused();
+      await this.saveCheckpoint(checkpoint);
+    })(); this.preparing.set(job.id, preparation);
+    try {
+      await preparation;
+      if (pauseRequested()) {
+        // A pause may arrive while the initial JSON write is in flight. Save
+        // its durable paused state before start/pauseAll are allowed to finish.
+        if (job.status !== 'paused') { markPaused(); await this.saveCheckpoint(checkpoint); }
+        this.controllers.delete(job.id); this.pausing.delete(job.id);
+        this.core.event('translation.paused', { jobId: job.id });
+      } else this.run(checkpoint, bytes, profile, controller);
+    }
+    catch (error) { job.status = 'failed'; job.error = String(error); this.controllers.delete(job.id); this.pausing.delete(job.id); throw error; }
     finally { this.preparing.delete(job.id); }
     return job;
   }
@@ -192,8 +222,30 @@ export class DocumentTranslationService {
     this.running.set(job.id, work);
   }
   cancel(id: string) { const controller = this.controllers.get(id); if (!controller) throw new ViewerError('TARGET_NOT_FOUND', '任务不在运行。'); if (this.publishing.has(id)) throw new ViewerError('TASK_FINALIZING', '译文正在发布，稍后即可打开。'); controller.abort(); }
-  async pauseAll() {
-    for (const [id, controller] of this.controllers) if (!this.publishing.has(id)) { this.pausing.add(id); controller.abort(); }
-    await Promise.allSettled([...this.preparing.values()]); await Promise.allSettled([...this.running.values()]);
+  pauseAll(): Promise<void> {
+    if (this.pauseFlight) return this.pauseFlight;
+    this.pauseEpoch++;
+    const work = this.drainPaused(); this.pauseFlight = work;
+    void work.finally(() => { if (this.pauseFlight === work) this.pauseFlight = undefined; }).catch(() => {});
+    return work;
+  }
+  private async drainPaused() {
+    let failed = false, failure: unknown;
+    while (true) {
+      for (const [id, controller] of this.controllers) if (!this.publishing.has(id)) { this.pausing.add(id); controller.abort(); }
+      const pending = [...new Set<Promise<unknown>>([...this.starting, ...this.preparing.values(), ...this.running.values()])];
+      if (!pending.length) {
+        // Let starts invoked in the same turn register before concluding that
+        // the service is quiescent. New starts during this pause are paused too.
+        await Promise.resolve();
+        if (!this.starting.size && !this.preparing.size && !this.running.size) break;
+        continue;
+      }
+      const results = await Promise.allSettled(pending);
+      for (const result of results) if (result.status === 'rejected' && !failed) { failed = true; failure = result.reason; }
+    }
+    // Preparation failures remain visible to start's caller and must not turn
+    // a shutdown barrier into an apparent successful recovery checkpoint.
+    if (failed) throw failure;
   }
 }

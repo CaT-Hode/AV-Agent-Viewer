@@ -42,6 +42,7 @@
   background:color-mix(in srgb,var(--document-paper-ink,#24303b) 8%,var(--document-paper,#fff));
 }
 .embedded-office-content { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 0 !important; overflow: auto; background: transparent; overscroll-behavior: contain; }
+.embedded-office-docx > .embedded-office-content { margin-inline:var(--office-word-left-inset,12px) var(--office-word-right-inset,12px);margin-top:var(--office-word-top-inset,84px);margin-bottom:12px; }
 .embedded-office-pptx > .embedded-office-content { margin-inline: var(--office-presentation-left-inset,12px) var(--office-presentation-right-inset,12px); margin-top: var(--office-presentation-top-inset,84px); margin-bottom:12px; }
 .embedded-office-pptx[data-office-fit-mode="manual"] > .embedded-office-content { margin-inline:12px; margin-bottom:24px; }
 .embedded-office-pptx[data-office-fit-mode="manual"] > .embedded-office-content::-webkit-scrollbar:horizontal { height:0; }

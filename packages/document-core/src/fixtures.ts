@@ -1,10 +1,9 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import JSZip from 'jszip';
-import ExcelJS from 'exceljs';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import PptxGenJS from 'pptxgenjs';
+import { officeDocumentTemplateBytes } from './office-templates';
 import type { Format } from '../../contracts/src/index';
 
 export const welcomeText = `# 欢迎使用 AgentViewer
@@ -47,19 +46,7 @@ export async function blankBytes(format: Format): Promise<Uint8Array> {
     zip.file('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>欢迎使用 AgentViewer</w:t></w:r></w:p><w:p><w:r><w:t>这是可编辑的 Word 文字块。编辑后另存文件，再重新打开检查。</w:t></w:r></w:p><w:p><w:r><w:t>未修改的 OOXML 部件保留，复杂排版需要完整 Office 引擎。</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>');
     return zip.generateAsync({ type: 'uint8array' });
   }
-  if (format === 'pptx') {
-    const ppt = new PptxGenJS(); ppt.layout = 'LAYOUT_WIDE';
-    const slide = ppt.addSlide(); slide.background = { color: 'F7F7FB' };
-    slide.addText('阅读与协作', { x: 0.9, y: 1.1, w: 10.5, h: 0.8, fontSize: 32, color: '403469', fontFace: 'Microsoft YaHei' });
-    slide.addText('选中内容 · 固定上下文 · 局部修改', { x: 0.9, y: 2.3, w: 10.5, h: 0.7, fontSize: 21, color: '62657B', fontFace: 'Microsoft YaHei' });
-    return new Uint8Array(await ppt.write({ outputType: 'arraybuffer' }) as ArrayBuffer);
-  }
-  if (format === 'xlsx') {
-    const workbook = new ExcelJS.Workbook(); const sheet = workbook.addWorksheet('功能清单');
-    sheet.addRows([['格式', '基础编辑', '引擎'], ['Markdown', '源码', 'CodeMirror'], ['PDF', '文字 / 页面', 'PDF.js + pdf-lib'], ['Word', '段落', 'OOXML'], ['网页', '鼠标 / 键盘', 'Chromium']]);
-    sheet.getRow(1).font = { bold: true }; sheet.columns.forEach(c => { c.width = 24; });
-    return new Uint8Array(await workbook.xlsx.writeBuffer());
-  }
+  if (format === 'pptx' || format === 'xlsx') return officeDocumentTemplateBytes('demo.' + format as 'demo.pptx' | 'demo.xlsx');
   if (format === 'pdf') {
     const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica);
     for (let i = 0; i < 3; i++) { const page = pdf.addPage([595, 842]); page.drawText('AgentViewer / Reading & Editing', { x: 50, y: 755, size: 23, font, color: rgb(0.25, 0.2, 0.5) }); page.drawText(`Page ${i + 1}: select text, add a note, save and reopen.`, { x: 50, y: 700, size: 14, font }); }

@@ -340,7 +340,7 @@ def attach(session,controller,args):
     view={'viewId':args['viewId'],'sessionId':session['sessionId'],'format':session['format'],'controller':controller,'frame':frame,'hwnd':hwnd,'owner':owner,'bounds':args['bounds'],'visible':bool(args.get('visible',True)),'selectionEpoch':0,'disposed':False,'layoutRevision':0,'actor':'human'}
     listener=SelectionChanged(session,view);controller.addSelectionChangeListener(listener);view['selectionListener']=listener
     interceptor=ManagedInterceptor(view);frame.registerDispatchProviderInterceptor(interceptor);view['interceptor']=interceptor
-    session['views'][args['viewId']]=view;session['activeViewId']=args['viewId'];hide_chrome(view);layout_view(view,args);register_file_drop(view)
+    session['views'][args['viewId']]=view;session['activeViewId']=args['viewId'];sync_native_view_appearance(view);hide_chrome(view);layout_view(view,args);register_file_drop(view)
     return view
 def layout_view(view,args):
     owner=int(args.get('ownerHwnd',view['owner']));bounds=args.get('bounds',view['bounds']);visible=bool(args.get('visible',view['visible']))
@@ -404,7 +404,7 @@ def ppt_text_parts(full,positions):
     try:return tuple(encoded[a*2:b*2].decode('utf-16-le') for a,b in [(0,offsets[0]),(offsets[0],offsets[1]),(offsets[1],len(encoded)//2)])
     except UnicodeError:fail('NATIVE_STYLE_TARGET_UNAVAILABLE','实际文字范围没有完整字符边界。')
 
-def ppt_text_transaction_target(session,view,value):
+def ppt_text_transaction_target(session,view,value,whole_shape=False):
     text=value.Text;shape=text.queryInterface(uno.getTypeByName('com.sun.star.drawing.XShape'));page=view['controller'].getCurrentPage()
     if shape is None:fail('NATIVE_STYLE_TARGET_UNAVAILABLE','当前文字范围不属于可验证的真实幻灯片对象。')
     try:index=shape.getPropertyValue('ZOrder')
@@ -415,7 +415,7 @@ def ppt_text_transaction_target(session,view,value):
     native=value.getPropertyValue('Selection');positions=[native.Start.Paragraph,native.Start.PositionInParagraph,native.End.Paragraph,native.End.PositionInParagraph]
     if any(type(v) is not int or v<0 for v in positions) or tuple(positions[:2])>tuple(positions[2:]):fail('NATIVE_STYLE_TARGET_UNAVAILABLE','当前原生文字范围位置无效。')
     full=text.getString()
-    if len(full.encode('utf-16-le'))//2>48000:fail('NATIVE_STYLE_TARGET_UNAVAILABLE','当前文字对象超出可验证的字符范围。')
+    if not whole_shape and len(full.encode('utf-16-le'))//2>48000:fail('NATIVE_STYLE_TARGET_UNAVAILABLE','当前文字对象超出可验证的字符范围。')
     prefix,selected,suffix=ppt_text_parts(full,positions);actual=value.getString()
     if selected!=actual.replace('\r\n','\n').replace('\r','\n'):fail('SELECTION_CHANGED','实际文字范围与对象内容不一致。')
     return {'text':text,'shape':shape,'page':page,'index':index,'slide':slide,'nativeSelection':native,'positions':positions,'expectedText':actual,'fullText':full,'prefix':prefix,'suffix':suffix}
@@ -448,6 +448,33 @@ def ppt_replace_text(session,view,target,replacement,args):
     normalized=replacement['text'].replace('\r\n','\n').replace('\r','\n')
     if inserted.getString().replace('\r\n','\n').replace('\r','\n')!=normalized:fail('NATIVE_STYLE_APPLY_FAILED','原生文字事务没有产生可验证的替换结果。')
     if changed.getString().replace('\r\n','\n').replace('\r','\n')!=target['prefix']+normalized+target['suffix']:fail('NATIVE_STYLE_APPLY_FAILED','原生文字对象的替换或未选中内容未通过验证，未报告成功。')
+def ppt_set_shape_text(session,view,op,args):
+    # Viewless SvxShapeText::setString updates an Nbc text copy without native
+    # document undo/modify notifications. Use the same real Outliner transaction
+    # as selection replacement, after binding the entire actual top-level shape.
+    for candidate in session['views'].values():
+        if candidate.get('disposed'):continue
+        cached=candidate.get('accessibilityCache',{}).get('data')
+        if own_ime_pending(candidate) or candidate.get('nativeEditing') or candidate.get('caretVisible') or cached and cached[2]:fail('NATIVE_PENDING_INPUT','幻灯片文字输入尚未提交，没有隐式结束另一视图的编辑。')
+        if not candidate['frame'].getContainerWindow().isEnabled():fail('NATIVE_PENDING_INPUT','原生对话框尚未结束。')
+    page,shape=mapped_shape(session,op['slideId'],op['shapeId'])
+    try:
+        if shape.supportsService('com.sun.star.drawing.GroupShape'):fail('NATIVE_STYLE_TARGET_UNAVAILABLE','组合对象不能作为唯一顶层文字目标。')
+        text=shape.getText();full=text.getString();index=shape.getPropertyValue('ZOrder')
+    except RuntimeError:raise
+    except:fail('NATIVE_STYLE_TARGET_UNAVAILABLE','当前对象不是可验证的原生文字对象。')
+    if type(index) is not int or index<0 or index>=page.getCount() or page.getByIndex(index)!=shape:fail('NATIVE_STYLE_TARGET_UNAVAILABLE','当前文字对象不属于该页的唯一顶层对象。')
+    if full==op['text']:return
+    # Changing the page may retire a live Outliner. The all-view guard above
+    # forbids pending input, and identity/content/version must still agree after it.
+    view['controller'].setCurrentPage(page)
+    expected(session,view,{key:value for key,value in args.items() if key!='expectedSelectionEpoch'})
+    actual_page,actual_shape=mapped_shape(session,op['slideId'],op['shapeId'])
+    if actual_page!=page or actual_shape!=shape or shape.getText().getString()!=full:fail('SELECTION_CHANGED','真实文字对象或全文已变化，没有猜测目标。')
+    value=text.createTextCursor();value.gotoStart(False);value.gotoEnd(True)
+    target=ppt_text_transaction_target(session,view,value,True)
+    if target['shape']!=shape or target['page']!=page or target['index']!=index or target['fullText']!=full or target['prefix'] or target['suffix']:fail('SELECTION_CHANGED','原生全文范围不完整，没有替换。')
+    ppt_replace_text(session,view,target,{'expectedText':value.getString(),'text':op['text']},args)
 def replace_selected_text(session,view,replacement,args=None):
     value=selected_text_range(session,view)
     if value is None:fail('NATIVE_SELECTION_UNSUPPORTED','当前选区不是可直接编辑的实际文字范围。')
@@ -517,6 +544,10 @@ def selection(session,view):
         else:
             pages=session['doc'].getDrawPages();page=controller.getCurrentPage();index=next((i for i in range(pages.getCount()) if pages.getByIndex(i)==page),0)
             if selected is not None and hasattr(selected,'getCount'):
+                # Impress getSelection falls back to marked shapes when its
+                # active Outliner has only a caret (e.g. after text Undo).
+                # That fallback never proves an object or full-text selection.
+                if view.get('nativeEditing') or view.get('caretVisible'):return {'kind':'none','text':'','slideIndex':index}
                 objects=[selected.getByIndex(i) for i in range(min(selected.getCount(),100))];result={'kind':'objects' if objects else 'none','text':'\n'.join(getattr(v,'String','') for v in objects)[:48000],'slideIndex':index,'objectNames':[getattr(v,'Name','') for v in objects]}
                 try:
                     if selected.getCount()>100:fail('NATIVE_SELECTION_UNSUPPORTED','所选对象数量超出可验证范围。')
@@ -652,16 +683,42 @@ def query(session,view,target):
         return {'sheets':items,'activeIndex':next((i for i in range(sheets.getCount()) if sheets.getByIndex(i)==active),0)}
     if kind=='cell-range':
         cells=checked_range(sheet_by_name(session,target['sheetName']),target['range']);return {'sheetName':target['sheetName'],'range':target['range'],**query_cell_range(session,cells)}
+    if kind=='slide-thumbnails':
+        if session['format']!='pptx':fail('NATIVE_QUERY_UNSUPPORTED','此文档不是演示文稿。')
+        indices=target.get('indices');source=slide_thumbnail_source(session)
+        if not session.get('slideThumbnailHistoryVerified'):fail('NATIVE_QUERY_UNSUPPORTED','此后端无法验证可复用的缩略图来源，请使用完整幻灯片查询。')
+        if not isinstance(indices,list) or not 1<=len(indices)<=3 or any(type(index) is not int or not 0<=index<10000 for index in indices) or len(set(indices))!=len(indices):fail('INVALID_NATIVE_QUERY','请提供1至3个不重复的0-based幻灯片索引。')
+        if not isinstance(target.get('source'),dict) or target['source']!=source:fail('STALE_NATIVE_THUMBNAIL','幻灯片来源已变化，请重新读取页面列表。')
+        if slide_thumbnail_pending(session,view):fail('NATIVE_PENDING_INPUT','请先完成此文档各视图中的输入，再生成缩略图。')
+        pages=doc.getDrawPages()
+        if any(index>=pages.getCount() for index in indices):fail('INVALID_TARGET','目标幻灯片不可用。')
+        items=[]
+        for index in indices:
+            thumbnail=slide_thumbnail(session,pages.getByIndex(index),index,source)
+            if not thumbnail:
+                if slide_thumbnail_pending(session,view):fail('NATIVE_PENDING_INPUT','生成缩略图期间此文档仍有未完成输入，请稍后重试。')
+                if source!=slide_thumbnail_source(session):fail('STALE_NATIVE_THUMBNAIL','生成缩略图期间幻灯片来源已变化，请重新读取页面列表。')
+                fail('NATIVE_THUMBNAIL_UNAVAILABLE','原生引擎未能生成所请求的幻灯片缩略图。')
+            items.append({'index':index,'thumbnail':thumbnail})
+        if slide_thumbnail_pending(session,view):fail('NATIVE_PENDING_INPUT','生成缩略图期间此文档仍有未完成输入，请稍后重试。')
+        if source!=slide_thumbnail_source(session):fail('STALE_NATIVE_THUMBNAIL','生成缩略图期间幻灯片来源已变化，请重新读取页面列表。')
+        return {'source':source,'slides':items}
     if kind=='slides':
         if session['format']!='pptx':fail('NATIVE_QUERY_UNSUPPORTED','此文档不是演示文稿。')
-        pages=doc.getDrawPages();active=controller.getCurrentPage();items=[]
+        if 'includeThumbnails' in target and type(target['includeThumbnails']) is not bool:fail('INVALID_NATIVE_QUERY','includeThumbnails必须为布尔值。')
+        include_thumbnails=target.get('includeThumbnails',True);pages=doc.getDrawPages();active=controller.getCurrentPage();items=[];source=slide_thumbnail_source(session)
+        if not include_thumbnails and not session.get('slideThumbnailHistoryVerified'):fail('NATIVE_QUERY_UNSUPPORTED','此后端无法验证可复用的缩略图来源，请使用完整幻灯片查询。')
         for index in range(pages.getCount()):
             page=pages.getByIndex(index);item={'index':index,'name':page.Name,'width':page.Width,'height':page.Height,'text':'\n'.join(getattr(page.getByIndex(i),'String','') for i in range(page.getCount()))}
-            if index<40:
-                thumbnail=slide_thumbnail(session,page,index)
+            if include_thumbnails and index<40:
+                thumbnail=slide_thumbnail(session,page,index,source)
                 if thumbnail:item['thumbnail']=thumbnail
             items.append(item)
-        return {'slides':items,'activeIndex':next((i for i in range(pages.getCount()) if pages.getByIndex(i)==active),0)}
+        result={'slides':items,'activeIndex':next((i for i in range(pages.getCount()) if pages.getByIndex(i)==active),0)}
+        if not include_thumbnails:
+            if source!=slide_thumbnail_source(session):fail('STALE_NATIVE_THUMBNAIL','读取列表期间幻灯片来源已变化，请重新读取。')
+            result['thumbnailSource']=source
+        return result
     if kind=='shapes':
         if session['format']!='pptx':fail('NATIVE_QUERY_UNSUPPORTED','此文档不是演示文稿。')
         pages=doc.getDrawPages();index=target['slideIndex']
@@ -690,10 +747,31 @@ def query(session,view,target):
         return {'target':target['target'],'properties':items}
     fail('NATIVE_QUERY_UNSUPPORTED','此原生查询尚未接入。')
 
-def slide_thumbnail(session,page,index):
-    cache=session.setdefault('slideThumbnails',{})
-    key=(session['engineRevision'],index)
-    if key in cache:return cache[key]
+def slide_thumbnail_pending(session,view):
+    return any(not item.get('disposed') and (own_ime_pending(item) or item.get('nativeEditing') or item.get('caretVisible')) for item in session.get('views',{'target':view}).values())
+
+def slide_thumbnail_source(session):
+    if globals().get('refresh_pending_surface_geometries'):refresh_pending_surface_geometries(session)
+    pages=session['doc'].getDrawPages();geometry=[(page.Name,page.Width,page.Height) for page in (pages.getByIndex(index) for index in range(pages.getCount()))]
+    appearance=globals().get('native_appearance')
+    digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode('utf-8')).hexdigest()
+    # Physical Outliner Undo/Redo can change its real history without an
+    # XModifyListener revision. Both native history and actual invalidate
+    # generations participate; view-only changes may conservatively miss.
+    try:
+        manager=session['doc'].getUndoManager();history=[list(manager.getAllUndoActionTitles()),list(manager.getAllRedoActionTitles())];session['slideThumbnailHistoryVerified']=True
+    except:
+        history=None;session['slideThumbnailHistoryVerified']=False
+        session.pop('slideThumbnails',None);session.pop('slideThumbnailBytes',None);session.pop('slideThumbnailSource',None)
+    generations=sorted((name,item.get('projectionEventSequence',0),item.get('renderGeneration',0)) for name,item in session.get('views',{}).items() if not item.get('disposed'))
+    return {'documentId':session['documentId'],'sessionId':session['sessionId'],'engineEpoch':epoch,'engineRevision':session['engineRevision'],'partGeometryGeneration':session.get('partGeometryGeneration',0),'appearanceKey':digest(appearance),'geometryKey':digest(geometry),'renderKey':digest([history,generations])}
+
+def slide_thumbnail(session,page,index,source=None):
+    source=source if source is not None else slide_thumbnail_source(session);scope=json.dumps(source,sort_keys=True,separators=(',',':'))
+    if session.get('slideThumbnailSource')!=scope:
+        session['slideThumbnails']={};session['slideThumbnailBytes']=0;session['slideThumbnailSource']=scope
+    cache=session.setdefault('slideThumbnails',{});key=index
+    if session.get('slideThumbnailHistoryVerified') and not slide_thumbnail_pending(session,{}) and key in cache:return cache[key]
     path=ROOT/('thumbnail-'+uuid.uuid4().hex+'.png')
     try:
         export=sm.createInstanceWithContext('com.sun.star.drawing.GraphicExportFilter',ctx);export.setSourceDocument(page)
@@ -701,8 +779,14 @@ def slide_thumbnail(session,page,index):
         if not export.filter(props({'URL':path.as_uri(),'MediaType':'image/png','FilterData':options})):return None
         data=path.read_bytes()
         if not data.startswith(b'\x89PNG\r\n\x1a\n') or len(data)>2*1024*1024:return None
-        value='data:image/png;base64,'+base64.b64encode(data).decode();cache[key]=value
-        while len(cache)>40:cache.pop(next(iter(cache)))
+        value='data:image/png;base64,'+base64.b64encode(data).decode()
+        if source!=slide_thumbnail_source(session):return None
+        # Older backends without a readable history still render freshly, but
+        # cannot establish a reusable content receipt from a guessed revision.
+        if not session.get('slideThumbnailHistoryVerified') or slide_thumbnail_pending(session,{}):return value
+        cache[key]=value;session['slideThumbnailBytes']=session.get('slideThumbnailBytes',0)+len(value)
+        while len(cache)>64 or session['slideThumbnailBytes']>8*1024*1024:
+            removed=cache.pop(next(iter(cache)));session['slideThumbnailBytes']-=len(removed)
         return value
     except:return None
     finally:
@@ -777,7 +861,7 @@ def utf16_index(text,index):
         if total>index:fail('INVALID_TARGET','文字范围截断了 Unicode 字符。')
     if total==index:return len(text)
     fail('INVALID_TARGET','文字范围超出正文。')
-def execute_operation(session,view,op):
+def execute_operation(session,view,op,args=None):
     doc=session['doc'];kind=op['kind'];point=lambda value:round(value*2540/72)
     if kind.startswith('word.') or kind.startswith('office.'):
         target=paragraph(session,op.get('blockId')) if session['format']=='docx' and 'blockId' in op else mapped_shape(session,op['slideId'],op['blockId'])[1] if session['format']=='pptx' else None
@@ -863,17 +947,11 @@ def execute_operation(session,view,op):
         else:fail('NATIVE_OPERATION_UNSUPPORTED','此工作表操作尚未映射到原生引擎。')
     elif kind.startswith('slides.'):
         pages=doc.getDrawPages();page,index=mapped_slide(session,op['slideId']) if 'slideId' in op else (None,-1)
-        if kind=='slides.setText':mapped_shape(session,op['slideId'],op['shapeId'])[1].String=op['text']
-        elif kind in ['slides.setShapeBounds','slides.setShapeStyle']:
+        if kind=='slides.setText':ppt_set_shape_text(session,view,op,args or {})
+        elif kind=='slides.setShapeStyle':apply_mapped_shape_style(session,view,op,args or {})
+        elif kind=='slides.setShapeBounds':
             shape=mapped_shape(session,op['slideId'],op['shapeId'])[1]
-            if kind=='slides.setShapeBounds':shape.Position=uno.createUnoStruct('com.sun.star.awt.Point',round(op['x']*page.Width),round(op['y']*page.Height));shape.Size=uno.createUnoStruct('com.sun.star.awt.Size',round(op['width']*page.Width),round(op['height']*page.Height))
-            else:
-                text_style(shape,op)
-                if 'fill' in op:shape.FillStyle=uno.Enum('com.sun.star.drawing.FillStyle','SOLID');shape.FillColor=int(op['fill'],16)
-                if 'lineColor' in op:shape.LineColor=int(op['lineColor'],16)
-                if 'lineWidth' in op:shape.LineWidth=point(op['lineWidth'])
-                if 'rotation' in op:shape.RotateAngle=round(op['rotation']*100)
-                if 'alignment' in op:shape.ParaAdjust=uno.Enum('com.sun.star.style.ParagraphAdjust',{'left':'LEFT','center':'CENTER','right':'RIGHT'}[op['alignment']])
+            shape.Position=uno.createUnoStruct('com.sun.star.awt.Point',round(op['x']*page.Width),round(op['y']*page.Height));shape.Size=uno.createUnoStruct('com.sun.star.awt.Size',round(op['width']*page.Width),round(op['height']*page.Height))
         elif kind=='slides.addTextShape':
             shape=doc.createInstance('com.sun.star.drawing.TextShape');shape.Position=uno.createUnoStruct('com.sun.star.awt.Point',round(op['x']*page.Width),round(op['y']*page.Height));shape.Size=uno.createUnoStruct('com.sun.star.awt.Size',round(op['width']*page.Width),round(op['height']*page.Height));page.add(shape);shape.String=op['text']
         elif kind=='slides.deleteShape':page.remove(mapped_shape(session,op['slideId'],op['shapeId'])[1])
@@ -971,14 +1049,25 @@ def store_snapshot_file(session,output,filter_name):
                 try:intermediate.unlink()
                 except FileNotFoundError:pass
 
-def snapshot(session,view,export_format=None):
+def snapshot(session,view,export_format=None,known=None):
+    def response(result,data):
+        # The host lends its verified mirror, never a second resident cache.
+        # Native state, undo and every controller's input barrier are still
+        # checked before this branch. Only the wire payload is omitted.
+        if not export_format and isinstance(known,dict) and type(known.get('engineRevision')) is int and isinstance(known.get('sha256'),str) and len(known['sha256'])==64 and known.get('engineEpoch')==epoch and known.get('engineRevision')==result.get('engineRevisionAfter')==result['state'].get('engineRevision') and known.get('sha256')==result.get('sha256'):
+            return dict(result,unchanged=True)
+        return dict(result,bytes=base64.b64encode(data).decode())
     for candidate in session['views'].values():
         if not candidate.get('disposed') and state(session,candidate)['pendingInput']:fail('NATIVE_PENDING_INPUT','此文档的原生视图仍有未完成输入，没有自动提交。')
     cached=session.get('lastSnapshot');current_undo=undo_state(session)
-    if export_format is None and cached and cached.get('result') and cached['engineRevision']==session['engineRevision'] and cached.get('undoToken')==current_undo.get('token') and cached.get('dirty')==session['doc'].isModified():
+    # An explicit native-format copy may use the same verified immutable bytes,
+    # but never a cross-format or legacy cache without a declared format/raw body.
+    same_format_copy=export_format==session['format'] and cached and isinstance(cached.get('result'),dict) and cached['result'].get('format')==export_format and isinstance(cached.get('data'),bytes)
+    if (export_format is None or same_format_copy) and cached and cached.get('result') and cached['engineRevision']==session['engineRevision'] and cached.get('undoToken')==current_undo.get('token') and cached.get('dirty')==session['doc'].isModified():
         # ZIP metadata is not a content clock. Reuse already-verified same-version bytes,
         # refreshing view state while preserving the all-controller input barrier.
-        result=dict(cached['result']);result['state']=state(session,view);result['dirty']=session['doc'].isModified();return result
+        result=dict(cached['result']);result['state']=state(session,view);result['dirty']=session['doc'].isModified()
+        return response(result,cached['data']) if 'data' in cached else result
     format=export_format or session['format'];filter_name=FILTERS.get(format) or {'docx':'writer_pdf_Export','xlsx':'calc_pdf_Export','pptx':'impress_pdf_Export'}.get(session['format']) if format=='pdf' else FILTERS.get(format)
     if not filter_name:fail('NATIVE_EXPORT_UNSUPPORTED','此导出格式尚未接入。')
     family={'docx':{'docx','odt','pdf'},'xlsx':{'xlsx','ods','pdf'},'pptx':{'pptx','odp','pdf'}}
@@ -994,9 +1083,9 @@ def snapshot(session,view,export_format=None):
         after=session['engineRevision'];undo_after=undo_state(session);dirty_after=session['doc'].isModified()
         if before==after and undo_before==undo_after and dirty_after==dirty:
             digest=hashlib.sha256(data).hexdigest()
-            result={'bytes':base64.b64encode(data).decode(),'sha256':digest,'format':format,'engineRevisionBefore':before,'engineRevisionAfter':after,'stable':True,'dirty':dirty,'undoToken':undo_after.get('token'),'state':state(session,view)}
-            if not export_format:session['lastSnapshot']={'engineRevision':after,'hash':digest,'undoToken':result['undoToken'],'dirty':dirty,'result':result};session['mappingBytes']=data
-            return result
+            result={'sha256':digest,'format':format,'engineRevisionBefore':before,'engineRevisionAfter':after,'stable':True,'dirty':dirty,'undoToken':undo_after.get('token'),'state':state(session,view)}
+            if not export_format:session['lastSnapshot']={'engineRevision':after,'hash':digest,'undoToken':result['undoToken'],'dirty':dirty,'result':result,'data':data};session['mappingBytes']=data
+            return response(result,data)
         emit(snapshot_diagnostic(session,attempt,format,before,after,dirty,dirty_after,undo_before,undo_after))
     fail('SNAPSHOT_BUSY','原生文档仍在修改，未发布混合版本快照。')
 
@@ -1213,6 +1302,7 @@ def open_session(args):
 
 sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1];sock.close();accept='socket,host=127.0.0.1,port='+str(port)+';urp;StarOffice.ComponentContext'
 profile=pathlib.Path(tempfile.gettempdir())/('av-lo-profile-'+uuid.uuid4().hex[:12]);profile.mkdir()
+prepare_native_appearance_profile(profile,json.loads(sys.argv[3]) if len(sys.argv)>3 else {'theme':'light','canvasColor':0xf7f5f2})
 process=subprocess.Popen([str(PROGRAM/'soffice.com'),'-env:UserInstallation='+profile.as_uri(),'--nologo','--nodefault','--norestore','--accept='+accept],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000)
 desktop=None
 try:
@@ -1251,7 +1341,7 @@ try:
                     if hasattr(settings,'ZoomType'):settings.ZoomType=constant('com.sun.star.view.DocumentZoomType.BY_VALUE',0)
                     settings.ZoomValue=round(args['factor']*100);view['layoutRevision']+=1;view.pop('captureCache',None);view.pop('accessibilityCache',None);result=state(session,view)
                 elif method=='state':result=state(session,view)
-                elif method=='snapshot':result=snapshot(session,view)
+                elif method=='snapshot':result=snapshot(session,view,known=args.get('known'))
                 elif method=='capture':result=capture(session,view,args.get('rect'))
                 elif method=='commands':result=commands(session,view)
                 elif method=='commandStatus':result=command_status(view,args['command'])
@@ -1309,16 +1399,18 @@ try:
                                     values={p['name']:uno.Any(p['type'],p['value']) if p.get('type') else p['value'] for p in args.get('args',[])};status=dispatch_command(session,view,args['command'],values,key)
                                 elif args.get('style'):
                                     apply_native_style(session,view,args['style'],args);status='applied' if session['engineRevision']!=before else 'no-change'
+                                elif args.get('operation',{}).get('kind')=='slides.setShapeStyle':
+                                    execute_operation(session,view,args['operation'],args);status='applied' if session['engineRevision']!=before else 'no-change'
                                 else:
                                     manager.enterUndoContext('AgentViewer '+(args.get('operation',{}).get('kind') or ('替换选区' if args.get('replacement') else '编辑单元格')))
                                     try:
                                         if args.get('replacement'):replace_selected_text(session,view,args['replacement'],args)
                                         elif args.get('cell'):
                                             cell=args['cell'];set_cell_content(session,checked_range(sheet_by_name(session,cell['sheetName']),cell['address']),cell['content'])
-                                        elif args.get('operation'):execute_operation(session,view,args['operation'])
+                                        elif args.get('operation'):execute_operation(session,view,args['operation'],args)
                                         else:fail('INVALID_NATIVE_OPERATION','原生修改需要明确的目标。')
-                                        status='applied' if session['engineRevision']!=before else 'no-change'
                                     finally:manager.leaveUndoContext()
+                                    status='applied' if session['engineRevision']!=before else 'no-change'
                                 view['actor']=args.get('actor','agent')
                             finally:hide_chrome(view)
                             # State may discover a new selection before a delayed

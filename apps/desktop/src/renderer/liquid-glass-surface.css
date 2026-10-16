@@ -136,6 +136,9 @@
 .floating-side-panel[data-side="right"] > .liquid-glass-surface[data-glass-effect="frosted"] > .liquid-glass-highlight::after { left:0;transform:scaleX(-1); }
 .liquid-glass-surface:not(.navigation-glass)[data-glass-fallback="true"] :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
 .liquid-glass-surface:not(.navigation-glass)[data-glass-fallback="true"] .liquid-glass-tint { background: var(--liquid-glass-solid); opacity: 1; }
+/* A usable material is present before worker assets decode. It has the same
+   geometry and never hides the independent foreground controls. */
+.liquid-glass-surface:not(.navigation-glass)[data-glass-pending="true"] .liquid-glass-tint { background: color-mix(in srgb, var(--liquid-glass-solid) 85%, transparent); }
 :root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .material-host > .liquid-glass-surface:not(.navigation-glass) :is(.liquid-glass-center, .liquid-glass-edge, .liquid-glass-highlight) { display: none; }
 :root:is([data-glass="off"], [data-contrast="high"], [data-reduce-transparency="true"]) .material-host > .liquid-glass-surface:not(.navigation-glass) .liquid-glass-tint { background: var(--liquid-glass-solid); opacity: 1; }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {

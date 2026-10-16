@@ -13,12 +13,15 @@ export type BackdropSource = { view: WebContentsView; navigationId: string; layo
 export type NativeBackdropSource = { bounds: Rect; navigationId: string; layoutRevision: number; revision: number; sourceId: number; capture(rect: Rect): Promise<{ image: NativeImage; rect: Rect }>; attach(window: BrowserWindow): Promise<void> };
 type NativeHostOptions = { sourceFor(viewId: string): NativeBackdropSource | undefined };
 type TooltipReply = { ticket: number; offsetY: number; viewId?: unknown; placement?: ReturnType<typeof nativeTooltipLayout>['placement'] };
-type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
+type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; ready?: boolean; focusViewId?: string; dispose?: () => void; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
 type CaptureRequest = { state: Record<string, unknown>; source: BackdropSource; page: WebContentsView; b: Rect; p: Rect; zoom: number; density: number; frameAligned: boolean; capsule: Rect; capture: Rect; geometryRevision: number; key: string; shape: string };
 
 // A trusted, capsule-sized surface above the website; no page script or full-width scrim.
 export class WebToolbarHost {
   private entries = new Map<BrowserWindow, ToolbarEntry>();
+  // An unseen surface retains only its current target, never content or geometry.
+  // Weak keys need no owner listeners or explicit disposal before first display.
+  private deferred = new WeakMap<BrowserWindow, { viewId: string; focusRequested?: boolean }>();
   constructor(private url: () => string, private preload: string, private route = '/web-toolbar', private channel = 'agentviewer:toolbar', private sourceFor?: (viewId: string) => BackdropSource | undefined, private nativeHost?: NativeHostOptions) {}
   ownerFor(id: number) { return [...this.entries].find(([,entry])=>!entry.view.webContents.isDestroyed()&&entry.view.webContents.id===id)?.[0]; }
   private bounds(entry: ToolbarEntry) { return entry.rootBounds ?? entry.view.getBounds(); }
@@ -45,6 +48,9 @@ export class WebToolbarHost {
       if(!entry.view.webContents.isDestroyed()&&!owner.isDestroyed()){if(bounds)entry.view.setBounds(bounds);owner.contentView.addChildView(entry.view);}
     }
     if(entry.view.webContents.isDestroyed()||owner.isDestroyed())return;
+    // Hidden requests and source notifications must not create an owned window.
+    // An existing host remains available for its already-running exit animation.
+    if(!entry.state.visible)return;
     const source=this.nativeSource(entry),webSource=this.sourceFor?.(String(entry.state.viewId));
     // Owned sidebars are above the parent's compositor. Trusted capsules must
     // use the same window layer for both website and native Office sources.
@@ -72,7 +78,7 @@ export class WebToolbarHost {
   sourceChanged(owner: BrowserWindow, viewId: string) {
     const entry = this.entries.get(owner);
     if (!entry || entry.state.viewId !== viewId) return;
-    if(entry.view.webContents.isDestroyed()){this.update(owner,entry.state);return;}
+    if(entry.view.webContents.isDestroyed()){this.update(owner,{viewId,visible:false});return;}
     this.syncHost(owner,entry);
     const source = this.sourceFor?.(viewId) ?? this.nativeSource(entry), sample = entry.state.backdropSample as { navigationId?: string; layoutRevision?: number } | undefined;
     if (sample && (source?.navigationId !== sample.navigationId || source?.layoutRevision !== sample.layoutRevision)) {
@@ -86,8 +92,38 @@ export class WebToolbarHost {
   }
   permitsSnapshot(id: number, snapshotId: string) { const entry = [...this.entries.values()].find(e => !e.view.webContents.isDestroyed()&&e.view.webContents.id === id); return !!entry?.state.visible && (entry.state.selection as any)?.snapshot?.id === snapshotId; }
   owns(id: number) { return [...this.entries.values()].some(entry => !entry.view.webContents.isDestroyed()&&entry.view.webContents.id === id); }
-  stateFor(owner: BrowserWindow) { return this.entries.get(owner)?.state; }
-  focus(owner: BrowserWindow) { const entry = this.entries.get(owner); if (!entry) return; clearTimeout(entry.exitTimer); entry.exitTimer=undefined; entry.state={...entry.state,visible:true,hideProgress:0,instant:true}; entry.view.setVisible(true); this.sendState(entry); this.syncFrameSubscription(owner, entry); this.sampleBackdrop(owner, entry); entry.view.webContents.focus(); entry.view.webContents.send('agentviewer:toolbar', { action: 'focus-address' }); }
+  stateFor(owner: BrowserWindow) { if(owner.isDestroyed())return;const target=this.deferred.get(owner);return this.entries.get(owner)?.state??(target?{viewId:target.viewId,visible:false}:undefined); }
+  capsuleFor(owner:BrowserWindow,viewId:string):{visible:boolean;bounds?:Rect}{
+    const entry=this.entries.get(owner);if(!entry||entry.view.webContents.isDestroyed()||!entry.state.visible||entry.state.viewId!==viewId)return {visible:false};
+    const capsule=entry.capsuleBounds;if(!capsule)return {visible:true};
+    const host=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor();
+    return {visible:true,bounds:{x:host.x+capsule.x*zoom,y:host.y+capsule.y*zoom,width:capsule.width*zoom,height:capsule.height*zoom}};
+  }
+  focus(owner: BrowserWindow) {
+    if(owner.isDestroyed())return;
+    const entry=this.entries.get(owner);
+    if(entry?.view.webContents.isDestroyed())this.update(owner,{viewId:entry.state.viewId,visible:false});
+    if(!entry||entry.view.webContents.isDestroyed()||!entry.state.visible){
+      const pending=this.deferred.get(owner),viewId=entry?.state.viewId??pending?.viewId;
+      if(this.route==='/web-toolbar'&&typeof viewId==='string'&&viewId&&!(pending?.viewId===viewId&&pending.focusRequested)){
+        this.deferred.set(owner,{viewId,focusRequested:true});
+        // The main renderer already handles this action by revealing navigation
+        // and publishing a fresh layout. Its echoed focus call is coalesced.
+        owner.webContents.send(this.channel,{action:'focus-address-request',viewId});
+      }
+      return;
+    }
+    if(typeof entry.state.viewId!=='string')return;
+    clearTimeout(entry.exitTimer);entry.exitTimer=undefined;
+    entry.state={...entry.state,visible:true,hideProgress:0,instant:true};
+    entry.focusViewId=entry.state.viewId as string;
+    this.syncHost(owner,entry);entry.view.setVisible(true);this.sendState(entry);
+    this.syncFrameSubscription(owner,entry);this.sampleBackdrop(owner,entry);this.focusReady(owner,entry);
+  }
+  private focusReady(owner:BrowserWindow,entry:ToolbarEntry){
+    if(!entry.ready||!entry.focusViewId||entry.focusViewId!==entry.state.viewId||!entry.state.visible||owner.isDestroyed()||entry.view.webContents.isDestroyed()||this.entries.get(owner)!==entry)return;
+    entry.focusViewId=undefined;entry.view.webContents.focus();entry.view.webContents.send('agentviewer:toolbar',{action:'focus-address'});
+  }
   request(id: number, method: string, args: Record<string, unknown>) {
     const pair = [...this.entries].find(([, entry]) => !entry.view.webContents.isDestroyed()&&entry.view.webContents.id === id);
     if (!pair) throw new Error('AUTH_SCOPE_DENIED');
@@ -139,10 +175,29 @@ export class WebToolbarHost {
     if(owner.isDestroyed())return;
     let entry = this.entries.get(owner);
     if(entry?.view.webContents.isDestroyed()){
-      this.clearFrameSubscription(entry);clearInterval(entry.timer);clearTimeout(entry.sampleTimer);clearTimeout(entry.exitTimer);clearTimeout(entry.tooltipTimer);
-      entry.tooltipClose?.(this.tooltipReply(entry));this.entries.delete(owner);entry=undefined;
+      entry.dispose?.();entry=undefined;
     }
-    if (!entry && !state.viewId) return;
+    if(this.route==='/selection-toolbar'&&state.geometryOnly===true){
+      // Motion carries no snapshot/model/settings body. A delayed sample from
+      // an obsolete selection cannot reposition its replacement popup.
+      const selected=entry?.state.selection as {snapshot?:{id?:string}}|undefined,b=state.bounds as Rect|undefined;
+      if(!entry?.state.visible||state.viewId!==entry.state.viewId||state.snapshotId!==selected?.snapshot?.id||!b||![b.x,b.y,b.width,b.height].every(Number.isFinite)||b.width<1||b.height<1||b.width>2600||b.height>800)return;
+      const previous=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor(),sample=entry.state.backdropSample as {origin?:{x:number;y:number}}|undefined;
+      const translated=sample?.origin?{...sample,origin:{x:sample.origin.x+(previous.x-b.x)/zoom,y:sample.origin.y+(previous.y-b.y)/zoom}}:sample;
+      entry.state={...entry.state,bounds:{...b},backdropSample:translated};
+      this.syncHost(owner,entry);this.setBounds(owner,entry);
+      if(translated)this.sendBackdrop(entry,undefined,translated,false);
+      this.syncFrameSubscription(owner,entry);this.sampleBackdrop(owner,entry);return;
+    }
+    const visible=typeof state.viewId==='string'&&!!state.viewId&&!!state.visible;
+    if(!entry&&!visible){
+      const target=this.deferred.get(owner);
+      if(typeof state.viewId==='string'&&state.viewId)this.deferred.set(owner,{viewId:state.viewId,...(target?.viewId===state.viewId&&target.focusRequested?{focusRequested:true}:{})});
+      else this.deferred.delete(owner);
+      return;
+    }
+    const pending=this.deferred.get(owner),focusRequested=pending?.viewId===state.viewId&&pending?.focusRequested;
+    if(visible||pending?.viewId!==state.viewId)this.deferred.delete(owner);
     if (!entry) {
       const view = new WebContentsView({ webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: process.env.AGENTVIEWER_TEST_MODE === '1' ? ['--agentviewer-test-mode=1'] : [] } });
       view.setBackgroundColor('#00000000'); view.setVisible(false);
@@ -150,19 +205,32 @@ export class WebToolbarHost {
       owner.contentView.addChildView(view);
       view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       view.webContents.on('will-navigate', event => event.preventDefault());
-      void view.webContents.loadURL(this.url() + '#' + this.route);
       const created = entry;
+      view.webContents.once('did-finish-load',()=>{created.ready=true;this.focusReady(owner,created);});
+      void view.webContents.loadURL(this.url() + '#' + this.route);
       // Live presentation frames drive updates. The watchdog also catches a
       // terminal dirty frame dropped by the compositor subscription's 30Hz cap.
       if (this.route === '/web-toolbar') { created.timer = setInterval(() => { this.syncFrameSubscription(owner, created); this.sampleBackdrop(owner, created, true); }, 400); created.timer.unref(); }
-      owner.on('minimize', () => this.clearFrameSubscription(created));
-      owner.on('hide', () => this.clearFrameSubscription(created));
+      const suspend=()=>this.clearFrameSubscription(created);
+      owner.on('minimize', suspend);
+      owner.on('hide', suspend);
       const resume = () => { this.syncFrameSubscription(owner, created); this.sampleBackdrop(owner, created, true); };
       owner.on('restore', resume);
       owner.on('show', resume);
-      owner.once('closed', () => { this.clearFrameSubscription(created); clearInterval(created.timer); clearTimeout(created.sampleTimer); clearTimeout(created.exitTimer); clearTimeout(created.tooltipTimer); created.tooltipClose?.(this.tooltipReply(created));this.entries.delete(owner); if (!view.webContents.isDestroyed()) view.webContents.close(); });
+      let disposed=false;
+      created.dispose=()=>{
+        if(disposed)return;disposed=true;
+        owner.removeListener('minimize',suspend);owner.removeListener('hide',suspend);owner.removeListener('restore',resume);owner.removeListener('show',resume);owner.removeListener('closed',created.dispose!);
+        this.clearFrameSubscription(created);clearInterval(created.timer);clearTimeout(created.sampleTimer);clearTimeout(created.exitTimer);clearTimeout(created.tooltipTimer);created.tooltipClose?.(this.tooltipReply(created));
+        if(this.entries.get(owner)===created)this.entries.delete(owner);
+        if(created.overlay&&!created.overlay.isDestroyed())created.overlay.close();
+        else if(!owner.isDestroyed())owner.contentView.removeChildView(view);
+        if(!view.webContents.isDestroyed())view.webContents.close();
+      };
+      owner.once('closed',created.dispose);
     }
-    const previous=entry.state,visible=!!state.viewId&&!!state.visible;
+    const previous=entry.state;
+    if(!visible||previous.viewId!==state.viewId)entry.focusViewId=undefined;
     const wasExiting=!!entry.exitTimer;
     if(visible){clearTimeout(entry.exitTimer);entry.exitTimer=undefined;}
     const mode=((state.settings ?? previous.settings) as any)?.values?.['appearance.motion'];
@@ -194,6 +262,7 @@ export class WebToolbarHost {
     this.sendState(entry);
     this.syncFrameSubscription(owner, entry);
     this.sampleBackdrop(owner, entry);
+    if(visible&&focusRequested)this.focus(owner);
   }
   private hide(owner: BrowserWindow, entry: ToolbarEntry) {
     this.clearFrameSubscription(entry);

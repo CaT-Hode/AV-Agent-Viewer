@@ -24,19 +24,40 @@ export function validateNativeOfficeDispatch(value: NativeOfficeDispatch): Nativ
 
 /** Incremental JSONL framing. Limits each message without retaining an unbounded queue. */
 export class NativeOfficeProtocolReader {
-  private buffered = '';
+  private chunks: string[] = [];
+  private head = 0;
+  private offset = 0;
+  private fragments: string[] = [];
+  private length = 0;
   constructor(readonly receive: (value: unknown) => void, readonly limit = 160 * 1024 * 1024) {}
   feed(chunk: string) {
-    this.buffered += chunk;
-    let newline: number;
-    while ((newline = this.buffered.indexOf('\n')) >= 0) {
-      const line = this.buffered.slice(0, newline).replace(/\r$/, ''); this.buffered = this.buffered.slice(newline + 1);
-      if (line.length > this.limit) { this.buffered = ''; throw new NativeOfficeError('NATIVE_PROTOCOL_LIMIT', '原生编辑器响应过大。'); }
+    this.chunks.push(chunk);
+    while (this.head < this.chunks.length) {
+      const source = this.chunks[this.head], newline = source.indexOf('\n', this.offset);
+      if (newline < 0) {
+        const tail = source.slice(this.offset);
+        if (tail) { this.fragments.push(tail); this.length += tail.length; }
+        this.chunks[this.head++] = ''; this.offset = 0;
+        if (this.length > this.limit) this.overflow();
+        continue;
+      }
+      const ending = source.slice(this.offset, newline);
+      // Advance before delivering. A receiver exception must leave every later
+      // message available to the next feed, just as an invalid JSON line does.
+      this.offset = newline + 1;
+      if (this.offset === source.length) { this.chunks[this.head++] = ''; this.offset = 0; }
+      if (ending) this.fragments.push(ending);
+      const line = this.fragments.join('').replace(/\r$/, '');
+      this.fragments = []; this.length = 0;
+      if (line.length > this.limit) this.overflow();
       if (!line) continue;
       let parsed: unknown; try { parsed = JSON.parse(line); } catch { throw new NativeOfficeError('NATIVE_PROTOCOL_ERROR', '原生编辑器返回了无效响应。'); }
       this.receive(parsed);
     }
-    if (this.buffered.length > this.limit) { this.buffered = ''; throw new NativeOfficeError('NATIVE_PROTOCOL_LIMIT', '原生编辑器响应过大。'); }
+    // No rescanning or joining an incomplete prefix on each stdout chunk.
+    // Multi-megabyte tile replies are joined once, at their actual delimiter.
+    this.chunks = []; this.head = this.offset = 0;
   }
-  clear() { this.buffered = ''; }
+  private overflow(): never { this.clear(); throw new NativeOfficeError('NATIVE_PROTOCOL_LIMIT', '原生编辑器响应过大。'); }
+  clear() { this.chunks = []; this.fragments = []; this.head = this.offset = this.length = 0; }
 }

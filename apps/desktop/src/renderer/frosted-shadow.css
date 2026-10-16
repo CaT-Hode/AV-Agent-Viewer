@@ -24,6 +24,13 @@
   opacity: 1;
   box-shadow: var(--frosted-cast-shadow, var(--glass-shadow));
 }
+/* The cast lives above the frost so it cannot be sampled by that frost.
+   Legacy rail overflow clipped this entire outer-only pseudo-element. The
+   material clips its own rounded surface; Office's tool list scrolls inside
+   its separate child, so the rail itself can safely expose the cast. */
+:root[data-theme] .workbench :is(.activity-rail,.ai-rail).material-host {
+  overflow: visible;
+}
 :root[data-theme] :is(.settings-search,.search-field).material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]) {
   --frosted-cast-shadow: 0 3px 12px -6px rgb(20 38 50 / .16);
 }

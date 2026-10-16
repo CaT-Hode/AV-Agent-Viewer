@@ -1,6 +1,7 @@
 import type { NativeOfficeCommand, NativeOfficeState } from '../../../../../packages/contracts/src/native-office';
 import type { NativeOfficeRequest } from './native-office-tools';
 import { sharePolledValue } from './polled-state';
+import { nativeOfficeReadNotReady } from './native-office-read-errors';
 
 type Listener = { state(value: NativeOfficeState): void; healthy?(): void; error?(cause: unknown): void };
 export type NativeOfficeObserverEnvironment = {
@@ -46,7 +47,7 @@ export function createNativeOfficeStateObserver(request: NativeOfficeRequest, en
           if (!owns(entry, value)) throw new Error('引擎状态不属于当前 Office 页面。');
           accept(entry, value);
         }
-      } catch (cause) { if (active(entry) && entry.generation === generation && environment.visible()) for (const item of entry.subscriptions) item.listener.error?.(cause); }
+      } catch (cause) { if (active(entry) && entry.generation === generation && environment.visible() && (entry.value || !nativeOfficeReadNotReady(cause))) for (const item of entry.subscriptions) item.listener.error?.(cause); }
       finally { entry.pending = undefined; schedule(entry); }
     })();
     return entry.pending;
@@ -99,30 +100,51 @@ export function subscribeNativeOfficeState(request: NativeOfficeRequest, viewId:
 
 /** Only command identities/labels/policy metadata are cached, never enabled/state/content. */
 export function createNativeOfficeCatalogReader(request: NativeOfficeRequest, now = Date.now, capacity = 8, maxAge = 30_000) {
-  const entries = new Map<string, { created: number; promise: Promise<NativeOfficeCommand[]> }>();
-  return async (state: NativeOfficeState, force = false) => {
+  type Entry = { created: number; promise: Promise<NativeOfficeCommand[]>; consumers: Set<symbol>; abandoned: boolean };
+  const entries = new Map<string, Entry>();
+  const aborted = () => new DOMException('命令目录读取已取消。', 'AbortError');
+  return (state: NativeOfficeState, force = false, signal?: AbortSignal): Promise<NativeOfficeCommand[]> => {
+    if (signal?.aborted) return Promise.reject(aborted());
     const key = JSON.stringify([state.documentId, state.viewId, state.format, state.sessionId, state.engineEpoch]);
     const old = entries.get(key);
-    if (!force && old && now() - old.created < maxAge) { entries.delete(key); entries.set(key, old); return old.promise; }
-    if (old) entries.delete(key);
-    const entry = { created: now(), promise: Promise.resolve([] as NativeOfficeCommand[]) };
-    entry.promise = (async () => {
-      const commands: NativeOfficeCommand[] = []; let offset = 0;
-      for (;;) {
-        const result = await request<{ state: NativeOfficeState; commands: NativeOfficeCommand[]; hasMore: boolean }>('office-commands', { viewId: state.viewId, offset, limit: 200 });
-        if (result.state.documentId !== state.documentId || result.state.viewId !== state.viewId || result.state.sessionId !== state.sessionId || result.state.engineEpoch !== state.engineEpoch) throw new Error('读取命令目录时原生会话已变化。');
-        commands.push(...result.commands.map(({ enabled: _enabled, state: _state, ...command }) => command));
-        offset += result.commands.length;
-        if (!result.hasMore) return [...new Map(commands.map(command => [command.command, command])).values()];
-        if (!result.commands.length || offset >= 10000) throw new Error('引擎命令目录未完整返回，请重试。');
-      }
-    })();
-    entries.set(key, entry); while (entries.size > capacity) entries.delete(entries.keys().next().value!);
-    try { return await entry.promise; } catch (cause) { if (entries.get(key) === entry) entries.delete(key); throw cause; }
+    let entry: Entry;
+    if (!force && old && !old.abandoned && now() - old.created < maxAge) { entries.delete(key); entries.set(key, old); entry = old; }
+    else {
+      if (old) entries.delete(key);
+      entry = { created: now(), consumers: new Set(), abandoned: false, promise: Promise.resolve([]) };
+      // Register the first consumer before issuing work. Requests already sent
+      // always settle normally; only not-yet-issued pages can be skipped.
+      entry.promise = Promise.resolve().then(async () => {
+        const commands: NativeOfficeCommand[] = []; let offset = 0;
+        for (;;) {
+          if (!entry.consumers.size) { entry.abandoned = true; throw aborted(); }
+          const result = await request<{ state: NativeOfficeState; commands: NativeOfficeCommand[]; hasMore: boolean }>('office-commands', { viewId: state.viewId, offset, limit: 200 });
+          if (!entry.consumers.size) { entry.abandoned = true; throw aborted(); }
+          if (result.state.documentId !== state.documentId || result.state.viewId !== state.viewId || result.state.sessionId !== state.sessionId || result.state.engineEpoch !== state.engineEpoch) throw new Error('读取命令目录时原生会话已变化。');
+          commands.push(...result.commands.map(({ enabled: _enabled, state: _state, ...command }) => command));
+          offset += result.commands.length;
+          if (!result.hasMore) return [...new Map(commands.map(command => [command.command, command])).values()];
+          if (!result.commands.length || offset >= 10000) throw new Error('引擎命令目录未完整返回，请重试。');
+        }
+      }).catch(cause => { if (entries.get(key) === entry) entries.delete(key); throw cause; });
+      entries.set(key, entry); while (entries.size > capacity) entries.delete(entries.keys().next().value!);
+    }
+    const consumer = Symbol(); entry.consumers.add(consumer);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (result: NativeOfficeCommand[] | undefined, cause?: unknown) => {
+        if (settled) return; settled = true; entry.consumers.delete(consumer); signal?.removeEventListener('abort', cancel);
+        if (result) resolve(result); else reject(cause);
+      };
+      const cancel = () => finish(undefined, aborted());
+      signal?.addEventListener('abort', cancel, { once: true });
+      entry.promise.then(result => finish(result), cause => finish(undefined, cause));
+      if (signal?.aborted) cancel();
+    });
   };
 }
 const catalogs = new WeakMap<NativeOfficeRequest, ReturnType<typeof createNativeOfficeCatalogReader>>();
-export function readNativeOfficeCatalog(request: NativeOfficeRequest, state: NativeOfficeState, force = false) {
+export function readNativeOfficeCatalog(request: NativeOfficeRequest, state: NativeOfficeState, force = false, signal?: AbortSignal) {
   let read = catalogs.get(request); if (!read) { read = createNativeOfficeCatalogReader(request); catalogs.set(request, read); }
-  return read(state, force);
+  return read(state, force, signal);
 }

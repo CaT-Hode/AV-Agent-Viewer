@@ -21,9 +21,6 @@ export type OfficeDocumentProps = {
 export type { OfficeDraftController } from './office/OfficeDrafts';
 type EditorProps = Pick<OfficeDocumentProps, 'edit' | 'onContext' | 'onSelection' | 'reportError'> & { document: Pick<DocumentInfo, 'capabilities'>; view: Pick<ViewInfo, 'id'>; selectTarget(target: OfficeTarget): void; drafts: OfficeDraftRegistry };
 type RenderProps = EditorProps & { document: Pick<DocumentInfo, 'id' | 'format' | 'model' | 'capabilities' | 'revision'>; zoom?: number; target?: OfficeTarget; editor: EditorProps; navigationRequest?: OfficeNavigationRequest; onNavigationContext?: OfficeDocumentProps['onNavigationContext']; onNavigationResult?: OfficeDocumentProps['onNavigationResult']; onToolboxController?: OfficeDocumentProps['onToolboxController'] };
-const renderCounts = { document: 0, word: 0, presentation: 0, spreadsheet: 0, cell: 0, text: 0, notes: 0 };
-/** Counter-only diagnostics. The trusted test renderer exposes this on demand. */
-export const officeRenderStats = () => ({ ...renderCounts });
 const sameStyle = (left?: CSSProperties, right?: CSSProperties) => left === right || !!left && !!right && Object.keys(left).length === Object.keys(right).length && Object.keys(left).every(key => Object.is(left[key as keyof CSSProperties], right[key as keyof CSSProperties]));
 function useToolboxController(props: RenderProps, apply: (target: OfficeToolboxTarget) => void, focusFormula?: () => void) {
   const latest = useRef({ props, apply, focusFormula }); latest.current = { props, apply, focusFormula };
@@ -104,7 +101,6 @@ function useAgentOfficeNavigation(props: RenderProps, identity: string, resolve:
 
 /** Unmanaged text children protect IME, local drafts and the native text range. */
 function EditableBlockImpl({ block, slideId, props, className, style }: { block: TextBlock; slideId?: string; props: EditorProps; className?: string; style?: CSSProperties }) {
-  renderCounts.text++;
   const host = useRef<HTMLDivElement>(null), dirty = useRef(false), baseline = useRef(block.text), pending = useRef<Promise<void> | undefined>(undefined), composing = useRef(false);
   const [error, setError] = useState(''), [commitVersion, setCommitVersion] = useState(0);
   const contentSignature = JSON.stringify([block.text, block.runs]);
@@ -162,7 +158,6 @@ function EditableBlockImpl({ block, slideId, props, className, style }: { block:
 const EditableBlock = memo(EditableBlockImpl, (left, right) => left.block === right.block && left.slideId === right.slideId && left.props === right.props && left.className === right.className && sameStyle(left.style, right.style));
 
 function WordDocumentImpl(props: RenderProps) {
-  renderCounts.word++;
   const { document, zoom = 1 } = props, blocks = document.model.blocks ?? [], layout = document.model.pageLayout;
   const root = useRef<HTMLDivElement>(null);
   useAgentOfficeNavigation(props, document.id, () => props.navigationRequest?.target.kind === 'paragraph' ? root.current?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(props.navigationRequest.target.blockId)}"]`) : undefined, request => { if (request.target.kind !== 'paragraph') throw new Error('当前 Word 视图不支持此导航目标。'); return true; });
@@ -181,7 +176,6 @@ function WordDocumentImpl(props: RenderProps) {
 }
 
 function SlideNotesImpl({ props, slideId, source }: { props: EditorProps; slideId: string; source: string }) {
-  renderCounts.notes++;
   const [notes, setNotes] = useState(source), [error, setError] = useState('');
   const value = useRef(source), dirty = useRef(false), baseline = useRef(source), composing = useRef(false), pending = useRef<Promise<void> | undefined>(undefined);
   useEffect(() => { if (!dirty.current) { value.current = source; setNotes(source); baseline.current = source; } }, [source]);
@@ -204,7 +198,6 @@ const WordDocument = memo(WordDocumentImpl);
 const SlideNotes = memo(SlideNotesImpl);
 
 function PresentationDocumentImpl(props: RenderProps) {
-  renderCounts.presentation++;
   const slides = props.document.model.slides ?? [], [slideId, setSlideId] = useState(slides[0]?.id), [dragBounds, setDragBounds] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
   const slide = slides.find(item => item.id === slideId) ?? slides[0], canvas = useRef<HTMLDivElement>(null);
   const toolbox = useToolboxController(props, target => { if (target.kind !== 'slide') throw new Error('当前视图不是工作表。'); setSlideId(target.slideId); props.selectTarget({ viewId: props.view.id, slideId: target.slideId }); });
@@ -240,7 +233,6 @@ function PresentationDocumentImpl(props: RenderProps) {
 const PresentationDocument = memo(PresentationDocumentImpl);
 
 function CellEditorImpl({ cell, editable, selected, props, sheetId, onMove }: { cell: SheetCell; editable: boolean; selected: boolean; props: EditorProps; sheetId: string; onMove(address: string, row: number, column: number, extend: boolean): void }) {
-  renderCounts.cell++;
   const original = cell.formula ? '=' + cell.formula : cell.value, [draft, setDraft] = useState(original), [editing, setEditing] = useState(false), [error, setError] = useState('');
   const value = useRef(original), dirty = useRef(false), baseline = useRef(original), pending = useRef<Promise<void> | undefined>(undefined), composing = useRef(false), input = useRef<HTMLInputElement>(null);
   useEffect(() => { if (!dirty.current) { setDraft(original); value.current = original; baseline.current = original; } }, [original]);
@@ -271,7 +263,6 @@ function CellEditorImpl({ cell, editable, selected, props, sheetId, onMove }: { 
 const CellEditor = memo(CellEditorImpl);
 
 function SpreadsheetDocumentImpl(props: RenderProps) {
-  renderCounts.spreadsheet++;
   const sheets = props.document.model.sheets ?? [], [sheetId, setSheetId] = useState(sheets[0]?.id), sheet = sheets.find(item => item.id === sheetId) ?? sheets[0];
   const [address, setAddress] = useState('A1'), [range, setRange] = useState('A1:A1'), [nameBox, setNameBox] = useState('A1'), [formula, setFormula] = useState(''), [formulaError, setFormulaError] = useState(''), [rowLimit, setRowLimit] = useState(100);
   const formulaDirty = useRef(false), formulaValue = useRef(''), formulaBaseline = useRef(''), formulaComposing = useRef(false), formulaPending = useRef<Promise<void> | undefined>(undefined), dragStart = useRef<string | undefined>(undefined), grid = useRef<HTMLTableElement>(null), formulaInput = useRef<HTMLInputElement>(null), [filters, setFilters] = useState<Record<number, string>>({});
@@ -362,7 +353,6 @@ function SpreadsheetDocumentImpl(props: RenderProps) {
 const SpreadsheetDocument = memo(SpreadsheetDocumentImpl);
 
 function OfficeDocumentImpl(props: OfficeDocumentProps) {
-  renderCounts.document++;
   const [target, setTarget] = useState<OfficeTarget>();
   const callbacks = useRef(props); callbacks.current = props;
   const drafts = useMemo(() => new OfficeDraftRegistry(props.view.id, dirty => callbacks.current.onDraftChange?.(dirty)), [props.view.id]);

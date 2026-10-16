@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef } from 'react';
 
 export type OfficeDraft = { isDirty(): boolean; flush(): Promise<void>; discard(): void };
-export type OfficeDraftController = { viewId: string; hasDrafts(): boolean; flush(): Promise<void>; discard(): void };
+export type OfficeDraftFlushOptions = { preserveSelection?: boolean };
+export type OfficeDraftController = { viewId: string; hasDrafts(options?: OfficeDraftFlushOptions): boolean; flush(options?: OfficeDraftFlushOptions): Promise<void>; history?(direction: 'undo' | 'redo'): Promise<boolean>; discard(): void };
 
 /** The registry stores live editors, not model copies; flush never forces blur. */
 export class OfficeDraftRegistry implements OfficeDraftController {

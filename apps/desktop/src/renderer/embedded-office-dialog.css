@@ -14,3 +14,96 @@
 .embedded-office-dialog-window.is-popup { padding: 8px; border-radius: 16px; }
 .embedded-office-dialog-window.is-popup .embedded-office-window-heading { margin-bottom: 4px; }
 .embedded-office-dialog-window.is-deck { position: fixed; right: 24px; top: 80px; }
+
+:root[data-theme] .office-structured-dialog {
+  --office-dialog-secondary:color-mix(in srgb,var(--glass-ink) 72%,transparent);
+  --office-dialog-divider:color-mix(in srgb,var(--glass-edge) 70%,transparent);
+  width:min(524px,calc(100vw - 64px)); max-height:calc(100vh - 64px);
+  display:flex; flex-direction:column; min-height:0; padding:22px; border-radius:24px;
+  color:var(--glass-ink); box-shadow:0 24px 72px rgb(0 0 0 / .2);
+}
+:root[data-theme] :is(.office-structured-dialog,.office-dialog-choice-menu) > .liquid-glass-surface {
+  /* Set the material input on the surface itself: common material sheets load
+     later and must not replace this form's readable tint with a 60% wash. */
+  --liquid-glass-tint:color-mix(in srgb,var(--glass-panel) 94%,transparent);
+  --liquid-glass-frosted-blur:16px;
+}
+.office-structured-dialog .embedded-office-window-heading { flex-shrink:0; align-items:center; justify-content:flex-start; margin:0 0 16px; gap:12px; }
+.office-dialog-heading-icon { display:grid; place-items:center; flex:0 0 40px; width:40px; height:40px; border:1px solid color-mix(in srgb,var(--accent) 18%,var(--glass-edge)); border-radius:13px; color:var(--accent); background:color-mix(in srgb,var(--accent) 9%,transparent); }
+.office-dialog-heading-text { flex:1; min-width:0; }
+.office-structured-dialog .embedded-office-window-heading h2 { margin:0; font-size:18px; font-weight:650; line-height:1.4; letter-spacing:-.35px; }
+.office-structured-dialog .office-dialog-heading-text p { margin:3px 0 0; font-size:12px; line-height:1.5; color:var(--office-dialog-secondary); }
+.office-structured-dialog .embedded-office-window-close { flex-shrink:0; align-self:flex-start; width:30px; height:30px; margin:-3px -3px 0 0; border-radius:50%; color:var(--office-dialog-secondary); }
+.office-structured-dialog .embedded-office-window-close:hover { color:var(--glass-ink); background:color-mix(in srgb,var(--glass-ink) 7%,transparent); }
+.office-dialog-form { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.office-dialog-fields { min-height:0; max-height:calc(100vh - 264px); overflow:auto; padding:6px 6px 10px; scrollbar-width:thin; scrollbar-gutter:stable; scroll-padding:8px; }
+.office-dialog-group { display:flex; flex-direction:column; gap:11px; min-width:0; }
+.office-dialog-group:not(.is-root):not(.is-anonymous) { padding:13px 14px; border:1px solid var(--office-dialog-divider); border-radius:15px; background:color-mix(in srgb,var(--glass-panel) 36%,transparent); }
+.office-dialog-group h3 { order:-1; grid-column:1 / -1; margin:0 0 3px; font-size:12px; font-weight:650; line-height:1.5; color:var(--office-dialog-secondary); }
+.office-dialog-group.is-root { gap:12px; }
+.office-dialog-group.is-anonymous { display:contents; }
+.office-dialog-field { display:flex; align-items:center; justify-content:space-between; gap:18px; min-width:0; min-height:36px; font-size:13px; line-height:1.5; color:var(--glass-ink); }
+.office-dialog-field > span { flex:1; min-width:0; }
+.office-dialog-field :is(input,select,textarea) { flex:0 1 200px; width:200px; min-width:84px; height:34px; border:1px solid var(--glass-edge); border-radius:10px; padding:0 10px; background:color-mix(in srgb,var(--glass-panel) 92%,transparent); color:var(--glass-ink); box-shadow:none; font:inherit; transition:border-color 140ms ease,background-color 140ms ease; }
+.office-dialog-field :is(input,select,textarea):hover:not(:disabled) { border-color:color-mix(in srgb,var(--glass-ink) 22%,var(--glass-edge)); }
+.office-dialog-field :is(input,select,textarea):focus-visible { outline:2px solid color-mix(in srgb,var(--accent) 65%,transparent); outline-offset:2px; border-color:color-mix(in srgb,var(--accent) 58%,var(--glass-edge)); }
+.office-dialog-multiline { align-items:flex-start; }
+.office-dialog-multiline > span { padding-top:8px; }
+.office-dialog-multiline textarea { height:auto; min-height:96px; max-height:240px; padding:8px 11px; resize:vertical; font:inherit; line-height:1.6; }
+.office-dialog-field :disabled { opacity:.5; }
+.office-dialog-toggle { gap:20px; min-height:35px; }
+.office-dialog-toggle .glass-switch { flex-shrink:0; }
+.office-dialog-label { color:var(--glass-ink); font-size:12px; line-height:1.5; font-weight:500; }
+.office-dialog-readonly { color:var(--office-dialog-secondary); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.office-dialog-footer { display:flex; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:8px; margin-top:14px; padding:14px 6px 0; border-top:1px solid var(--office-dialog-divider); }
+.office-dialog-footer .button,.office-dialog-action { height:34px; min-width:72px; padding:0 15px; border:1px solid var(--glass-edge); border-radius:10px; font-size:13px; font-weight:550; line-height:1; color:var(--glass-ink); box-shadow:none; transition:background-color 140ms ease,border-color 140ms ease,transform 120ms ease; }
+.office-dialog-footer .button:not(.primary),.office-dialog-action { background:color-mix(in srgb,var(--glass-panel) 64%,transparent); }
+.office-dialog-footer .button:not(.primary):hover:not(:disabled),.office-dialog-action:hover:not(:disabled) { background:color-mix(in srgb,var(--glass-ink) 7%,var(--glass-panel)); border-color:color-mix(in srgb,var(--glass-ink) 18%,var(--glass-edge)); }
+.office-dialog-footer .button.primary { order:1; min-width:78px; color:#fff; border-color:var(--accent); background:var(--accent); }
+.office-dialog-footer .button.primary:hover:not(:disabled) { background:color-mix(in srgb,var(--accent) 88%,#000); }
+.office-dialog-footer .button.office-dialog-help { order:-1; flex:0 0 32px; width:32px; min-width:32px; height:32px; padding:0; margin-right:auto; border-radius:50%; border-color:transparent; color:var(--office-dialog-secondary); background:transparent; }
+.office-dialog-footer .office-dialog-help:hover:not(:disabled) { color:var(--glass-ink); background:color-mix(in srgb,var(--glass-ink) 7%,transparent); }
+.office-structured-dialog :is(.button,.office-dialog-radio,.icon-button):active:not(:disabled) { transform:translateY(1px) scale(.98); }
+.office-structured-dialog :is(.button,.office-dialog-radio,.icon-button):focus-visible,.office-dialog-choice > button:focus-visible { outline:2px solid color-mix(in srgb,var(--accent) 65%,transparent); outline-offset:2px; }
+.office-dialog-radio { width:19px; height:19px; border-radius:50%; border:1px solid var(--glass-edge); display:grid; place-items:center; }
+.office-dialog-radio[aria-checked="true"] { border-color:var(--accent); }
+.office-dialog-radio[aria-checked="true"] span { width:9px; height:9px; border-radius:50%; background:var(--accent); }
+.office-dialog-loading { min-height:120px; display:grid; place-items:center; color:var(--office-dialog-secondary); font-size:13px; }
+.office-dialog-unavailable { padding:18px 0 6px; }
+.office-dialog-unavailable p { color:var(--glass-ink); }
+.office-dialog-unavailable > div { display:flex; justify-content:flex-end; gap:8px; }
+.office-dialog-error { margin:9px 6px 0; font-size:12px; line-height:1.5; color:var(--danger,#bd5265); }
+.office-dialog-compatibility { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:10px 6px 0; border-top:1px solid var(--office-dialog-divider); font-size:11px; line-height:1.5; color:var(--office-dialog-secondary); }
+.office-dialog-compatibility button { color:var(--accent); text-decoration:underline; text-underline-offset:3px; }
+.office-dialog-tabs { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.office-dialog-tabs > .glass-segmented { align-self:flex-start; max-width:100%; margin:0 0 2px; }
+.office-dialog-choice { position:relative; flex:0 1 200px; min-width:84px; width:200px; }
+.office-dialog-choice > :is(input,button[role="combobox"]) { width:100%; height:34px; padding:0 30px 0 11px; text-align:left; color:var(--glass-ink); background:color-mix(in srgb,var(--glass-panel) 92%,transparent); border:1px solid var(--glass-edge); border-radius:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.office-dialog-choice-arrow { position:absolute; right:5px; top:5px; width:24px; height:24px; display:grid; place-items:center; border-radius:6px; }
+.office-dialog-choice-menu { position:fixed; z-index:10080; padding:5px; border:1px solid var(--glass-edge); border-radius:13px; isolation:isolate; color:var(--glass-ink); box-shadow:0 12px 34px #0003; overflow:hidden; font-size:12px; }
+.office-dialog-choice-menu [role="listbox"] { position:relative; max-height:inherit; overflow:auto; scrollbar-width:thin; }
+.office-dialog-choice-menu [role="option"] { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:30px; padding:5px 9px; border-radius:8px; text-align:left; }
+.office-dialog-choice-menu [role="option"].active { background:color-mix(in srgb,var(--accent) 16%,var(--glass-panel)); color:var(--glass-ink); }
+.office-dialog-choice-empty { display:block; padding:12px 9px; color:var(--muted); }
+
+/* Only the pinned native Insert Table identity receives a bespoke layout.
+   Every real control remains rendered, including future visible style/preview
+   nodes; anonymous native layout wrappers stay transparent to the grid. */
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid2"] { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 14px; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid2"] .office-dialog-field { flex-direction:column; align-items:stretch; justify-content:flex-start; gap:6px; min-height:0; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid2"] .office-dialog-field > span { flex:initial; color:var(--office-dialog-secondary); font-size:12px; font-weight:500; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid2"] .office-dialog-field :is(input,select,textarea) { flex:none; width:100%; min-width:0; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-control-id="nameedit"] { grid-column:1 / -1; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] :is([data-office-control-id="colspin"],[data-office-control-id="rowspin"],[data-office-control-id="repeatheaderspin"]) input { font-variant-numeric:tabular-nums; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid2"] > .office-dialog-label { grid-column:1 / -1; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid4"] { display:flex; flex-direction:column; gap:0; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid4"] .office-dialog-toggle { min-height:43px; padding:8px 0; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="grid4"] .office-dialog-toggle + .office-dialog-toggle { border-top:1px solid var(--office-dialog-divider); }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-group-id="repeatgroup"] { display:block; padding:2px 0 3px 14px; margin:1px 0 5px; border-left:1px solid var(--office-dialog-divider); }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-control-id="repeatheaderspin"] { min-height:34px; }
+.office-dialog-form[data-office-dialog-kind="InsertTableDialog"] [data-office-control-id="repeatheaderspin"] input { flex:0 0 80px; width:80px; min-width:0; }
+
+@media (prefers-reduced-motion:reduce) {
+  .office-structured-dialog :is(input,select,textarea,.button,.office-dialog-radio,.icon-button) { transition:none; }
+  .office-structured-dialog :is(.button,.office-dialog-radio,.icon-button):active:not(:disabled) { transform:none; }
+}

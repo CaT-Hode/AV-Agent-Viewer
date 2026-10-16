@@ -41,6 +41,11 @@ export interface AgentViewState {
 export interface AgentViewStatus { viewId: string; documentId: string; state: AgentViewState | null; userControl?: 'running' | 'paused' | 'stopped' }
 export interface ViewInfo { id: string; documentId: string; windowId: string; mode: 'read' | 'source' | 'split'; pinned: boolean; context?: ReadingContext; zoom?: number; agentState?: AgentViewState }
 export interface ReadingSnapshot { id: string; schemaVersion: string; context: ReadingContext; document: DocumentInfo; createdAt: string }
+export interface TextSelectionLease { kind: 'text-selection'; revision: number; selection: Pick<ReadingContext['selection'], 'kind' | 'text' | 'locator'> }
+export type SelectionContextLease = import('./native-office').NativeOfficeSelectionLease | TextSelectionLease;
+/** A selected range receipt; it deliberately contains no document model
+ * or file bytes. Complete snapshots are frozen separately when needed. */
+export interface SelectionContext { kind: 'selection-context'; id: string; context: ReadingContext; document: Omit<DocumentInfo, 'model'>; createdAt: string }
 export interface WorkspaceState { protocolVersion: string; documents: DocumentInfo[]; views: ViewInfo[]; activeViewId?: string; eventsSeq: number; tasks: HarnessTask[]; agentStates?: AgentViewState[] }
 export interface HarnessTask { id: string; snapshotId: string; viewId?: string; sourceScope?: 'selection' | 'visible'; prompt: string; text: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; error?: string }
 
@@ -129,7 +134,7 @@ export interface FormatAdapter {
 }
 export interface BrowserRuntime {
   setZoom?(viewId: string, factor: number): void;
-  open(viewId: string, url: string): Promise<void>;
+  open(viewId: string, url: string, options?: { background?: boolean }): Promise<void>;
   layout(windowId: string, views: { viewId: string; bounds: Rect }[]): void;
   context(viewId: string, actor?: Actor): Promise<ReadingContext>;
   input(request: BrowserRequest): Promise<{ navigationId: string; context: ReadingContext }>;
@@ -149,6 +154,6 @@ export class ViewerError extends Error {
 
 export { normalizeWebAddress, documentSuffixes } from './web-address';
 export type { WebAddressInference } from './web-address';
-export type { NativeOfficeFormat, UNOProperty, NativeOfficeQuery, NativeOfficeNavigateTarget, NativeOfficeExportFormat, NativeOfficeState, NativeOfficeMetadata, NativeOfficeSnapshot, NativeOfficeCommand, NativeOfficeExecution, NativeOfficeExecuteRequest, NativeOfficeInputRequest, NativeOfficeCapture, NativeOfficeDriver, NativeOfficeStylePatch, NativeOfficeStyleTarget, NativeOfficeStyleValues, NativeOfficeStyleField, NativeOfficeStyleInspection } from './native-office';
-export { nativeOfficeStylePatchSchema } from './native-office';
+export type { NativeInputState, NativeOfficeInspection, NativeOfficeSelectionLease, NativeOfficeFormat, UNOProperty, NativeOfficeQuery, NativeOfficeThumbnailSource, NativeOfficeNavigateTarget, NativeOfficeExportFormat, NativeOfficeState, NativeOfficeMetadata, NativeOfficeSnapshot, NativeOfficeSnapshotReuse, NativeOfficeCommand, NativeOfficeExecution, NativeOfficeExecuteRequest, NativeOfficeInputRequest, NativeOfficeCapture, NativeOfficeDriver, NativeOfficeStylePatch, NativeOfficeStyleTarget, NativeOfficeStyleValues, NativeOfficeStyleField, NativeOfficeStyleInspection } from './native-office';
+export { nativeOfficeInteractionBlocked, nativeOfficeStylePatchSchema } from './native-office';
 export { nativeOfficeCommandPolicy } from './native-office-policy';

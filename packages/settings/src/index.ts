@@ -74,7 +74,7 @@ export const settingsRegistry: SettingDefinition[] = [
   b('library.groupTranslations','系统','文档库与搜索','原文与译文分组',true),
   b('search.includeTranslations','系统','文档库与搜索','搜索译文',true),
   b('search.includeAnnotations','系统','文档库与搜索','搜索批注',true),
-  s('web.backgroundLoading','系统','网页与下载','后台网页加载','lazy',['lazy','eager']),
+  { ...s('web.backgroundLoading','系统','网页与下载','后台网页加载','lazy',['lazy','eager']), description: '仅影响之后新登记或恢复的后台网页。按需模式在激活或明确读取正文时加载；不会卸载或重新加载已有页面。' },
   b('web.allowPopups','系统','网页与下载','允许弹出窗口',false),
   s('downloads.conflict','系统','网页与下载','下载同名处理','rename',['rename','ask']),
   b('storage.keepArtifacts','系统','存储与恢复','清理缓存时保留正式译文',true),
@@ -89,7 +89,7 @@ const activeSettings = new Set([
   'general.startPage',
   'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.documentPaperColor','appearance.backgroundMotion','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs',
   'translation.selectionAuto','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
-  'ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart',
+  'ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart','web.backgroundLoading',
 ]);
 export function settingsAvailability(id: string) { return activeSettings.has(id) ? { available: true } : { available: false, unavailableReason: '当前引擎尚未接入此能力，暂不能修改。' }; }
 

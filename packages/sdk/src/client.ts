@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dataDir } from './discovery';
 import { PROTOCOL_VERSION } from '../../contracts/src/index';
+import { requestLoopbackJson } from './loopback-json-request';
+import type { SelectionContext, SelectionContextLease } from '../../contracts/src/index';
 
 export async function connection() {
   const config = JSON.parse(await readFile(process.env.AGENTVIEWER_CONNECTION_FILE ?? join(dataDir(), 'runtime/connection.json'), 'utf8')) as { endpoint: string; token: string; protocolVersion: string };
@@ -11,7 +13,11 @@ export async function connection() {
 }
 export async function call(method: string, args: Record<string, unknown> = {}) {
   const config = await connection();
-  const response = await fetch(config.endpoint + '/api/command', { method: 'POST', headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }), signal: AbortSignal.timeout(30_000) });
-  const data = await response.json() as { error?: { code: string; message: string } };
+  const response = await requestLoopbackJson(new URL(config.endpoint + '/api/command'), config.token, JSON.stringify({ method, args }));
+  const data = response.data as { error?: { code: string; message: string } };
   if (!response.ok) throw new Error(`${data.error?.code}: ${data.error?.message}`); return data;
 }
+export async function selectionContext(viewId: string, expected?: SelectionContextLease) {
+  return await call('selection-context', { viewId, expected }) as unknown as { selectionContext: SelectionContext; actions: { action: string; label: string }[] };
+}
+export async function exportRecovery(path: string) { return call('workspace-export-recovery',{path}); }

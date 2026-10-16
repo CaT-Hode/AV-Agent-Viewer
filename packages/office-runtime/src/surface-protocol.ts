@@ -42,6 +42,13 @@ const schemas = {
   [OFFICE_SURFACE_METHODS.windowInput]: windowIdentity.extend({ streamId: identity, sequence: revision, event: windowEvent }).strict(),
   [OFFICE_SURFACE_METHODS.windowClose]: windowIdentity,
   [OFFICE_SURFACE_METHODS.windowClipboard]: windowIdentity,
+  [OFFICE_SURFACE_METHODS.windowControls]: windowIdentity,
+  [OFFICE_SURFACE_METHODS.windowAction]: windowIdentity.extend({ revision, nodeId: identity, requestId: identity.regex(/^[A-Za-z0-9_-]+$/), action: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('click') }).strict(),
+    z.object({ kind: z.literal('set-text'), value: z.string().max(65536).refine(value => !value.includes('\0')) }).strict(),
+    z.object({ kind: z.literal('toggle'), value: z.boolean() }).strict(),
+    z.object({ kind: z.literal('select'), value: identity }).strict(),
+  ]) }).strict(),
 };
 /** Private IPC accepts bounded data, never engine addresses or arbitrary paths. */
 export function validateOfficeSurfaceRequest(method: string, value: unknown) {

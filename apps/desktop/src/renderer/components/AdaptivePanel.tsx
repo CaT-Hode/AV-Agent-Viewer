@@ -3,6 +3,7 @@ import { stepGlassSpring, type SpringAxis } from '../lib/glass-elasticity';
 import { advancePanelHeight, measurePanelHeight, panelContentPresentation, panelHeightSettled, panelResizeSpring } from '../lib/adaptive-panel';
 import { resolveMotionMode, useMotionSnapshot } from '../lib/motion';
 import { NativePanelHeightContext } from '../lib/native-panel-height';
+import { PanelScrollHints } from './PanelScrollHints';
 
 type Props = HTMLAttributes<HTMLElement> & { availableHost: RefObject<HTMLElement | null>; contentIdentity: string; bodyClassName: string };
 /** A single widget/controller tree; changing categories never mounts a second
@@ -14,6 +15,7 @@ export function AdaptivePanel({ availableHost, contentIdentity, bodyClassName, c
   const notifyNative = useContext(NativePanelHeightContext), mode = resolveMotionMode(useMotionSnapshot().split(':')[0]);
   useLayoutEffect(() => {
     const host = frame.current, body = natural.current, viewport = scroll.current; if (!host || !body || !viewport) return;
+    const owner=host.ownerDocument.defaultView;if(!owner)return;
     let animation = 0, previous = 0, started = 0, disposed = false;
     const draw = () => {
       const presentation = panelContentPresentation(content.current);
@@ -30,25 +32,25 @@ export function AdaptivePanel({ availableHost, contentIdentity, bodyClassName, c
       const settled = panelHeightSettled(height.current, target.current) && Math.abs(content.current.value - 1) < .0005 && Math.abs(content.current.velocity) < .008;
       if (settled || now - started > 2500) { height.current = { value: target.current, velocity: 0 }; content.current = { value: 1, velocity: 0 }; }
       draw(); host.dataset.panelResizing = settled || now - started > 2500 ? 'false' : 'true';
-      if (!settled && now - started <= 2500) animation = requestAnimationFrame(tick);
+      if (!settled && now - started <= 2500) animation = owner.requestAnimationFrame(tick);
     };
     const animate = () => {
       if (animation || disposed) return;
-      previous = started = performance.now(); animation = requestAnimationFrame(tick);
+      previous = started = owner.performance.now(); animation = owner.requestAnimationFrame(tick);
     };
     const measure = () => {
       if (disposed) return;
       // Owner workbench survives popup opening at 1px and is never transformed.
-      const available = availableHost.current?.clientHeight || window.innerHeight;
-      const measured = measurePanelHeight(host, body, viewport, available), next = measured.target;
+      const available = availableHost.current?.clientHeight || owner.innerHeight;
+      const measured = measurePanelHeight(host, body, viewport, available,element=>owner.getComputedStyle(element)), next = measured.target;
       maximum.current = measured.maximum; naturalHeight.current = measured.natural;
       const changed = Math.abs(next - target.current) > .25; target.current = next;
       if (!initialized.current || mode === 'off' || mode === 'reduced') {
         initialized.current = true; height.current = { value: next, velocity: 0 };
         if (mode === 'off' || mode === 'reduced') content.current = { value: 1, velocity: 0 };
-        draw();
+        draw();host.dataset.panelResizing='false';
       }
-      else if (changed) { started = performance.now(); animate(); }
+      else if (changed) { started = owner.performance.now(); animate(); }
     };
     if (identity.current !== contentIdentity) {
       identity.current = contentIdentity; viewport.scrollTop = 0;
@@ -56,17 +58,17 @@ export function AdaptivePanel({ availableHost, contentIdentity, bodyClassName, c
       // settled old category starts a small incoming reveal for the new one.
       if (Math.abs(content.current.value - 1) < .002 && Math.abs(content.current.velocity) < .02) content.current = { value: mode === 'off' ? 1 : .28, velocity: 0 };
     }
-    const observer = new ResizeObserver(measure); observer.observe(body);
+    const observer = new owner.ResizeObserver(measure); observer.observe(body);
     if (availableHost.current) observer.observe(availableHost.current);
-    for (const child of host.children) if (child !== viewport && getComputedStyle(child).position !== 'absolute') observer.observe(child);
+    for (const child of host.children) if (child !== viewport && owner.getComputedStyle(child).position !== 'absolute') observer.observe(child);
     measure(); draw(); if (content.current.value !== 1 || !panelHeightSettled(height.current, target.current)) animate();
-    window.addEventListener('resize', measure);
-    return () => { disposed = true; cancelAnimationFrame(animation); observer.disconnect(); window.removeEventListener('resize', measure); };
+    owner.addEventListener('resize', measure);
+    return () => { disposed = true; owner.cancelAnimationFrame(animation); observer.disconnect(); owner.removeEventListener('resize', measure); };
   }, [availableHost, contentIdentity, mode, notifyNative]);
   const body = Children.map(children, child => {
     if (!isValidElement<{ className?: string }>(child) || !child.props.className?.split(/\s+/).includes(bodyClassName)) return child;
     const element = child as ReactElement<{ className?: string }>;
     return <div className="adaptive-panel-scroll" ref={scroll} data-panel-content={contentIdentity}><div className="adaptive-panel-natural" ref={natural}>{cloneElement(element, { className: element.props.className?.replace(/\bmotion-swap\b/g, '').trim() })}</div></div>;
   });
-  return <aside {...attributes} ref={frame} data-panel-adaptive="true">{body}</aside>;
+  return <aside {...attributes} ref={frame} data-panel-adaptive="true">{body}<PanelScrollHints key={contentIdentity} viewport={scroll} content={natural} /></aside>;
 }

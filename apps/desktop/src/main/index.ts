@@ -19,10 +19,14 @@ import { BabelDocAdapter } from '../../../../packages/translation/src/babeldoc';
 import { babelDocLaunch, engineHealth } from '../../../../packages/engines/src/index';
 import { recognizeImage } from '../../../../packages/ocr/src/index';
 import { ViewerError } from '../../../../packages/contracts/src/index';
+import { officeIpcError } from './office-ipc-error';
 
 import { WebToolbarHost } from './web-toolbar';
 import { ReaderPanelHost } from './reader-panels';
 import { NativeOfficeHost } from './native-office';
+import { viewZoomEvent, type CoreViewEvent } from './view-zoom-events';
+import { WorkspaceInvalidations } from './workspace-invalidations';
+import { exportMarkdown, importMarkdown, markdownExportCapabilities } from './markdown-export';
 import { nativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
 let office: NativeOfficeHost | undefined;
 const nativeHost = { sourceFor: (viewId: string) => office?.backdrop(viewId) };
@@ -51,6 +55,15 @@ let settingsWindow: BrowserWindow | undefined;
 let browserPoll: NodeJS.Timeout | undefined;
 let startupComplete = false, activationPending = false;
 let activationFlight: Promise<void> | undefined;
+const supportedDocument = /\.(?:md|markdown|mdown|txt|doc|docx|ppt|pptx|xls|xlsx|pdf|html?)$/i;
+const pendingStartupFiles = new Set(process.argv.filter(argument => isAbsolute(argument) && supportedDocument.test(argument)));
+async function openStartupFiles() {
+  if (!startupComplete || !pendingStartupFiles.size) return;
+  const owner = windows.get('main'); if (!owner || owner.isDestroyed()) return;
+  const paths = [...pendingStartupFiles]; pendingStartupFiles.clear();
+  try { await flushReaderWindow(owner); const result = await openDroppedPaths(owner, paths); owner.webContents.send('agentviewer:toolbar', { action: 'files-opened', ...result }); }
+  catch (error) { for (const path of paths) pendingStartupFiles.add(path); owner.webContents.send('agentviewer:toolbar', { action: 'close-error', message: String(error) }); }
+}
 const pendingDraftFlush = new Map<number, { id: string; scope: string; finish(error?: string): void; promise: Promise<void> }>();
 function flushReaderWindow(win: BrowserWindow, documentId?: string, checkOnly = false): Promise<void> {
   if (win.isDestroyed() || win.webContents.isDestroyed() || !win.webContents.getURL()) return Promise.resolve();
@@ -93,7 +106,7 @@ function activateReaderWindow() {
     for (const view of core.views.values()) {
       const document = core.getDocument(view.documentId).info;
       if (view.windowId === 'main' && document.format === 'web' && document.model.url) {
-        await core.browser?.open(view.id, document.model.url).catch(error => core.event('browser.error', { viewId: view.id, error: String(error) }));
+        await core.browser?.open(view.id, document.model.url, { background: true }).catch(error => core.event('browser.error', { viewId: view.id, error: String(error) }));
       }
     }
   })().catch(error => dialog.showErrorBox('AgentViewer 窗口恢复失败', String(error))).finally(() => {
@@ -103,7 +116,7 @@ function activateReaderWindow() {
 }
 
 // Register before asynchronous initialization, retaining early shortcut clicks.
-app.on('second-instance', activateReaderWindow);
+app.on('second-instance', (_event, argv) => { for (const path of argv) if (isAbsolute(path) && supportedDocument.test(path)) pendingStartupFiles.add(path); activateReaderWindow(); void openStartupFiles(); });
 app.on('activate', activateReaderWindow);
 async function openDroppedPaths(owner: BrowserWindow, paths: unknown) {
   const ownerId = [...windows].find(([, win]) => win === owner)?.[0];
@@ -113,7 +126,7 @@ async function openDroppedPaths(owner: BrowserWindow, paths: unknown) {
     if (seen.has(path.toLowerCase())) continue;
     seen.add(path.toLowerCase());
     try {
-      if (!['.md', '.markdown', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.pdf', '.html', '.htm'].includes(extname(path).toLowerCase())) throw new Error('不支持此文件类型');
+      if (!supportedDocument.test(path)) throw new Error('不支持此文件类型');
       views.push(await core.openFile(path, ownerId));
     } catch (error) { errors.push(String(error)); }
   }
@@ -179,7 +192,7 @@ void app.whenReady().then(async () => {
   });
   core.registerNativeOfficeDriver(office);
   core.browser = new ElectronBrowserRuntime(core, id => { const win = windows.get(id); if (!win) throw new Error('窗口不存在'); return win; }, () => [endpoint, process.env.AGENTVIEWER_VITE_URL].filter((value): value is string => !!value), () => settings.get('agent.pointer') === true, {
-    preload: join(__dirname, 'browser-preload.cjs'), onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); readerPanelHost.sourceChanged(owner, viewId); },
+    preload: join(__dirname, 'browser-preload.cjs'), backgroundLoading: () => settings.get('web.backgroundLoading') === 'eager' ? 'eager' : 'lazy', onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); readerPanelHost.sourceChanged(owner, viewId); },
   });
   ipcMain.on('agentviewer:browser-surface', (event, value: Record<string, unknown>) => {
     if (event.senderFrame !== event.sender.mainFrame || !value || typeof value !== 'object') return;
@@ -235,7 +248,20 @@ void app.whenReady().then(async () => {
     context: viewId => core.context(viewId), revision: documentId => core.documents.get(documentId)?.info.revision,
     capture: connectionId => { const profile = captureGeneration('selection', connectionId); return { ...profile, translate: (source, language, signal) => process.env.AGENTVIEWER_TEST_MODE === '1' && process.env.AGENTVIEWER_TEST_TRANSLATOR === '1' ? Promise.resolve('【' + language + '】' + source) : profile.generate(translationPrompt(source, language), signal) }; }
   });
-  core.on('change', (event: { type: string; data: { viewId?: string } }) => { if (event.type === 'view.closed' && event.data.viewId) selectionTranslations.cancelView(event.data.viewId); });
+  const workspaceInvalidations = new WorkspaceInvalidations({ views: () => core.views.values(), view: id => core.views.get(id), owner: id => windows.get(id), alive: owner => !owner.isDestroyed() && !owner.webContents.isDestroyed(), send: (owner, message) => owner.webContents.send('agentviewer:toolbar', message) });
+  core.on('change', (event: CoreViewEvent) => {
+    workspaceInvalidations.receive(event);
+    if (process.platform === 'win32' && !process.env.AGENTVIEWER_TEST_MODE && ['view.opened', 'document.saved'].includes(event.type)) {
+      const data = event.data as { documentId?: string }, path = data.documentId ? core.documents.get(data.documentId)?.info.path : undefined;
+      if (path) { app.addRecentDocument(path); app.setJumpList([{ type: 'recent' }]); }
+    }
+    if (event.type === 'view.closed' && event.data.viewId) selectionTranslations.cancelView(event.data.viewId);
+    if (event.type !== 'view.zoom' && event.type !== 'view.closed') return;
+    const delta = viewZoomEvent(event, event.data.viewId ? core.views.get(event.data.viewId) : undefined);
+    if (!delta) return;
+    const owners = delta.action === 'view-zoom-state' ? [windows.get(delta.windowId)] : [...windows.values()];
+    for (const owner of owners) if (owner && !owner.isDestroyed() && !owner.webContents.isDestroyed()) owner.webContents.send('agentviewer:toolbar', delta);
+  });
   if (settings.get('tasks.resumeOnStart')) for (const job of translations.jobs.values()) if (job.status === 'paused') void translations.resume(job.id).catch(error => core.event('translation.resume-error', { jobId: job.id, error: String(error) }));
   const webTranslationBusy = new Set<string>(), webTranslationSuspended = new Set<string>(), lastWebTranslation = new Map<string, number>(), lastWebNavigation = new Map<string, string>();
   const applyWebTranslation = async (viewId: string, scope: 'page' | 'selection', language: string) => {
@@ -265,6 +291,13 @@ void app.whenReady().then(async () => {
     try { for (const ownerId of owners) { const win = windows.get(ownerId); if (win) await flushReaderWindow(win, documentId, true); } }
     catch (error) { throw new ViewerError('DRAFT_CONFLICT', '当前文档有未提交输入，Agent 修改未应用。请完成输入后重新准备修改。', { reason: String(error) }); }
   });
+  core.extensions.set('before-file-move', async ({documentIds}) => {
+    for (const documentId of documentIds as string[]) {
+      const owners=new Set([...core.views.values()].filter(view=>view.documentId===documentId).map(view=>view.windowId));
+      try { for (const ownerId of owners) { const reader=windows.get(ownerId); if (reader) await flushReaderWindow(reader,documentId,true); } }
+      catch (error) { throw new ViewerError('DRAFT_CONFLICT','文件还有未提交输入，请完成输入并保存后再移动。',{reason:String(error)}); }
+    }
+  });
   core.extensions.set('ai-reading-driver', async () => {
     const provider = connections.capture('chat');
     if (provider) {
@@ -277,7 +310,7 @@ void app.whenReady().then(async () => {
     }
     const driverId = String(settings.get('ai.defaultDriver')); return { driverId, driver: core.drivers.get(driverId), model: 'harness:' + driverId };
   });
-  core.extensions.set('selection-ai', async ({action, snapshot, value, idempotencyKey}) => {
+  core.extensions.set('selection-ai', async ({action, snapshot, frozenSource, value, idempotencyKey}) => {
     if (action === 'translate') {
       if (snapshot.document.format === 'web') { const current = await core.context(snapshot.context.viewId); if (current.selection.text !== snapshot.context.selection.text) throw new Error('网页选区已改变，请重新选择。'); return applyWebTranslation(snapshot.context.viewId, 'selection', String(settings.get('translation.targetLanguage'))); }
       const view = core.getView(snapshot.context.viewId), owner = windows.get(view.windowId);
@@ -285,7 +318,7 @@ void app.whenReady().then(async () => {
       return selectionTranslations.translateSnapshot(String(owner.webContents.id), { requestId: typeof idempotencyKey === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(idempotencyKey) ? idempotencyKey : undefined, viewId: view.id, targetLanguage: String(settings.get('translation.targetLanguage')) }, snapshot.context);
     }
     const driver = connections.profileFor('chat') ? 'provider' : String(settings.get('ai.defaultDriver')); if (!core.drivers.has(driver)) throw new Error('请先在设置中选择可用模型。');
-    return { task: await core.submitTask(driver, String(value || '解释这段选中内容。'), snapshot.context.viewId, snapshot.id, 'selection') };
+    return { task: frozenSource ? await core.submitFrozenReadingTask(core.drivers.get(driver)!, String(value || '解释这段选中内容。'), frozenSource) : await core.submitTask(driver, String(value || '解释这段选中内容。'), snapshot.context.viewId, snapshot.id, 'selection') };
   });
   Menu.setApplicationMenu(null);
   ipcMain.handle('agentviewer:command', async (event, request: { method: string; args: Record<string, unknown> }) => {
@@ -335,12 +368,33 @@ void app.whenReady().then(async () => {
     if (owner === settingsWindow && method !== 'window-control') throw new Error('AUTH_SCOPE_DENIED');
     // The native surface already owns Office body rendering. Routine chrome
     // polling must not copy every cell/shape/page through Chromium again.
-    if (method === 'state') return core.stateForDisplay();
+    if (method === 'state') {
+      const known = args.knownDocuments;
+      const revisions = known && typeof known === 'object' && !Array.isArray(known) ? Object.fromEntries(Object.entries(known).filter(([id, revision]) => core.documents.has(id) && Number.isSafeInteger(revision) && Number(revision) >= 0).slice(0, 10000)) as Record<string, number> : {};
+      return core.stateForDisplay(revisions);
+    }
+    if (method === 'workspace-export-recovery') {
+      for (const reader of windows.values()) await flushReaderWindow(reader);
+      return core.exportRecovery(String(args.path));
+    }
+    if (method.startsWith('markdown-')) {
+      const ownerId = [...windows].find(([, window]) => window === owner)?.[0];
+      if (method === 'markdown-export-capabilities') return markdownExportCapabilities();
+      if (method === 'markdown-import') return importMarkdown(core, owner, ownerId!);
+      const documentId = String(args.documentId), document = core.getDocument(documentId);
+      if (document.info.format !== 'markdown' || ![...core.views.values()].some(view => view.documentId === documentId && view.windowId === ownerId)) throw new Error('AUTH_SCOPE_DENIED');
+      if (method === 'markdown-export') return exportMarkdown(core, owner, { documentId, expectedRevision: Number(args.expectedRevision), format: String(args.format), html: typeof args.html === 'string' ? args.html : undefined });
+      if (method === 'markdown-workspace-choose') {
+        const result = await dialog.showOpenDialog(owner, { title: '选择 Markdown 工作文件夹', properties: ['openDirectory'] });
+        if (result.canceled || !result.filePaths[0]) return null;
+        return dispatch(core, 'markdown-workspace-set-root', { documentId, path: result.filePaths[0] }, 'human');
+      }
+    }
     if (method === 'office-statistics') return office?.runtime.statistics;
     if (method.startsWith('office-surface-')) {
       if (!office) throw new Error('OFFICE_ENGINE_UNAVAILABLE');
       try { return await office.surfaceRequest(owner, method, args); }
-      catch (cause) { const error = cause as { code?: string; message?: string }; throw new Error((typeof error.code === 'string' && /^[A-Z_]+$/.test(error.code) ? error.code + ': ' : '') + (error.message ?? 'Office 内嵌操作失败。')); }
+      catch (cause) { throw officeIpcError(cause); }
     }
     if (method === 'drop-files') return openDroppedPaths(owner, args.paths);
     if (method === 'office-layout') {
@@ -350,11 +404,12 @@ void app.whenReady().then(async () => {
       for(const entry of views){const b=entry.bounds;if(!b||![b.x,b.y,b.width,b.height].every(Number.isFinite)||b.x<0||b.y<0||b.width<1||b.height<1||b.x+b.width>content.width+2||b.y+b.height>content.height+2)throw new Error('INVALID_NATIVE_LAYOUT');}
       await office.layoutWindow(owner,views);return {};
     }
-    if(method==='office-display'){if(!office)throw new Error('ENGINE_UNAVAILABLE');return office.display(owner,args);}
+    if(method==='office-display'){if(!office)throw new Error('ENGINE_UNAVAILABLE');try{return office.display(owner,args);}catch(cause){throw officeIpcError(cause);}}
     if (method === 'office-flush') { const view=core.getView(String(args.viewId));if(windows.get(view.windowId)!==owner)throw new Error('AUTH_SCOPE_DENIED');if(office?.exited)return {recoveryRetained:true};return core.synchronizeNativeDocument(view.documentId); }
     if (method === 'toolbar-focus') { toolbarHost.focus(owner); return {}; }
+    if(method==='navigation-bounds'){const viewId=String(args.viewId);if(core.getView(viewId).windowId!==[...windows].find(([,win])=>win===owner)?.[0])throw new Error('AUTH_SCOPE_DENIED');return toolbarHost.capsuleFor(owner,viewId);}
     if (method === 'selection-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); selectionHost.update(owner, args); return {}; }
-    if (method === 'toolbar-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED');const native=typeof args.viewId==='string'&&office?.source(args.viewId); toolbarHost.update(owner, native?{...args,canUndo:native.entry.state?.undo?.canUndo}:args); return {}; }
+    if (method === 'toolbar-layout') { if (args.viewId && core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED');const native=typeof args.viewId==='string'&&office?.source(args.viewId); toolbarHost.update(owner, native?{...args,canUndo:native.entry.state?.inputState?.editing==='text'?native.entry.state?.textHistory?.canUndo:native.entry.state?.undo?.canUndo}:args); return {}; }
     if (method === 'agent-layout') { if (args.viewId && (core.getView(String(args.viewId)).windowId !== [...windows].find(([, win]) => win === owner)?.[0])) throw new Error('AUTH_SCOPE_DENIED'); agentHost.update(owner, args); return {}; }
     if (method === 'ai-result-layout') {
       if (!args.visible) {
@@ -406,21 +461,33 @@ void app.whenReady().then(async () => {
     if (method === 'translation-resume') return translations.resume(String(args.jobId));
     if (method === 'web-translation-restore') { webTranslationSuspended.add(String(args.viewId)); return (core.browser as ElectronBrowserRuntime).restoreTranslation(String(args.viewId)); }
     if (method === 'web-translation-apply') { webTranslationSuspended.delete(String(args.viewId)); return applyWebTranslation(String(args.viewId), args.scope === 'selection' ? 'selection' : 'page', String(args.targetLanguage ?? settings.get('translation.targetLanguage'))); }
-    if (method === 'choose-file') { const result = await dialog.showOpenDialog(owner, { properties: ['openFile'], filters: [{ name: '文档', extensions: ['md', 'markdown', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf', 'html', 'htm'] }] }); if (result.canceled) return null; const view = await core.openFile(result.filePaths[0], String(args.windowId ?? 'main')); core.activate(view.id); return view; }
+    if (method === 'choose-file') { const result = await dialog.showOpenDialog(owner, { properties: ['openFile'], filters: [{ name: '文档', extensions: ['md', 'markdown', 'mdown', 'txt', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf', 'html', 'htm'] }] }); if (result.canceled) return null; const activate = args.activate !== false, view = await core.openFile(result.filePaths[0], String(args.windowId ?? 'main'), activate); if (activate) core.activate(view.id); return view; }
     if (method === 'choose-save') { const document = core.getDocument(String(args.documentId)); const result = await dialog.showSaveDialog(owner, { defaultPath: document.info.path ?? document.info.title }); if (result.canceled || !result.filePath) return null; return core.save(document.info.id, result.filePath, true); }
     if (method === 'new-window') { const id = randomUUID(); const view = args.viewId ? core.getView(String(args.viewId)) : undefined; const next = view ? core.addView(view.documentId, id) : undefined; await createWindow(id); if (next) { const document = core.getDocument(next.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(next.id, document.model.url); } return { windowId: id }; }
     if (method === 'window-control') { if (args.action === 'minimize') owner.minimize(); else if (args.action === 'maximize') owner.isMaximized() ? owner.unmaximize() : owner.maximize(); else owner.close(); return {}; }
+    if (method.startsWith('office-')) {
+      try { return await dispatch(core, method, args, 'human'); }
+      catch (cause) { throw officeIpcError(cause); }
+    }
     return dispatch(core, method, args, 'human');
   });
   await createWindow();
+  const warmup = setTimeout(() => { if (!app.isReady() || process.env.AGENTVIEWER_OFFICE_PREWARM === '0') return; void office?.runtime.warmup().catch(error => core.emit('diagnostic', error)); }, 1500);
+  warmup.unref();
   startupComplete = true;
   if (activationPending) activateReaderWindow();
   if (core.views.size === 0) {
     const welcome = await core.openFile(runtime.sampleFiles[0].path);
-    await core.openWeb(endpoint + '/fixtures/interaction.html'); await core.openFile(runtime.sampleFiles.find(f => f.format === 'pdf')!.path); core.activate(welcome.id);
+    core.activate(welcome.id);
+    // Auxiliary examples are background tabs. Transiently activating the web
+    // fixture can allocate a navigation renderer that outlives that tab switch,
+    // and a final forced activation can steal the user's intervening choice.
+    await core.openWeb(endpoint + '/fixtures/interaction.html', 'main', false);
+    await core.openFile(runtime.sampleFiles.find(f => f.format === 'pdf')!.path, 'main', false);
   } else {
-    for (const view of core.views.values()) { const document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser.open(view.id, document.model.url).catch(e => core.event('browser.error', { viewId: view.id, error: String(e) })); }
+    for (const view of core.views.values()) { const document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser.open(view.id, document.model.url, { background: true }).catch(e => core.event('browser.error', { viewId: view.id, error: String(e) })); }
   }
+  void openStartupFiles();
   browserPoll = setInterval(() => { const browser = core.browser as ElectronBrowserRuntime; for (const [viewId, entry] of browser.entries) if (entry.visible && !entry.view.webContents.isLoading()) { void browser.context(viewId).then(context => core.updateContext(viewId, context, context.actor)).catch(() => {}); if (lastWebNavigation.get(viewId) !== entry.navigationId) { lastWebNavigation.set(viewId, entry.navigationId); lastWebTranslation.delete(viewId); webTranslationSuspended.delete(viewId); } if (settings.get('translation.webAuto') && !webTranslationSuspended.has(viewId) && (settings.get('ai.defaultDriver') !== 'none' || connections.profileFor('web'))) { const now = Date.now(), last = lastWebTranslation.get(viewId) ?? 0; if (!webTranslationBusy.has(viewId) && (settings.get('translation.webDynamic') ? now - last > 4000 : last === 0)) { webTranslationBusy.add(viewId); lastWebTranslation.set(viewId, now); void applyWebTranslation(viewId, 'page', String(settings.get('translation.targetLanguage'))).catch(error => core.event('browser.translation-error', { viewId, error: String(error) })).finally(() => webTranslationBusy.delete(viewId)); } } } }, 650); browserPoll.unref();
 }).catch(error => { dialog.showErrorBox('AgentViewer 启动失败', String(error)); app.exit(1); });
 let shutdown: 'idle' | 'saving' | 'ready' = 'idle';

@@ -1,8 +1,12 @@
 import { nativeOfficeWorkerSource } from './worker-source';
 import { nativeOfficeStyleSource } from './native-style-source';
-import { nativeOfficeAppearanceSource } from './appearance-source';
+import { nativeOfficeAppearanceProfileSource, nativeOfficeAppearanceSource } from './appearance-source';
 import { officeKitAbiSource } from './kit-abi-source';
 import { officeKitBootstrapSource } from './kit-bootstrap-source';
+import { officeKitUpdatePolicySource } from './kit-update-policy-source';
+import { officeKitDialogSource } from './kit-dialog-source';
+import { officeKitLocaleResourceSource } from './locale-resource-source';
+import { officeKitBinarySource } from './kit-binary-source';
 
 /** Trusted shared definitions only: never execute the HWND worker's top level. */
 export const officeKitSharedDefinitions = [
@@ -10,11 +14,11 @@ export const officeKitSharedDefinitions = [
   'Modified', 'SelectionChanged', 'DocumentEvents', 'Status', 'SafeImportInteraction',
   'ManagedDispatch', 'ManagedInterceptor', 'DispatchCompleted', 'url', 'command_status',
   'expected', 'letter', 'range_name', 'selected_text_range', 'selection_actions',
-  'ppt_text_parts', 'ppt_text_transaction_target', 'ppt_text_model_range', 'ppt_replace_text',
+  'ppt_text_parts', 'ppt_text_transaction_target', 'ppt_text_model_range', 'ppt_replace_text', 'ppt_set_shape_text',
   'replace_selected_text', 'selection_signature', 'update_selection_epoch',
   'native_text_container_id', 'native_shape_identity', 'native_range_locator', 'selection',
   'undo_state', 'sheet_by_name', 'checked_range', 'excel_formula_parser', 'set_excel_formula',
-  'set_cell_content', 'excel_cell_formula', 'query_cell_range', 'query', 'slide_thumbnail',
+  'set_cell_content', 'excel_cell_formula', 'query_cell_range', 'query', 'slide_thumbnail', 'slide_thumbnail_source', 'slide_thumbnail_pending',
   'model_parts', 'native_paragraphs', 'paragraph', 'checked_native_paragraphs', 'mapped_sheet',
   'mapped_slide', 'mapped_shape', 'text_style', 'move_right', 'utf16_index', 'execute_operation',
   'snapshot_diagnostic', 'reconcile_clone_shape_colors', 'store_snapshot_file', 'snapshot',
@@ -25,27 +29,72 @@ export const officeKitOverriddenDefinitions = ['emit', 'view_for', 'state', 'bod
 const preamble = String.raw`
 import ast, base64, builtins, ctypes as C, hashlib, io, json, math, os, pathlib, queue, re, socket, struct, symtable, sys, tempfile, threading, time, urllib.parse, uuid, zipfile, zlib
 import xml.etree.ElementTree as ET
+class KitRequestQueue:
+    # Only disposable observations may move around input. Explicit snapshots,
+    # layouts, lifecycle calls and model writes remain ordering fences. A job
+    # that has started is never interrupted or restarted by this scheduler.
+    reads={'state','surfaceState','office-surface-state','observeState','inspect','commandStatus','commandStatuses','surfaceTiles','office-surface-tiles'}
+    interactions={'surfaceInput','office-surface-input','surfaceWindowInput','office-surface-window-input','surfaceWindowAction','office-surface-window-action','surfaceWindowClose','office-surface-window-close','execute','dispatch','input','navigate','navigation','undo'}
+    def __init__(self,maxsize=64):self.maxsize=maxsize;self.items=[];self.pending=0;self.condition=threading.Condition();self.burst=0
+    def put(self,value):
+        with self.condition:
+            while self.pending>=self.maxsize:self.condition.wait()
+            if value['method'] in self.reads:
+                key=(value['method'],json.dumps(value.get('args',{}),sort_keys=True,separators=(',',':')))
+                # Never join observations separated by a write or lifecycle
+                # fence. Each original caller still receives its own reply id.
+                for previous in reversed(self.items):
+                    if previous['method'] not in self.reads:break
+                    if previous.get('_readKey')==key:
+                        previous.setdefault('_followers',[]).append(value);self.pending+=1;return
+                value['_readKey']=key
+            self.items.append(value);self.pending+=1
+    def get_nowait(self):
+        with self.condition:
+            if not self.items:raise queue.Empty()
+            chosen=0
+            if self.burst<8:
+                for index,value in enumerate(self.items):
+                    method=value['method']
+                    if method in self.interactions:chosen=index;break
+                    if method not in self.reads:break
+            value=self.items.pop(chosen);self.burst=self.burst+1 if chosen else 0
+            self.pending-=1+len(value.get('_followers',[]));self.condition.notify_all();return value
+    def empty(self):
+        with self.condition:return not self.items
 config=json.loads(os.environ.pop('AGENTVIEWER_OFFICE_KIT_CONFIG'))
 ROOT=pathlib.Path(config['directory']).resolve();PROGRAM=pathlib.Path(config['program']).resolve();ROOT.mkdir(parents=True,exist_ok=True)
-sessions={};epoch=str(uuid.uuid4());quitting=False;output_lock=threading.RLock();request_queue=queue.Queue(maxsize=64);callback_refs=[];office=None;adapter=None;rpc=None
-def emit(value):
-    with output_lock:sys.stdout.write(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n');sys.stdout.flush()
+sessions={};epoch=str(uuid.uuid4());quitting=False;output_lock=threading.RLock();request_queue=KitRequestQueue(maxsize=64);callback_refs=[];office=None;adapter=None;rpc=None
+${officeKitBinarySource}
+def emit(value):return kit_emit(value)
 def fail(code,message):raise RuntimeError(code+'|'+message)
 ${officeKitBootstrapSource}
+${officeKitUpdatePolicySource}
+${nativeOfficeAppearanceProfileSource}
+${officeKitLocaleResourceSource}
 try:
     if config['rpc'].get('host')!='127.0.0.1':fail('OFFICE_KIT_RPC_HOST','Office 私有连接必须在本机。')
-    rpc=socket.create_connection(('127.0.0.1',int(config['rpc']['port'])),timeout=15);rpc.settimeout(None);rpc.sendall((json.dumps({'type':'auth','token':config['rpc']['token']})+'\n').encode());config['rpc'].pop('token',None)
+    rpc=socket.create_connection(('127.0.0.1',int(config['rpc']['port'])),timeout=15);kit_negotiate_transport(rpc,config['rpc']['token']);config['rpc'].pop('token',None)
     os.environ['PATH']=str(PROGRAM)+';'+os.environ.get('PATH','');os.environ['SAL_USE_VCLPLUGIN']='svp';os.environ['SAL_SKIA']='raster';os.environ['SAL_LOG']='-WARN'
     bootstrap_dll_directories=[os.add_dll_directory(str(PROGRAM))];sal=C.CDLL(str(PROGRAM/'sal3.dll'));sal.osl_setCommandArgs.argtypes=[C.c_int,C.POINTER(C.c_char_p)];sal.osl_setCommandArgs.restype=None;native_args=(C.c_char_p*1)(b'AgentViewerEmbeddedOffice');sal.osl_setCommandArgs(1,native_args)
     sal.osl_getCommandArgCount.argtypes=[];sal.osl_getCommandArgCount.restype=C.c_ulong
     if sal.osl_getCommandArgCount()!=0:fail('OFFICE_KIT_HOST_ARGUMENTS','Office 内置宿主不能带启动命令参数。')
     dll=C.CDLL(str(PROGRAM/'mergedlo.dll'));adapter=C.CDLL(config['adapterPath']);adapter.av_kit_windows_install.argtypes=[];adapter.av_kit_windows_install.restype=C.c_int;adapter.av_kit_windows_uninstall.argtypes=[];adapter.av_kit_windows_uninstall.restype=C.c_int
     emit({'type':'diagnostic','code':'OFFICE_KIT_DLL_LOADED'})
+    if kit_transport_failed:raise RuntimeError('OFFICE_KIT_CONNECTION_LOST|Office 私有连接已中断。')
     if adapter.av_kit_windows_install()!=0:fail('OFFICE_KIT_NATIVE_ADAPTER_UNAVAILABLE','Office 本机渲染适配器与引擎版本不匹配。')
     emit({'type':'diagnostic','code':'OFFICE_KIT_ADAPTER_INSTALLED'})
-    bootstrap_context=prepare_bootstrap_profile();profile=bootstrap_context['profile'];dll.libreofficekit_hook_2.argtypes=[C.c_char_p,C.c_char_p];dll.libreofficekit_hook_2.restype=C.c_void_p;office=dll.libreofficekit_hook_2(str(PROGRAM).encode(),profile.as_uri().encode())
+    if kit_transport_failed:raise RuntimeError('OFFICE_KIT_CONNECTION_LOST|Office 私有连接已中断。')
+    bootstrap_started=time.monotonic();emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_BEGIN'})
+    bootstrap_context=prepare_bootstrap_profile();profile=bootstrap_context['profile'];prepare_native_appearance_profile(profile,config.get('appearance',{'theme':'light','canvasColor':0xf7f5f2}))
+    emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_PREPARED','elapsedMs':round((time.monotonic()-bootstrap_started)*1000,2)})
+    prepare_kit_update_policy(bootstrap_context)
+    ui_resources=prepare_kit_locale_resources(profile)
+    emit({'type':'diagnostic','code':'OFFICE_KIT_UI_RESOURCES_SCOPED' if ui_resources['applied'] else 'OFFICE_KIT_UI_RESOURCES_FULL','uiLocale':ui_resources.get('uiLocale'),'loadedLocales':ui_resources.get('loadedLocales'),'resourceBytes':ui_resources.get('resourceBytes'),'reason':ui_resources.get('reason')})
+    if kit_transport_failed:raise RuntimeError('OFFICE_KIT_CONNECTION_LOST|Office 私有连接已中断。')
+    dll.libreofficekit_hook_2.argtypes=[C.c_char_p,C.c_char_p];dll.libreofficekit_hook_2.restype=C.c_void_p;hook_started=time.monotonic();emit({'type':'diagnostic','code':'OFFICE_KIT_HOOK_BEGIN'});office=dll.libreofficekit_hook_2(str(PROGRAM).encode(),profile.as_uri().encode())
     if not office:fail('OFFICE_KIT_INIT_FAILED','Office 内置排版引擎初始化失败。')
-    emit({'type':'diagnostic','code':'OFFICE_KIT_HOOK_INITIALIZED'})
+    emit({'type':'diagnostic','code':'OFFICE_KIT_HOOK_INITIALIZED','elapsedMs':round((time.monotonic()-hook_started)*1000,2)})
 except BaseException as error:
     emit({'type':'diagnostic','code':'OFFICE_KIT_STARTUP_FAILED'});emit({'type':'startup-error','message':str(error).partition('|')[2] or 'Office 内置引擎启动失败。'});sys.exit(1)
 import uno, unohelper
@@ -75,6 +124,7 @@ del shared_tree,shared_nodes,selected_nodes,shared_module
 
 const surface = String.raw`
 def view_for(session,args):
+    require_kit_session_available(session)
     view=session['views'].get(args.get('viewId') or session['activeViewId'])
     if not view or view.get('disposed'):fail('NATIVE_VIEW_NOT_FOUND','Office 阅读视图已关闭。')
     doc_call(session,'setView',None,I)(view['kitViewId'])
@@ -85,6 +135,10 @@ def own_ime_pending(view):return bool(view.get('composition'))
 
 def native_input_pending(session,view):
     return bool(view.get('composition') or (view.get('nativeEditing') or view.get('caretVisible')) and session['format'] in ['xlsx','pptx'])
+
+def native_input_state(session,view):
+    editing=bool(view.get('nativeEditing') or view.get('caretVisible'))
+    return {'composing':bool(view.get('composition')),'inFlight':False,'editing':'cell' if editing and session['format']=='xlsx' else 'text' if editing else 'none','modal':any(window.get('visible') and window.get('modal') is True for window in view.get('windows',{}).values())}
 
 class NativeUiDelay:
     def __init__(self,seconds):self.seconds=seconds
@@ -111,6 +165,18 @@ def native_history_signature(session):
     manager=session['doc'].getUndoManager()
     return (tuple(manager.getAllUndoActionTitles()),tuple(manager.getAllRedoActionTitles()))
 
+def live_text_history_fingerprint(session,view,event):
+    if session['format']!='pptx' or event.get('kind')!='key' or event.get('phase')!='down' or event.get('key','').lower() not in ['z','y'] or not (event.get('modifiers',{}).get('control') or event.get('modifiers',{}).get('meta')) or not (view.get('nativeEditing') or view.get('caretVisible')):return None
+    selected=selected_text_range(session,view);details=None
+    if selected is not None:
+        # History remains available inside grouped text even when a strict
+        # top-level mutation target cannot be bound. Observation must not
+        # prevent an otherwise valid physical Ctrl+Z/Y from reaching Outliner.
+        try:
+            target=ppt_text_transaction_target(session,view,selected);details=[target['slide'],target['index'],target['positions'],target['fullText'],inspect_native_style(session,view,'text')['fields']]
+        except:details=['unbound-text',selected.getString()]
+    return json.dumps([view.get('focusedParagraph'),details,command_status(view,'.uno:Undo'),command_status(view,'.uno:Redo')],sort_keys=True,ensure_ascii=False,default=str)
+
 def reconcile_history_revision(session,revision,history):
     # Some native Impress text undo actions update the real model and undo
     # stacks without delivering XModifyListener. Advance only for an observed
@@ -130,6 +196,7 @@ def session_for(args):
 def event_identity(session,view):return {'sessionId':session['sessionId'],'viewId':view['viewId'],'engineEpoch':epoch}
 def invalidate(session,view,rectangle=None):
     if rectangle is None:view['renderGeneration']+=1
+    view['projectionEventSequence']=view.get('projectionEventSequence',0)+1
     view['eventSequence']+=1;view.pop('captureCache',None)
     value={'type':'surface','action':'office-surface-invalidate',**event_identity(session,view),'partIndex':view.get('partIndex',0),'renderGeneration':view['renderGeneration'],'engineRevision':session['engineRevision'],'eventSequence':view['eventSequence']}
     if rectangle:value['rectTwips']=rectangle
@@ -147,7 +214,7 @@ def window_event(view,payload):
             values=[int(v.strip()) for v in info['position'].split(',')[:2]]
             if len(values)==2:window['positionCss']={'x':values[0],'y':values[1]}
     if not window:return
-    if action=='close':windows.pop(identifier,None);return
+    if action=='close':windows.pop(identifier,None);view.get('dialogBindings',{}).pop(identifier,None);return
     if action in ['invalidate','size_changed']:window['generation']+=1
     if action=='title_changed' or info.get('title') is not None:window['title']=str(info.get('title',''))
     if action=='size_changed':
@@ -159,7 +226,19 @@ def window_event(view,payload):
 def kit_callback(session,view):
     @CALLBACK
     def callback(kind,payload,data):
+        if session.get('disposed') or session.get('unavailable') or view.get('disposed'):return
         text=payload.decode('utf-8','replace') if payload else '';view['eventSequence']+=1
+        # Pinned LibreOfficeKitEnums.h: cursor/selection decorations, pointer
+        # style and external-window metadata do not change document text or
+        # its geometry. Keep the public sequence fresh for every callback;
+        # only the visible-text projection has a narrower invalidation key.
+        # Graphic selection (6) can accompany a live object move: retain it,
+        # and all content, layout, editing-state and unknown notifications.
+        # Calc setClientZoom reports background RGB (52) even before its
+        # unchanged-scale guard. That notification alone changes no cell text
+        # or geometry; real content/layout and full appearance invalidation
+        # remain authoritative. Keep other formats conservative.
+        if kind not in (1,2,3,4,5,13,14,17,18,36,42,43) and not (session['format']=='xlsx' and kind==52):view['projectionEventSequence']=view.get('projectionEventSequence',0)+1
         try:
             if kind==0:invalidate(session,view,parse_rect(text))
             elif kind==1:view['caret']=parse_rect(text)
@@ -172,12 +251,11 @@ def kit_callback(session,view):
             elif kind==6:
                 rectangle=parse_rect(text);view['graphicSelection']={'rect':rectangle,'draggable':True,'resizable':True,'rotatable':True} if rectangle else None
             elif kind==7:emit({'type':'application-action','action':'open-url',**event_identity(session,view),'url':text})
-            elif kind==13:session['partGeometryGeneration']=session.get('partGeometryGeneration',0)+1;view['layoutRevision']+=1;invalidate(session,view)
+            elif kind==13:view['nativeGeometryPending']=True
             elif kind==17:view['cellCursor']=parse_rect(text)
             elif kind==19:view['formula']=text
             elif kind==18:view['mousePointer']=text
-            elif kind==14:
-                view['partIndex']=int(text);view['layoutRevision']+=1;invalidate(session,view)
+            elif kind==14:view['nativePartPending']=True
             elif kind==42:view['cellSelection']=parse_rect(text)
             elif kind==43:view['cellAutoFill']=parse_rect(text)
             elif kind==36:window_event(view,text)
@@ -186,8 +264,66 @@ def kit_callback(session,view):
                 if info.get('content'):view['focusedParagraph']=str(info['content'])
             elif kind==68:
                 info=json.loads(text);view['nativeEditing']=info.get('enabled') is True or info.get('enabled')=='true'
-        except:emit({'type':'diagnostic','code':'OFFICE_KIT_CALLBACK_PAYLOAD'})
+        except:
+            view['projectionEventSequence']=view.get('projectionEventSequence',0)+1
+            emit({'type':'diagnostic','code':'OFFICE_KIT_CALLBACK_PAYLOAD'})
     callback_refs.append(callback);return callback
+def unregister_kit_callback(session,view):
+    # Runs on the same non-reentrant UI thread as painting and destruction.
+    # Keep both Python/C thunk owners alive until native destruction succeeds.
+    activate(session,view)
+    change_kit_registration(view,'callback',lambda:doc_call(session,'registerCallback',None,CALLBACK,P)(CALLBACK(),None),lambda:doc_call(session,'registerCallback',None,CALLBACK,P)(view['kitCallback'],None),False)
+def release_kit_callback(view):
+    callback=view.pop('kitCallback',None)
+    if callback is not None:callback_refs[:]=[reference for reference in callback_refs if reference is not callback]
+def change_kit_registration(owner,name,remove,add,enabled):
+    registrations=owner.setdefault('kitRegistrations',{});current=registrations.get(name,'attached')
+    if current==('attached' if enabled else 'detached'):return
+    # A failing UNO call may have changed its registration before raising.
+    # Normalize unknown state with remove before adding, never duplicate-add.
+    if enabled and current=='unknown':
+        remove();registrations[name]='detached'
+    registrations[name]='unknown';(add if enabled else remove)();registrations[name]='attached' if enabled else 'detached'
+def change_kit_bindings(view,enabled):
+    # These are registrations owned by this host. In particular Calc/Impress
+    # may retain their UNO dispatch/selection adapters after destroyView.
+    listener=view.get('selectionListener')
+    interceptor=view.get('managedInterceptor')
+    bindings=[('selection',lambda:view['controller'].removeSelectionChangeListener(listener),lambda:view['controller'].addSelectionChangeListener(listener)),('dispatch',lambda:view['frame'].releaseDispatchProviderInterceptor(interceptor),lambda:view['frame'].registerDispatchProviderInterceptor(interceptor))]
+    if enabled:bindings.reverse()
+    for name,remove,add in bindings:
+        if (listener if name=='selection' else interceptor) is not None:change_kit_registration(view,name,remove,add,enabled)
+def unregister_kit_bindings(view):change_kit_bindings(view,False)
+def change_kit_document_bindings(session,enabled):
+    document=session['doc'];bindings=[('modify','modifyListener',document.removeModifyListener,document.addModifyListener),('document','documentEvents',document.removeDocumentEventListener,document.addDocumentEventListener)]
+    if enabled:bindings.reverse()
+    for name,key,remove,add in bindings:
+        if session.get(key) is not None:
+            listener=session[key];change_kit_registration(session,name,lambda remove=remove,listener=listener:remove(listener),lambda add=add,listener=listener:add(listener),enabled)
+def restore_kit_bindings(session,views,document=False):
+    if document:change_kit_document_bindings(session,True)
+    for view in reversed(views):
+        change_kit_bindings(view,True);activate(session,view)
+        change_kit_registration(view,'callback',lambda:doc_call(session,'registerCallback',None,CALLBACK,P)(CALLBACK(),None),lambda:doc_call(session,'registerCallback',None,CALLBACK,P)(view['kitCallback'],None),True)
+def require_kit_session_available(session):
+    if session.get('unavailable'):fail('NATIVE_SESSION_UNAVAILABLE','Office 模型的清理状态未能确认，已停止访问并保留恢复内容。')
+def command_statuses(session,view,args):
+    commands=args.get('commands')
+    if not isinstance(commands,list) or not 1<=len(commands)<=50 or any(not isinstance(command,str) or not re.fullmatch(r'\.uno:[A-Za-z][A-Za-z0-9_]{0,99}',command) for command in commands):fail('INVALID_NATIVE_COMMAND','原生命令名称或查询数量无效。')
+    # Read-only status listeners can flush native notifications synchronously.
+    # Refuse a mixed capability set if those callbacks change its source lease.
+    before=(session['engineRevision'],view['selectionEpoch'])
+    results=[command_status(view,command) for command in commands]
+    if before!=(session['engineRevision'],view['selectionEpoch']):fail('STALE_NATIVE_QUERY','读取命令状态期间原生文档或选区已变化，请重新读取。')
+    return {'sessionId':session['sessionId'],'viewId':view['viewId'],'engineEpoch':epoch,'engineRevision':before[0],'selectionEpoch':before[1],'commands':results}
+def unavailable_kit_session(session,reason):
+    session['unavailable']=reason;emit({'type':'session-unavailable','sessionId':session['sessionId'],'engineEpoch':epoch,'code':reason})
+def rollback_kit_teardown(session,views,document,error):
+    try:restore_kit_bindings(session,views,document)
+    except Exception as rollback_error:
+        unavailable_kit_session(session,'NATIVE_TEARDOWN_ROLLBACK_FAILED')
+        raise RuntimeError('NATIVE_SESSION_UNAVAILABLE|Office 监听恢复失败，已停止访问并保留恢复内容。') from rollback_error
+    raise error
 def parts_state(session):
     count=doc_call(session,'getParts',I)();key=(session['engineRevision'],session.get('partGeometryGeneration',0),count);cache=session.get('partsProjection')
     if cache and cache['key']==key:return cache['parts']
@@ -222,7 +358,11 @@ def enable_context_projection(session,view):
     return {'sessionId':session['sessionId'],'viewId':view['viewId'],'engineEpoch':epoch,'enabled':True}
 
 def visible_projection_key(session,view):
-    return (session['engineRevision'],view.get('partIndex',0),view.get('eventSequence',0),view.get('zoom',1),view.get('deviceScaleFactor',1),tuple(view.get('visibleTwips',{}).get(k,0) for k in ['x','y','width','height']))
+    # Calc text is enumerated from native cell geometry in the actual Twips
+    # range. Pure scale changes do not alter that text; layout/content events
+    # and the subsequently confirmed range still invalidate it normally.
+    if session['format']=='xlsx':return (session['engineRevision'],view.get('partIndex',0),view.get('projectionEventSequence',0),tuple(view.get('visibleTwips',{}).get(k,0) for k in ['x','y','width','height']))
+    return (session['engineRevision'],view.get('partIndex',0),view.get('projectionEventSequence',0),view.get('zoom',1),view.get('deviceScaleFactor',1),tuple(view.get('visibleTwips',{}).get(k,0) for k in ['x','y','width','height']))
 
 def read_visible_text(session,view):
     visible=view.get('visibleTwips');result=[];truncated=False
@@ -257,8 +397,8 @@ def read_visible_text(session,view):
             for row in rows:
                 for column in columns:
                     if len(result)>=2000:break
-                    cell=sheet.getCellByPosition(column,row)
-                    if cell.String:result.append(letter(column)+str(row+1)+': '+cell.String)
+                    cell=sheet.getCellByPosition(column,row);content=cell.String
+                    if content:result.append(letter(column)+str(row+1)+': '+content)
         else:
             projected=writer_visible_paragraphs(session,view,visible);result=projected['text'];truncated=projected['truncated']
         content='\n'.join(result);return content[:48000],truncated or len(content)>48000,True
@@ -307,17 +447,91 @@ def surface_size(session,view):
         size={axis:max(size[axis],extent.get(axis,0)) for axis in ['width','height']}
     return size
 
+def refresh_surface_geometry(session,view):
+    # Size/part callbacks can be repeated or describe a temporary page used by
+    # GraphicExportFilter. Never re-enter the native API from its callback.
+    # At a safe UI boundary, compare actual final size, pages and part geometry
+    # before retiring any public coordinate epoch or thumbnail receipt.
+    if not view.get('nativeGeometryPending') and not view.get('nativePartPending') and 'nativeGeometrySignature' in view:return False
+    view['nativeGeometryPending']=False;view['nativePartPending']=False;activate(session,view)
+    part=doc_call(session,'getPart',I)();size=kit_size(session);count=doc_call(session,'getParts',I)();geometry=None
+    if session['format']=='pptx':
+        pages=session['doc'].getDrawPages();geometry=[(page.Name,page.Width,page.Height) for page in (pages.getByIndex(index) for index in range(pages.getCount()))]
+    signature=json.dumps([size,count,page_rectangles(session),geometry],sort_keys=True,separators=(',',':'))
+    previous=view.get('nativeGeometrySignature');view['nativeGeometrySignature']=signature
+    geometry_changed=previous is not None and previous!=signature;part_changed=part!=view.get('nativeGeometryPart',part);view['nativeGeometryPart']=part;view['partIndex']=part
+    if not geometry_changed and not part_changed:return False
+    if geometry_changed:session['partGeometryGeneration']=session.get('partGeometryGeneration',0)+1
+    view['layoutRevision']+=1;view['projectionEventSequence']=view.get('projectionEventSequence',0)+1;invalidate(session,view)
+    return True
+
+def refresh_pending_surface_geometries(session):
+    previous=doc_call(session,'getView',I)()
+    try:
+        for item in session.get('views',{}).values():
+            if not item.get('disposed') and (item.get('nativeGeometryPending') or item.get('nativePartPending')):refresh_surface_geometry(session,item)
+    finally:doc_call(session,'setView',None,I)(previous)
+
 def state(session,view):
-    activate(session,view);selected=selection(session,view);update_selection_epoch(session,view,selected);native_dirty=refresh_content_dirtiness(session);size=surface_size(session,view)
+    activate(session,view);refresh_surface_geometry(session,view);selected=selection(session,view);update_selection_epoch(session,view,selected);native_dirty=refresh_content_dirtiness(session);size=surface_size(session,view)
     visible,truncated,ready=project_visible_text(session,view);activate(session,view)
     bounds=view.get('bounds',{'x':0,'y':0,'width':0,'height':0});visibleArea=view.get('visibleTwips',{'x':0,'y':0,'width':0,'height':0});viewport=view.get('viewportCss',{'width':0,'height':0});scrollGeometry=surface_scroll_geometry(session,view);scroll=scrollGeometry['scroll'] if scrollGeometry else {axis:visibleArea[axis]*view.get('zoom',1)/15 for axis in ['x','y']}
     if selected['kind']!='none' and view.get('selectionRects'):
         rectangle=view['selectionRects'][0];factor=view.get('zoom',1)/15;origin=view.get('documentOriginCss',{'x':max(0,(viewport['width']-size['width']*factor)/2)-visibleArea['x']*factor,'y':-visibleArea['y']*factor});selected['rect']={'x':rectangle['x']*factor+origin['x'],'y':rectangle['y']*factor+origin['y'],'width':rectangle['width']*factor,'height':rectangle['height']*factor}
     supported=['office.formatText','office.setTextStyle','word.setBlock','word.setParagraphFormat','word.insertParagraph','word.deleteParagraph','word.insertTable','word.setPageLayout'] if session['format']=='docx' else ['slides.setText','slides.setShapeBounds','slides.setShapeStyle','slides.addTextShape','slides.deleteShape','slides.addSlide','slides.deleteSlide','slides.duplicateSlide','slides.setBackground','slides.setNotes','office.formatText','office.setTextStyle'] if session['format']=='pptx' else ['sheets.setCell','sheets.setRangeValues','sheets.setCellFormat','sheets.setRangeFormat','sheets.mergeCells','sheets.unmergeCells','sheets.insertRows','sheets.deleteRows','sheets.insertColumns','sheets.deleteColumns','sheets.setColumnWidth','sheets.setRowHeight','sheets.addWorksheet','sheets.renameWorksheet','sheets.deleteWorksheet','sheets.setFreeze','sheets.setAutoFilter','sheets.sortRange']
     result=dict(sessionId=session['sessionId'],documentId=session['documentId'],viewId=view['viewId'],format=session['format'],revision=session['revision'],status='ready',surfaceKind='tiled',engineEpoch=epoch,engineRevision=session['engineRevision'],selectionEpoch=view['selectionEpoch'],dirty=native_dirty,unsavedContentChanges=bool(session['unsavedContentChanges']),supportedOperations=supported,selectionActions=selection_actions(session,view,selected),nativeHwnd='0',nativePid=os.getpid(),nativeGeometry=bool(view.get('layoutReady')),visible=bool(view.get('visible')),focused=bool(view.get('focused')),pendingInput=native_input_pending(session,view),actor=view.get('actor',session.get('actor','human')),zoom=view.get('zoom',1),viewport={'width':viewport['width'],'height':viewport['height'],'deviceScaleFactor':view_scale(view),'bounds':bounds,'screenBounds':bounds,'layoutRevision':view['layoutRevision'],'scrollX':scroll['x'],'scrollY':scroll['y']},selection=selected,visibleText=visible,visibleTextReady=ready,visibleTextSource='actual-model-projection' if ready else 'unavailable',visibleTextTruncated=truncated,undo=undo_state(session),nativeUi={'menus':False,'toolbars':False,'statusbar':False,'sidebar':False},sizeTwips=size,parts=parts_state(session),partIndex=doc_call(session,'getPart',I)(),pages=page_rectangles(session),layoutRevision=view['layoutRevision'],renderGeneration=view['renderGeneration'],eventSequence=view['eventSequence'],selectionRects=view.get('selectionRects',[]),windows=list(view['windows'].values()),warnings=['XLSX_NATIVE_COLUMN_WIDTH_METRICS'] if session['format']=='xlsx' else [])
+    result['inputState']=native_input_state(session,view)
+    if session['format']=='pptx' and result['inputState']['editing']=='text':result['textHistory']={'canUndo':command_status(view,'.uno:Undo')['enabled'],'canRedo':command_status(view,'.uno:Redo')['enabled']}
     for name in ['caret','caretVisible','selectionStart','selectionEnd','graphicSelection','cellCursor','cellSelection','cellAutoFill','mousePointer','focusedParagraph','formula']:
         if view.get(name) is not None:result[name]=view[name]
     return result
+
+def observation_lease(session,view,result=None):
+    source=result if result is not None else view
+    return {'sessionId':session['sessionId'],'documentId':session['documentId'],'viewId':view['viewId'],'engineEpoch':epoch,'engineRevision':result['engineRevision'] if result is not None else session['engineRevision'],'selectionEpoch':source['selectionEpoch'],'eventSequence':source['eventSequence'],'layoutRevision':source['layoutRevision'],'renderGeneration':source['renderGeneration'],'partGeometryGeneration':session.get('partGeometryGeneration',0)}
+
+def observation_fingerprint(session,view):
+    # This private host observation still executes on the real serialized UI
+    # thread. It never replaces state(), a public query, or a mutation guard.
+    # Without every real listener attached, notifications cannot prove reuse.
+    try:
+        if session.get('disposed') or session.get('unavailable') or session.get('operationActor') is not None or session.get('exporting') or session.get('acknowledgingSave') is not None:return None
+        if any(session.get(name) is None for name in ['modifyListener','documentEvents']):return None
+        if any(session.get('kitRegistrations',{}).get(name)!='attached' for name in ['modify','document']):return None
+        live=list(session['views'].values())
+        if not live or view not in live:return None
+        for item in live:
+            if item.get('disposed') or item.get('internalManaged') or item.get('windows') or native_input_pending(session,item):return None
+            if any(item.get(name) is None for name in ['kitCallback','selectionListener','managedInterceptor']):return None
+            if any(item.get('kitRegistrations',{}).get(name)!='attached' for name in ['callback','selection','dispatch']):return None
+        # Read native state even when no callbacks arrived. In particular some
+        # Outliner history transitions do not emit XModifyListener. Exceptions
+        # here are NOT the permissive undo_state() empty-history fallback.
+        activate(session,view);dirty=refresh_content_dirtiness(session);manager=session['doc'].getUndoManager()
+        undo=tuple(manager.getAllUndoActionTitles());redo=tuple(manager.getAllRedoActionTitles())
+        history=(undo,redo,bool(manager.isUndoPossible()),bool(manager.isRedoPossible()),manager.getCurrentUndoActionTitle() if undo else None,manager.getCurrentRedoActionTitle() if redo else None)
+        size=surface_size(session,view);part=doc_call(session,'getPart',I)();count=doc_call(session,'getParts',I)();pages=page_rectangles(session)
+        # Local geometry/focus/zoom/input/appearance are also part of the
+        # receipt. Unknown non-JSON local fields fail closed, so a future
+        # native handle cannot silently become an unobserved state source.
+        excluded={'controller','frame','kitCallback','selectionListener','managedInterceptor','visibleProjection','captureCache','accessibilityCache','rangeLocatorCache','inputStreams','dialogBindings','observationReceipt'}
+        local=[{key:value for key,value in item.items() if key not in excluded} for item in live]
+        streams=[[(str(key),entry['sequence'],entry['signature']) for key,entry in item.get('inputStreams',{}).items()] for item in live]
+        value={'lease':observation_lease(session,view),'revision':session['revision'],'dirty':dirty,'unsavedContentChanges':session['unsavedContentChanges'],'actor':session.get('actor'),'activeViewId':session.get('activeViewId'),'history':history,'size':size,'part':part,'parts':count,'pages':pages,'appearance':native_appearance,'views':local,'inputStreams':streams}
+        return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':'),allow_nan=False)
+    except:return None
+
+def observe_state(session,view,args):
+    # Only this method establishes a conditional receipt. A renderer/MCP full
+    # read must continue reading the native selection, regardless of this cache.
+    before=observation_fingerprint(session,view);prior=view.get('observationReceipt');known=args.get('known')
+    if before is not None and prior and prior['fingerprint']==before and isinstance(known,dict) and known.get('token')==prior['token'] and known.get('lease')==prior['lease']:
+        return {'unchanged':True,'token':prior['token'],'lease':prior['lease']}
+    view.pop('observationReceipt',None);result=state(session,view);after=observation_fingerprint(session,view);lease=observation_lease(session,view,result)
+    reply={'unchanged':False,'lease':lease,'state':result}
+    if before is not None and before==after and lease==observation_lease(session,view):
+        receipt={'fingerprint':after,'lease':lease,'token':str(uuid.uuid4())};view['observationReceipt']=receipt;reply['token']=receipt['token']
+    return reply
 def layout_view(view,args):
     session=sessions[view['sessionId']];activate(session,view)
     if 'visibleTwips' in args:
@@ -359,7 +573,7 @@ def tiles(session,view,args):
         rectangle=rect_values(spec['rectTwips']);w=checked_integer(spec['pixelWidth'],1,2048);h=checked_integer(spec['pixelHeight'],1,2048);total+=w*h*4
         if total>64*1024*1024 or rectangle['width']<=0 or rectangle['height']<=0:fail('OFFICE_TILE_LIMIT','Office 图块内存或区域无效。')
         buffer=(C.c_ubyte*(w*h*4))();doc_call(session,'paintTile',None,P,I,I,I,I,I,I)(buffer,w,h,*(round(rectangle[k]) for k in ['x','y','width','height']))
-        output.append({'key':spec['key'],'rectTwips':rectangle,'width':w,'height':h,'pixelFormat':'bgra' if mode==1 else 'rgba','alphaMode':'premultiplied','data':base64.b64encode(bytes(buffer)).decode()})
+        output.append({'key':spec['key'],'rectTwips':rectangle,'width':w,'height':h,'pixelFormat':'bgra' if mode==1 else 'rgba','alphaMode':'premultiplied','data':kit_pixel_data(buffer)})
     return {'state':state(session,view),'partIndex':view.get('partIndex',0),'renderGeneration':view['renderGeneration'],'layoutRevision':view['layoutRevision'],'tiles':output}
 `;
 
@@ -449,6 +663,7 @@ def input_request(session,view,args,window=None):
         return prior['result']
     if sequence!=(prior['sequence']+1 if prior else 1):fail('OFFICE_INPUT_SEQUENCE_GAP','Office 输入流缺少确认的事件。')
     native_event_fence()
+    refresh_surface_geometry(session,view)
     if not window:
         expected_part=checked_integer(args.get('expectedPartIndex'),0,2**31-1)
         if expected_part!=doc_call(session,'getPart',I)():fail('STALE_OFFICE_SURFACE_PART','Office 页或工作表已切换；旧输入未执行，请确认当前目标。')
@@ -464,6 +679,7 @@ def input_request(session,view,args,window=None):
             if len(view['inputStreams'])>64:view['inputStreams'].pop(next(iter(view['inputStreams'])))
             return result
         fail('STALE_OFFICE_SURFACE_LAYOUT','Office 输入坐标需要重新定位。')
+    history_before=live_text_history_fingerprint(session,view,args['event']) if not window else None;revision_before=session['engineRevision']
     session['operationActor']='human'
     try:
         restore_selection=None;committed_presentation=False
@@ -479,6 +695,10 @@ def input_request(session,view,args,window=None):
         if not window and args['event'].get('kind')=='barrier':yield from settle_native_input(session,view)
         # PostKeyEvent/IME/accelerators enqueue UI work. An acknowledgement is
         # emitted only after a separate UI turn has processed those events.
+        if history_before is not None and session['engineRevision']==revision_before and live_text_history_fingerprint(session,view,args['event'])!=history_before:
+            session['engineRevision']+=1;session['unsavedContentChanges']=True;session['actor']='human';emit({'type':'changed','sessionId':session['sessionId'],'engineRevision':session['engineRevision'],'actor':'human'})
+            for item in session['views'].values():
+                if not item.get('disposed'):invalidate(session,item)
         view['actor']='human';result={'state':state(session,view),'streamId':stream,'ackSequence':sequence,'composing':bool(view.get('composition'))};result['state']['inputAck']={'streamId':stream,'sequence':sequence,'composing':result['composing']};view['inputStreams'][key]={'sequence':sequence,'signature':signature,'result':result}
         if len(view['inputStreams'])>64:view['inputStreams'].pop(next(iter(view['inputStreams'])))
         return result
@@ -487,15 +707,16 @@ def attach_kit_view(session,controller,args,identifier):
     view={'sessionId':session['sessionId'],'viewId':args['viewId'],'kitViewId':identifier,'controller':controller,'frame':controller.getFrame(),'disposed':False,'selectionEpoch':0,'layoutRevision':0,'renderGeneration':0,'eventSequence':0,'visible':False,'focused':False,'deviceScaleFactor':1,'bounds':{'x':0,'y':0,'width':0,'height':0},'viewportCss':{'width':0,'height':0},'inputStreams':{},'windows':{},'selectionRects':[],'partIndex':0,'actor':'human'}
     view['contextProjectionEnabled']=False
     session['views'][view['viewId']]=view;session['activeViewId']=view['viewId'];activate(session,view)
-    doc_call(session,'initializeForRendering',None,S)(b'{}');callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None)
+    doc_call(session,'initializeForRendering',None,S)(b'{}');sync_native_view_appearance(view);callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None);view['kitRegistrations']={'callback':'attached'}
     doc_call(session,'setAccessibilityState',None,I,B)(identifier,True)
-    interceptor=ManagedInterceptor(view);view['managedInterceptor']=interceptor;view['frame'].registerDispatchProviderInterceptor(interceptor)
-    listener=SelectionChanged(session,view);view['selectionListener']=listener;controller.addSelectionChangeListener(listener)
+    interceptor=ManagedInterceptor(view);view['managedInterceptor']=interceptor;view['frame'].registerDispatchProviderInterceptor(interceptor);view['kitRegistrations']['dispatch']='attached'
+    listener=SelectionChanged(session,view);view['selectionListener']=listener;controller.addSelectionChangeListener(listener);view['kitRegistrations']['selection']='attached'
     if 'bounds' in args:layout_view(view,args)
     return view
 def open_session(args):
     existing=next((s for s in sessions.values() if s['documentId']==args['documentId']),None)
     if existing:
+        require_kit_session_available(existing)
         if existing['sessionId']!=args['sessionId']:fail('NATIVE_DUPLICATE_WRITER','此文档已经由另一 Office 会话编辑。')
         if args['viewId'] in existing['views']:view=existing['views'][args['viewId']];layout_view(view,args);return view
         previous=model_controllers(existing['doc']);identifier=doc_call(existing,'createView',I)();new=[c for c in model_controllers(existing['doc']) if all(c!=p for p in previous)]
@@ -516,16 +737,39 @@ def open_session(args):
         if getattr(item,'URL','')==path.as_uri():matches.append(item)
     if len(matches)!=1:doc_call(provisional,'destroy',None)();fail('OFFICE_KIT_MODEL_NOT_UNIQUE','OfficeKit 与原生对象模型未唯一关联。')
     doc=matches[0];session={'sessionId':args['sessionId'],'documentId':args['documentId'],'format':format,'revision':args['revision'],'engineRevision':0,'doc':doc,'kit':pointer,'unsavedContentChanges':bool(doc.isModified()),'views':{},'disposed':False,'path':path,'lastSnapshot':None,'mappingBytes':data,'operationActor':None,'actor':'human','requests':{}}
-    sessions[session['sessionId']]=session;listener=Modified(session);session['modifyListener']=listener;doc.addModifyListener(listener)
-    events=DocumentEvents(session);session['documentEvents']=events;doc.addDocumentEventListener(events)
+    sessions[session['sessionId']]=session;listener=Modified(session);session['modifyListener']=listener;doc.addModifyListener(listener);session['kitRegistrations']={'modify':'attached'}
+    events=DocumentEvents(session);session['documentEvents']=events;doc.addDocumentEventListener(events);session['kitRegistrations']['document']='attached'
     identifier=doc_call(session,'getView',I)();view=attach_kit_view(session,doc.getCurrentController(),args,identifier)
     return view
 def close_session(session,discard=False):
+    require_kit_session_available(session)
     if not discard and any(state(session,view)['pendingInput'] for view in session['views'].values()):fail('NATIVE_PENDING_INPUT','Office 文档仍有未提交的实际编辑输入。')
     if refresh_content_dirtiness(session) and not discard:fail('NATIVE_UNSAVED_CHANGES','请先保存或建立恢复快照，再关闭 Office 文档。')
     for view in list(session['views'].values()):
         for window in list(view['windows'].values()):doc_call(session,'postWindow',None,U,I,S)(window['id'],0,None)
-    doc_call(session,'destroy',None)();session['disposed']=True;sessions.pop(session['sessionId'],None)
+    views=list(session['views'].values())
+    try:
+        for view in views:unregister_kit_callback(session,view);unregister_kit_bindings(view)
+        change_kit_document_bindings(session,False)
+    except Exception as error:rollback_kit_teardown(session,views,True,error)
+    try:doc_call(session,'destroy',None)()
+    except Exception as error:
+        unavailable_kit_session(session,'NATIVE_DESTROY_UNCONFIRMED')
+        raise RuntimeError('NATIVE_SESSION_UNAVAILABLE|Office 模型销毁未能确认，已停止访问并保留恢复内容。') from error
+    session['disposed']=True;sessions.pop(session['sessionId'],None)
+    # The model has synchronously disposed its controllers/listeners. Global
+    # callback roots must no longer retain their source bytes and receipt trees.
+    for view in session['views'].values():view['disposed']=True;release_kit_callback(view)
+def detach_kit_view(session,view):
+    require_kit_session_available(session)
+    if len(session['views'])==1:fail('NATIVE_LAST_VIEW','请通过文档会话关闭最后一个视图。')
+    try:unregister_kit_callback(session,view);unregister_kit_bindings(view)
+    except Exception as error:rollback_kit_teardown(session,[view],False,error)
+    try:doc_call(session,'destroyView',None,I)(view['kitViewId'])
+    except Exception as error:
+        unavailable_kit_session(session,'NATIVE_VIEW_DESTROY_UNCONFIRMED')
+        raise RuntimeError('NATIVE_SESSION_UNAVAILABLE|Office 控制器销毁未能确认，已停止访问并保留恢复内容。') from error
+    view['disposed']=True;release_kit_callback(view);session['views'].pop(view['viewId']);session['activeViewId']=next(iter(session['views']))
 def dispatch_command(session,view,command,values,request_id):
     if command in ['.uno:Undo','.uno:Redo']:require_stable_history(session)
     status=command_status(view,command)
@@ -539,8 +783,15 @@ def dispatch_command(session,view,command,values,request_id):
         if command=='.uno:Undo':manager.undo()
         else:manager.redo()
         return 'applied'
-    activate(session,view);payload={name:{'type':'boolean' if type(value) is bool else 'long' if type(value) is int else 'double' if type(value) is float else 'string','value':value} for name,value in values.items()}
-    doc_call(session,'postUnoCommand',None,S,S,B)(command.encode(),json.dumps(payload).encode() if payload else None,True)
+    # This path reports dispatch, not command completion. In the pinned engine,
+    # a DispatchResultListener forces SfxCallMode::SYNCHRON even when the caller
+    # requested SynchronMode=false. Dialogs such as Document Properties then run
+    # their nested modal loop inside this JSONL request and block further input.
+    # Keep the call mode asynchronous and omit the completion listener; model/window
+    # callbacks still publish changes, while Undo/Redo above confirm directly.
+    activate(session,view);values={**values,'SynchronMode':False}
+    payload={name:{'type':'boolean' if type(value) is bool else 'long' if type(value) is int else 'double' if type(value) is float else 'string','value':value} for name,value in values.items()}
+    doc_call(session,'postUnoCommand',None,S,S,B)(command.encode(),json.dumps(payload).encode(),False)
     return 'dispatched'
 
 def dispatch_with_history(session,view,command,values,request_id):
@@ -590,7 +841,7 @@ def paint_window(session,view,args):
     width=checked_integer(args['width'],1,4096);height=checked_integer(args['height'],1,4096);density=float(args['deviceScaleFactor'])
     if not .5<=density<=8 or abs(width-window['width']*density)>2 or abs(height-window['height']*density)>2 or width*height*4>64*1024*1024:fail('INVALID_OFFICE_WINDOW_BOUNDS','Office 窗口缓冲区与真实尺寸不一致。')
     buffer=(C.c_ubyte*(width*height*4))();doc_call(session,'paintWindowForView',None,U,P,I,I,I,I,C.c_double,I)(window['id'],buffer,0,0,width,height,density,view['kitViewId']);mode=doc_call(session,'getTileMode',I)()
-    return {'state':state(session,view),'windowId':window['id'],'windowInstanceId':window['instanceId'],'generation':window['generation'],'tile':{'key':window['instanceId'],'rectTwips':{'x':0,'y':0,'width':window['width'],'height':window['height']},'width':width,'height':height,'pixelFormat':'bgra' if mode==1 else 'rgba','alphaMode':'premultiplied','data':base64.b64encode(bytes(buffer)).decode()}}
+    return {'state':state(session,view),'windowId':window['id'],'windowInstanceId':window['instanceId'],'generation':window['generation'],'tile':{'key':window['instanceId'],'rectTwips':{'x':0,'y':0,'width':window['width'],'height':window['height']},'width':width,'height':height,'pixelFormat':'bgra' if mode==1 else 'rgba','alphaMode':'premultiplied','data':kit_pixel_data(buffer)}}
 `;
 
 const lifecycle = String.raw`
@@ -718,32 +969,61 @@ def navigate(session,view,args):
         return {'status':'rendered','state':state(session,view)}
     finally:session['operationActor']=None
 def execute_request(session,view,args,identifier):
-    key=args.get('requestId',identifier);signature=hashlib.sha256(json.dumps(args,sort_keys=True,ensure_ascii=False).encode()).hexdigest();prior=session['requests'].get(key)
-    if prior:
-        if prior['signature']!=signature:fail('IDEMPOTENCY_CONFLICT','Office 请求身份已用于另一操作。')
-        return prior['result']
-    expected(session,view,args);before=session['engineRevision'];session['operationActor']=args.get('actor','agent');manager=session['doc'].getUndoManager()
+    key=args.get('requestId',identifier);signature=hashlib.sha256(json.dumps(args,sort_keys=True,ensure_ascii=False).encode()).digest();prior=request_receipt(session,key,signature)
+    if prior is not None:return prior
+    # Only the full-shape Outliner transaction needs this preflight drain before
+    # its expected-version check. No mutation has occurred if this fence fails.
+    if not args.get('command') and not args.get('style') and args.get('operation',{}).get('kind')=='slides.setText':native_event_fence()
+    expected(session,view,args)
+    input_state=native_input_state(session,view)
+    if input_state['composing'] or input_state['modal']:fail('NATIVE_PENDING_INPUT','请先完成中文输入或关闭原生模态对话框。')
+    before=session['engineRevision'];session['operationActor']=args.get('actor','agent');manager=session['doc'].getUndoManager();style_result=None
     try:
         if args.get('command'):
             values={p['name']:p['value'] for p in args.get('args',[])};status=yield from dispatch_with_history(session,view,args['command'],values,key)
         elif args.get('style'):
-            apply_native_style(session,view,args['style'],args);status='applied' if session['engineRevision']!=before else 'no-change'
+            style_result=apply_native_style(session,view,args['style'],args);status=style_result['status'] if style_result is not None else 'applied' if session['engineRevision']!=before else 'no-change'
+        elif args.get('operation',{}).get('kind')=='slides.setShapeStyle':
+            history=native_history_signature(session);execute_operation(session,view,args['operation'],args)
+            reconcile_history_revision(session,before,history);status='applied' if session['engineRevision']!=before else 'no-change'
         else:
+            history=native_history_signature(session)
+            if manager.isLocked():fail('NATIVE_UNDO_BUSY','原生撤销事务尚未结束。')
             manager.enterUndoContext('AgentViewer '+(args.get('operation',{}).get('kind') or ('替换选区' if args.get('replacement') else '编辑单元格')))
             try:
                 if args.get('replacement'):replace_selected_text(session,view,args['replacement'],args)
                 elif args.get('cell'):
                     cell=args['cell'];set_cell_content(session,checked_range(sheet_by_name(session,cell['sheetName']),cell['address']),cell['content'])
-                elif args.get('operation'):execute_operation(session,view,args['operation'])
+                elif args.get('operation'):execute_operation(session,view,args['operation'],args)
                 else:fail('INVALID_NATIVE_OPERATION','Office 修改需要明确的实际目标。')
-                status='applied' if session['engineRevision']!=before else 'no-change'
             finally:manager.leaveUndoContext()
+            # The synchronous Outliner transaction has already ended text edit;
+            # leaving this context exposes its real native history. A later
+            # event-fence failure must not turn an applied mutation into an
+            # unrecorded outcome that an idempotent retry could execute again.
+            reconcile_history_revision(session,before,history)
+            status='applied' if session['engineRevision']!=before else 'no-change'
         view['actor']=args.get('actor','agent');result={'status':status,'state':state(session,view)}
-        if status=='applied':result['undoToken']=undo_state(session).get('token')
-        session['requests'][key]={'signature':signature,'result':result}
-        if len(session['requests'])>300:session['requests'].pop(next(iter(session['requests'])))
+        if style_result is not None:result.update({key:value for key,value in style_result.items() if key in ['historyScope','warnings']})
+        if status=='applied' and (style_result is None or style_result.get('historyScope')!='text'):result['undoToken']=undo_state(session).get('token')
+        remember_request_receipt(session,key,signature,result)
         return result
     finally:session['operationActor']=None
+def request_receipt(session,key,signature):
+    digest=hashlib.sha256(key.encode()).digest();seen=session.get('requestSignatures',{}).get(digest)
+    if seen is None:return None
+    if seen!=signature:fail('IDEMPOTENCY_CONFLICT','Office 请求身份已用于另一操作。')
+    prior=session['requests'].get(digest)
+    if prior is None:fail('NATIVE_REQUEST_RECEIPT_EXPIRED','Office 操作已经确认，但完整回执已过期；不会重复执行修改。')
+    return prior['result']
+def remember_request_receipt(session,key,signature,result):
+    # Keep exact compact fingerprints for the session lifetime. Evicting the
+    # bulky result must never make an old editing identity executable again.
+    digest=hashlib.sha256(key.encode()).digest();session.setdefault('requestSignatures',{})[digest]=signature
+    size=len(json.dumps(result,ensure_ascii=False,separators=(',',':')).encode())
+    session['requests'][digest]={'result':result,'bytes':size};session['requestReceiptBytes']=session.get('requestReceiptBytes',0)+size
+    while session['requests'] and (len(session['requests'])>300 or session['requestReceiptBytes']>4*1024*1024):
+        retired=session['requests'].pop(next(iter(session['requests'])));session['requestReceiptBytes']-=retired['bytes']
 def handle_request(request):
     method=request.get('method');args=request.get('args',{});identifier=request.get('id')
     if method=='ping':return {'engineEpoch':epoch,'sessions':len(sessions),'surfaceKind':'tiled'}
@@ -762,26 +1042,47 @@ def handle_request(request):
     if method=='open':
         open_session(args);yield;return state(sessions[args['sessionId']],sessions[args['sessionId']]['views'][args['viewId']])
     if method=='shutdown':
-        for session in list(sessions.values()):close_session(session,args.get('discard',False))
+        for session in list(sessions.values()):
+            if session.get('unavailable'):
+                if not args.get('discard',False):require_kit_session_available(session)
+                # An explicit owner shutdown may exit this private process, but
+                # must not touch an uncertain pointer or remove recovery bytes.
+                continue
+            close_session(session,args.get('discard',False))
         global quitting;quitting=True;return {'closed':True}
-    session=session_for(args);view=view_for(session,args)
+    session=session_for(args);view=view_for(session,args);refresh_surface_geometry(session,view)
     if method=='enableContextProjection':return enable_context_projection(session,view)
+    if method=='observeState':return observe_state(session,view,args)
     if method in ['state','surfaceState','office-surface-state']:return state(session,view)
     if method in ['layout','surfaceLayout','office-surface-layout']:layout_view(view,args);yield;return state(session,view)
     if method in ['surfaceTiles','office-surface-tiles']:return tiles(session,view,args)
     if method in ['surfaceInput','office-surface-input']:return (yield from input_request(session,view,args))
     if method in ['surfaceWindowPaint','office-surface-window-paint']:return paint_window(session,view,args)
+    if method in ['surfaceWindowControls','office-surface-window-controls']:
+        window=window_for(session,view,args);dialog=read_native_dialog(view,window);return native_dialog_reply(session,view,window['id'],window['instanceId'],dialog)
+    if method in ['surfaceWindowAction','office-surface-window-action']:return (yield from dialog_action(session,view,args))
     if method in ['surfaceWindowInput','office-surface-window-input']:return (yield from input_request(session,view,args,window_for(session,view,args)))
     if method in ['surfaceWindowClose','office-surface-window-close']:
         window=window_for(session,view,args);doc_call(session,'postWindow',None,U,I,S)(window['id'],0,None);yield;return state(session,view)
     if method in ['surfaceWindowClipboard','office-surface-window-clipboard']:
         window_for(session,view,args);fail('OFFICE_WINDOW_CLIPBOARD_UNAVAILABLE','当前 OfficeKit 只提供文档视图剪贴板，不能将其当作独立窗口内容。')
-    if method=='snapshot':return snapshot(session,view)
+    if method=='snapshot':return snapshot(session,view,known=args.get('known'))
     if method=='exportCopy':expected(session,view,args);return snapshot(session,view,args['format'])
     if method=='capture':return capture(session,view,args.get('rect'))
     if method=='commands':return commands(session,view)
     if method=='commandStatus':return command_status(view,args['command'])
+    if method=='commandStatuses':return command_statuses(session,view,args)
     if method=='query':return query(session,view,args['target'])
+    if method=='inspect':
+        # No yields between the values and their selection/version receipt.
+        initial=state(session,view);lease=(initial['engineRevision'],initial['selectionEpoch'])
+        data=query(session,view,args['target']) if args.get('target') else None
+        statuses=command_statuses(session,view,args)['commands'] if args.get('commands') else [] if args.get('commands') is not None else None
+        result={'state':state(session,view)}
+        if lease!=(result['state']['engineRevision'],result['state']['selectionEpoch']):fail('STALE_NATIVE_QUERY','读取期间原生文档或选区已变化，请重新读取。')
+        if args.get('target'):result['data']=data
+        if statuses is not None:result['commands']=statuses
+        return result
     if method=='execute':return (yield from execute_request(session,view,args,identifier))
     if method=='dispatch':
         expected(session,view,args);session['operationActor']=args.get('actor','agent')
@@ -790,11 +1091,9 @@ def handle_request(request):
             return {'status':status,'state':state(session,view)}
         finally:session['operationActor']=None
     if method=='input':
-        key='input:'+args['idempotencyKey'];signature=hashlib.sha256(json.dumps(args,sort_keys=True,ensure_ascii=False).encode()).hexdigest();prior=session['requests'].get(key)
-        if prior:
-            if prior['signature']!=signature:fail('IDEMPOTENCY_CONFLICT','Office 输入身份已用于另一操作。')
-            return prior['result']
-        result=yield from native_input(session,view,args);session['requests'][key]={'signature':signature,'result':result};return result
+        key='input:'+args['idempotencyKey'];signature=hashlib.sha256(json.dumps(args,sort_keys=True,ensure_ascii=False).encode()).digest();prior=request_receipt(session,key,signature)
+        if prior is not None:return prior
+        result=yield from native_input(session,view,args);remember_request_receipt(session,key,signature,result);return result
     if method in ['navigate','navigation']:return (yield from navigate(session,view,args))
     if method=='undo':
         expected(session,view,args);before=undo_state(session)
@@ -811,8 +1110,7 @@ def handle_request(request):
     if method=='ackSaved':return {'accepted':acknowledge_saved(session,args),'state':state(session,view)}
     if method=='overlayOwner':return None
     if method=='detachView':
-        if len(session['views'])==1:fail('NATIVE_LAST_VIEW','请通过文档会话关闭最后一个视图。')
-        doc_call(session,'destroyView',None,I)(view['kitViewId']);view['disposed']=True;session['views'].pop(view['viewId']);session['activeViewId']=next(iter(session['views']));return None
+        detach_kit_view(session,view);return None
     if method=='close':close_session(session,args.get('discard',False));return {'closed':True}
     fail('NATIVE_METHOD_UNSUPPORTED','Office 内置接口不存在。')
 
@@ -827,6 +1125,7 @@ def verify_shared_globals():
 class RpcPump(unohelper.Base,XCallback):
     def __init__(self):self.active=None;self.request=None;self.executing=False;self.resumeAfter=0.0
     def notify(self,unused):
+        if kit_transport_failed:return
         if self.executing:return
         if time.monotonic()<self.resumeAfter:return
         self.resumeAfter=0.0
@@ -840,27 +1139,33 @@ class RpcPump(unohelper.Base,XCallback):
                 self.resumeAfter=time.monotonic()+step.seconds
                 timer=threading.Timer(step.seconds,lambda:async_service.addCallback(self,None));timer.daemon=True;timer.start()
         except StopIteration as completed:
-            emit({'id':self.request.get('id'),'ok':True,'result':completed.value});self.active=None;self.request=None
+            delivered=True
+            for request in [self.request]+self.request.get('_followers',[]):
+                if not kit_emit_reply(request,completed.value):delivered=False;break
+            self.active=None;self.request=None
+            if not delivered:return
             if quitting:shutdown_event.set();return
         except BaseException as error:
-            message=str(error);code,separator,detail=message.partition('|');emit({'id':self.request.get('id'),'ok':False,'error':{'code':code if separator else 'NATIVE_ENGINE_ERROR','message':detail if separator else 'Office 内置引擎操作失败。'}});self.active=None;self.request=None
+            message=str(error);code,separator,detail=message.partition('|')
+            for request in [self.request]+self.request.get('_followers',[]):emit({'id':request.get('id'),'ok':False,'error':{'code':code if separator else 'NATIVE_ENGINE_ERROR','message':detail if separator else 'Office 内置引擎操作失败。'}})
+            self.active=None;self.request=None
         finally:self.executing=False
-        if not self.resumeAfter and (self.active is not None or not request_queue.empty()):async_service.addCallback(self,None)
+        if not kit_transport_failed and not self.resumeAfter and (self.active is not None or not request_queue.empty()):async_service.addCallback(self,None)
 def receive_rpc():
     try:
-        with rpc.makefile('rb') as reader:
+        with kit_rpc_reader as reader:
             while not quitting:
-                line=reader.readline(150*1024*1024+1)
+                line=reader.readline(KIT_REQUEST_BYTES_MAX+1)
                 if not line:break
-                if len(line)>150*1024*1024:emit({'type':'diagnostic','code':'NATIVE_PROTOCOL_LIMIT'});break
+                if len(line)>KIT_REQUEST_BYTES_MAX:emit({'type':'diagnostic','code':'NATIVE_PROTOCOL_LIMIT'});break
                 value=json.loads(line)
                 if not isinstance(value,dict) or not isinstance(value.get('method'),str):fail('NATIVE_PROTOCOL_ERROR','Office 请求结构无效。')
                 request_queue.put(value);async_service.addCallback(pump,None)
     except:emit({'type':'diagnostic','code':'OFFICE_KIT_CONNECTION_LOST'})
     finally:
-        if not quitting:shutdown_event.set()
-shutdown_event=threading.Event()
+        if not quitting:kit_transport_fail()
 try:
+    if kit_transport_failed:raise RuntimeError('OFFICE_KIT_CONNECTION_LOST|Office 私有连接已中断。')
     version=json.loads(kit_string(office_call('getVersionInfo',P)()))
     if version.get('BuildId')!='bf6ef2662401c7d6dce671ab4deb26ee0af3a7c1':fail('OFFICE_KIT_VERSION_MISMATCH','Office 引擎构建版本未通过接口验证。')
     office_call('setOptionalFeatures',None,C.c_ulonglong)(1<<2)
@@ -874,6 +1179,8 @@ except BaseException as error:
     emit({'type':'diagnostic','code':'OFFICE_KIT_STARTUP_FAILED'});emit({'type':'startup-error','message':str(error).partition('|')[2] or 'Office 内置引擎启动失败。'})
 finally:
     if rpc:
+        try:rpc.shutdown(socket.SHUT_RDWR)
+        except:pass
         try:rpc.close()
         except:pass
     if office and not sessions:
@@ -890,4 +1197,4 @@ export const officeKitWorkerSource = preamble
   + '\nSHARED_SOURCE_BASE64=' + JSON.stringify(Buffer.from(nativeOfficeWorkerSource).toString('base64'))
   + '\nSHARED_DEFINITIONS=' + JSON.stringify(officeKitSharedDefinitions)
   + '\n' + sharedLoader + '\n' + nativeOfficeStyleSource + '\n' + nativeOfficeAppearanceSource
-  + '\n' + officeKitAbiSource + '\n' + surface + '\n' + inputAndModel + '\n' + lifecycle;
+  + '\n' + officeKitAbiSource + '\n' + surface + '\n' + inputAndModel + '\n' + officeKitDialogSource + '\n' + lifecycle;

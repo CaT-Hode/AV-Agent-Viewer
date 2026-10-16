@@ -1,0 +1,47 @@
+# 开发与发行
+
+使用 Node.js 24、npm 和锁文件安装。PowerShell 阻止 ps1 启动器时使用 npm.cmd。
+
+```powershell
+npm.cmd ci
+npm.cmd run dev
+npm.cmd run build
+npm.cmd test
+npm.cmd run test:desktop
+npm.cmd run test:office
+```
+
+build 包括文档约束、TypeScript、主进程/preload/MCP 和 Vite 产物。Windows 原生适配器需 MSVC x64；发布包运行不需要编译器。视觉 Worker 由 Vite 单独打包，验证必须使用本轮构建的 dist。
+
+## 引擎与可选转换
+
+```powershell
+npm.cmd run engines:prepare
+npm.cmd run engines:verify
+npm.cmd run package:portable
+```
+
+[engines.lock.json](../../engines.lock.json)锁定引擎和校验值。portable 流程准备引擎、bootstrap seed 与发行目录；普通前端构建不自动下载全部外部引擎。
+
+Markdown 的 HTML/PDF/PNG 使用应用导出；DOCX、ODT、RTF、EPUB、LaTeX 等导入导出依赖 PATH 中可选 Pandoc。图片上传执行用户明确配置的可执行文件和参数，保存配置不触发上传。
+
+## 数据与调试
+
+| 环境变量 | 用途 |
+| --- | --- |
+| AGENTVIEWER_DATA_DIR | 独立数据/测试配置目录 |
+| AGENTVIEWER_PORT | 本地服务端口，默认 3210 |
+| AGENTVIEWER_CONNECTION_FILE | SDK/MCP 发现文件 |
+| AGENTVIEWER_CODEX | Codex 可执行文件 |
+| AGENTVIEWER_LIBREOFFICE | 转换引擎路径 |
+| AGENTVIEWER_OFFICE_PREWARM=0 | 关闭桌面空闲预热 |
+| AGENTVIEWER_BABELDOC | PDF 翻译 CLI |
+| AGENTVIEWER_PDF_FONT | PDF 内嵌字体 |
+
+恢复v2在清单旁保存blob；文本delta最多32层，GC保留当前及上代依赖。迁移留 `.v1.bak`，每次v2替换留 `.v2.bak`。SDK的 `exportRecovery(新路径)` 或 `workspace-export-recovery` 导出可供旧版读取的完整恢复包，拒绝覆盖目标且不切换当前存储。迁移、故障和回滚验证使用数据副本，保留用户配置、凭据和活动会话。
+
+每轮相关修改完成后再验证，当前实绩与覆盖边界见[测试记录](../../tests/README.md)。测试总预算 50，以[清单](../../tests/suite.json)统计为准；文档按[manifest](../manifest.json)限制每模块两篇、每篇完整 Unicode 字符≤2000。日志与轨迹留 TEMP，依赖报告放 artifacts。
+
+本机替换需明确授权并先退出已安装应用，不强行结束用户进程；安装保留用户数据。不要把本地构建当作安装或发布完成。
+
+[测试](../../tests/README.md) · [依赖许可](dependencies.md) · [原生适配](../../packages/office-runtime/native/README.md)

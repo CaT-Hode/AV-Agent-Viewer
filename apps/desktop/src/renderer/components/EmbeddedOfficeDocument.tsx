@@ -7,10 +7,13 @@ import { NativeOfficeFormulaBar } from './NativeOfficeFormulaBar';
 import { EmbeddedOfficeDialogHost } from './EmbeddedOfficeDialogHost';
 import { OfficeHorizontalScrollbar } from './OfficeHorizontalScrollbar';
 import { call } from '../lib/transport';
-import { OfficeSurfaceInputController } from '../lib/office-surface-controller';
+import { assertOfficeSurfaceLease, OfficeSurfaceInputController } from '../lib/office-surface-controller';
 import { OfficeSurfaceDispatchQueue } from '../lib/office-surface-dispatch';
 import { OfficeTileCache } from '../lib/office-tile-cache';
-import { officeTileRgba } from '../lib/office-surface-pixels';
+import { OfficeTilePlanCache } from '../lib/office-tile-plan';
+import { createOfficeCanvasBinding } from '../lib/office-canvas-retirement';
+import { consumeOfficeTileBatch } from '../lib/office-tile-decoder';
+import { createOfficeVisibleTileCompletion } from '../lib/office-visible-tile-completion';
 import { OfficePointerClickTracker, type OfficePointerCapture } from '../lib/office-surface-pointer';
 import { officeSurfaceStaleRead } from '../lib/office-surface-errors';
 import { useEmbeddedOfficeSelectionTools } from '../lib/useEmbeddedOfficeSelectionTools';
@@ -21,7 +24,8 @@ import {OfficeFramePresenter,drawOfficeFrameTile} from '../lib/office-frame-pres
 import { OfficeStartupPreview, type OfficeStartupPreviewLocation } from './OfficeStartupPreview';
 import { useOfficeFormulaNavigationHost } from '../lib/useOfficeFormulaNavigationHost';
 import {flushOfficeSurfaceDraft,officeSurfaceHasDrafts} from '../lib/office-surface-draft';
-import { intersectOfficeRect, officeCssScale, officeCurrentPage, officeDocumentPoint, officeSheetCanvasLayout, officeSurfaceClipRects, officeSurfaceSize, officeTileBatches, officeViewportRect, officeVisibleTiles, officeVisibleTwips, type OfficeSurfaceGeometry } from '../lib/office-surface-geometry';
+import { createOfficeSurfaceStateObserver, sameOfficeSurfaceIdentity as sameIdentity, shareOfficeSurfaceState } from '../lib/office-surface-observer';
+import { intersectOfficeRect, officeCssScale, officeCurrentPage, officeDocumentPoint, officeSheetCanvasLayout, officeSurfaceClipRects, officeSurfaceSize, officeTileBatches, officeViewportRect, officeVisibleTwips, type OfficeSurfaceGeometry } from '../lib/office-surface-geometry';
 import '../embedded-office.css';
 
 export type EmbeddedOfficeDocumentProps = {
@@ -31,7 +35,6 @@ export type EmbeddedOfficeDocumentProps = {
   onReaderScroll?(y: number): void; onZoomChange?(factor: number): void;
 };
 const modifiers = (event: Pick<KeyboardEvent, 'shiftKey' | 'ctrlKey' | 'altKey' | 'metaKey'>): OfficeInputModifiers => ({ shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey });
-const sameIdentity = (a: OfficeSurfaceState, b: OfficeSurfaceState) => a.sessionId === b.sessionId && a.engineEpoch === b.engineEpoch && a.viewId === b.viewId && a.documentId === b.documentId;
 /** LibreOffice owns the document, layout and editing; DOM owns tiles, focus and accessible input. */
 export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const { document: file, view } = props, identity = file.id + ':' + view.id;
@@ -51,8 +54,9 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     const leaseId=crypto.randomUUID(),owner={leaseId,ready:call('office-display',{viewId:view.id,leaseId,action:'acquire'})};displayOwner.current=owner;
     return()=>{if(displayOwner.current===owner)displayOwner.current=undefined;void call('office-display',{viewId:view.id,leaseId,action:'release'}).catch(()=>{});};
   },[identity,!!props.obscured]);
-  const surfaceCall=useCallback(async<T=unknown,>(method:string,args:Record<string,unknown>={}):Promise<T>=>{const owner=displayOwner.current;if(!owner)throw new Error('OFFICE_DISPLAY_EXPIRED');await owner.ready;if(displayOwner.current!==owner)throw new Error('OFFICE_DISPLAY_EXPIRED');return call<T>(method,{...args,leaseId:owner.leaseId});},[identity]);
+  const surfaceCall=useCallback(async<T=unknown,>(method:string,args:Record<string,unknown>={}):Promise<T>=>{const owner=displayOwner.current;if(!owner)throw new Error('OFFICE_DISPLAY_EXPIRED');assertOfficeSurfaceLease(args.leaseId,owner.leaseId);await owner.ready;if(displayOwner.current!==owner)throw new Error('OFFICE_DISPLAY_EXPIRED');return call<T>(method,{...args,leaseId:owner.leaseId});},[identity]);
   const scroll = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), input = useRef<HTMLTextAreaElement>(null), formulaDraft = useRef<OfficeDraftController | undefined>(undefined);
+  const bindCanvas=useMemo(()=>createOfficeCanvasBinding(canvas),[canvas]);
   const formulaHost = useOfficeFormulaNavigationHost(scroll);
   const [surface, setSurface] = useState<OfficeSurfaceState>(), [failure, setFailure] = useState(''), [viewportVersion, setViewportVersion] = useState(0), [, inputChanged] = useState(0);
   const displayScope=surface?`${identity}:${surface.sessionId}:${surface.engineEpoch}`:undefined;
@@ -71,18 +75,23 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const lastInvalidationSequence = useRef(-1);
   const pendingScroll=useRef(new OfficePendingScroll());
   const retiredSessions = useRef(new Set<string>());
+  const stateObserver=useRef<ReturnType<typeof createOfficeSurfaceStateObserver>|undefined>(undefined);
   useLayoutEffect(() => {
-    if (file.format !== 'xlsx' && file.format !== 'pptx') return;
+    if (!['docx','xlsx','pptx'].includes(file.format)) return;
     const host=scroll.current?.closest<HTMLElement>('.embedded-office-document'),reader=host?.closest<HTMLElement>('.reader-panel');
     if (!host || !reader) return;
-    // Calc owns a bounded sheet frame in the same unobstructed lane as the
-    // navigation. Impress only bounds the page until the user manually zooms.
+    // Document pixels and native hit coordinates share the actual unobstructed
+    // navigation lane. A first paragraph must remain reachable after reopen.
     const write=(name:string,value:number)=>{const next=value+'px';if(host.style.getPropertyValue(name)!==next)host.style.setProperty(name,next);};
     const update=()=>{
       const lane=readNavigationLane(reader);
       const right=Math.max(0,reader.getBoundingClientRect().width-lane.right);
       write('--office-controls-left-inset',lane.left);write('--office-controls-right-inset',right);
       const nav=reader.querySelector<HTMLElement>('.navigation-toolbar'),height=nav&&!nav.classList.contains('is-hidden')?Number.parseFloat(getComputedStyle(nav).getPropertyValue('--navigation-height'))||60:0;
+      if(file.format==='docx'){
+        write('--office-word-left-inset',lane.left);write('--office-word-right-inset',right);
+        write('--office-word-top-inset',height?height+24:12);
+      }
       if(file.format==='xlsx'){
         write('--office-sheet-left-inset',lane.left);write('--office-sheet-right-inset',right);
         write('--office-sheet-top-inset',height?height+24:12);
@@ -99,12 +108,14 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     return()=>{stop();changes.disconnect();};
   }, [identity, file.format,presentationFit]);
   const cache = useMemo(() => new OfficeTileCache<ImageBitmap>(48 * 1024 * 1024, bitmap => bitmap.close()), [identity]);
-  const accept = useCallback((next: OfficeSurfaceState) => {
-    if (!mounted.current || !isOfficeSurfaceState(next) || next.documentId !== latest.current.document.id || next.viewId !== latest.current.view.id) return;
+  const tilePlans = useMemo(() => new OfficeTilePlanCache(), [identity]);
+  const accept = useCallback((value: OfficeSurfaceState) => {
+    if (!mounted.current || !isOfficeSurfaceState(value) || value.documentId !== latest.current.document.id || value.viewId !== latest.current.view.id) return;
     const previous = current.current;
-    const source = next.sessionId + ':' + next.engineEpoch;
+    const source = value.sessionId + ':' + value.engineEpoch;
     if (retiredSessions.current.has(source)) return;
-    if (previous && sameIdentity(previous, next) && (next.engineRevision < previous.engineRevision || next.engineRevision === previous.engineRevision && ((next.selectionEpoch ?? 0) < (previous.selectionEpoch ?? 0) || next.eventSequence < previous.eventSequence))) return;
+    const next=shareOfficeSurfaceState(previous,value);
+    if(next===previous){if(next.status==='ready'&&!inputFailure.current)setFailure('');return;}
     if (!previous || !sameIdentity(previous, next) || next.renderGeneration !== previous.renderGeneration) { cache.clear(); generation.current++; if (!previous || !sameIdentity(previous, next)) { lastInvalidationSequence.current = -1; if (previous) { retiredSessions.current.add(previous.sessionId + ':' + previous.engineEpoch); if (retiredSessions.current.size > 32) retiredSessions.current.delete(retiredSessions.current.values().next().value!); } } }
     if(!previous||!sameIdentity(previous,next)||next.partIndex!==previous.partIndex){presenter.clear();const target=canvas.current;target?.getContext('2d')?.clearRect(0,0,target.width,target.height);}
     if (previous && next.partIndex !== previous.partIndex) { const host = scroll.current; if (host) { host.scrollTop = 0; host.scrollLeft = 0; } lastLayout.current = ''; }
@@ -158,7 +169,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     return surfaceCall<T>(method, { ...args, layoutRevision: live.layoutRevision });
     });
   }, [dispatchQueue, synchronizeLayoutLocked,surfaceCall]);
-  const inputController = useMemo(() => new OfficeSurfaceInputController(view.id, { request: inputRequest, state: () => current.current, beforeInput: async () => {}, accept, changed: () => { if (mounted.current) inputChanged(version => version + 1); } }), [identity, surface?.sessionId, surface?.engineEpoch, accept, inputRequest]);
+  const inputController = useMemo(() => new OfficeSurfaceInputController(view.id, { request: inputRequest, state: () => current.current, lease: () => displayOwner.current?.leaseId, beforeInput: async () => {}, accept, changed: () => { if (mounted.current) inputChanged(version => version + 1); } }), [identity, surface?.sessionId, surface?.engineEpoch, accept, inputRequest]);
   const fail = useCallback((cause: unknown) => { if (!mounted.current) return; const message = cause instanceof Error ? cause.message : String(cause); setFailure(message); latest.current.reportError(cause); }, []);
   const schedulePresentationFit=useCallback(()=>{
     if(!presentationFit?.enabled)return;
@@ -189,15 +200,11 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     // layout receipt rather than racing a generation-zero tile request against
     // the initialization layout; later same-session resizes keep strict tickets.
     if (!mounted.current || !state || state.status !== 'ready' || !state.visible || state.nativeGeometry !== true || state.layoutRevision <= 0 || !geometry || !host || !target || latest.current.obscured || performance.now() < paintRetry.current.after) return;
-    const size = officeSurfaceSize(state), dpr = window.devicePixelRatio || 1, scale = officeCssScale(geometry.zoom), visible = officeVisibleTwips(geometry, size), allSpecs = officeVisibleTiles(visible, size, geometry.zoom, dpr);
-    const visibleBytes = allSpecs.filter(spec => intersectOfficeRect(spec.rectTwips, visible)).reduce((sum, spec) => sum + spec.pixelWidth * spec.pixelHeight * 4, 0);
-    if (visibleBytes > 256 * 1024 * 1024) throw new Error('当前 Office 可见区域超过画布资源限制。');
-    cache.setBudget(Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, visibleBytes + 16 * 1024 * 1024)));
-    let requestedBytes = 0;
-    const specs = allSpecs.sort((a, b) => Number(!!intersectOfficeRect(b.rectTwips, visible)) - Number(!!intersectOfficeRect(a.rectTwips, visible))).filter(spec => { const bytes = spec.pixelWidth * spec.pixelHeight * 4; if (requestedBytes + bytes > cache.budgetBytes) return false; requestedBytes += bytes; return true; });
+    const size = officeSurfaceSize(state), dpr = window.devicePixelRatio || 1, scale = officeCssScale(geometry.zoom), visible = officeVisibleTwips(geometry, size);
+    const { specs, visibleSpecs, budgetBytes } = tilePlans.get(visible, size, geometry.zoom, dpr);
+    cache.setBudget(budgetBytes);
     const prefix = `${state.sessionId}:${state.engineEpoch}:${state.partIndex}:${state.renderGeneration}:`, active = new Set(specs.map(spec => prefix + spec.key)); cache.pin(active);
-    const visibleSpecs=specs.filter(spec=>intersectOfficeRect(spec.rectTwips,visible));
-    const presented=presenter.present(target,{scope:state,geometry,dpr,rects:officeSurfaceClipRects(state).filter(rect=>intersectOfficeRect(rect,visible)),pixelRevision:cache.version,complete:visibleSpecs.every(spec=>cache.has(prefix+spec.key)),draw:(context,replacing)=>{
+    const presented=presenter.present(target,{scope:state,geometry,dpr,rects:officeSurfaceClipRects(state).filter(rect=>intersectOfficeRect(rect,visible)),pixelRevision:visibleSpecs.map(spec=>cache.pixelVersion(prefix+spec.key)),complete:visibleSpecs.every(spec=>cache.has(prefix+spec.key)),draw:(context,replacing)=>{
       for(const spec of visibleSpecs){const bitmap=cache.get(prefix+spec.key);if(bitmap)drawOfficeFrameTile(context,bitmap,{x:geometry.offsetX+spec.rectTwips.x*scale-geometry.scrollX,y:geometry.offsetY+spec.rectTwips.y*scale-geometry.scrollY,width:spec.rectTwips.width*scale,height:spec.rectTwips.height*scale},replacing);}
     }});
     if(presented.changed){target.dataset.officeFrameReused=String(presented.reused);target.dataset.officeFrameRevision=String(state.engineRevision);target.dataset.officeFrameZoom=String(geometry.zoom);}
@@ -233,52 +240,70 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     const missing = specs.filter(spec => !cache.has(prefix + spec.key)); if (!missing.length) return;
     if (tileFlight.current) { tileQueued.current = true; return; }
     tileFlight.current = true; const token = generation.current; let painted = false;
+    const visibleCompletion = createOfficeVisibleTileCompletion(visibleSpecs.map(spec => prefix + spec.key), key => cache.has(key), () => mounted.current && token === generation.current);
     try {
       for (const batch of officeTileBatches(missing)) {
         if (!mounted.current || token !== generation.current) break;
         const tickets = new Map(batch.map(spec => [spec.key, cache.begin(prefix + spec.key, spec.rectTwips, state.partIndex)]));
+        let reply: OfficeSurfaceTilesReply | undefined;
         try {
-          const reply = await surfaceCall<OfficeSurfaceTilesReply>(OFFICE_SURFACE_METHODS.tiles, { viewId: state.viewId, layoutRevision: state.layoutRevision, renderGeneration: state.renderGeneration, partIndex: state.partIndex, tiles: batch });
+          reply = await surfaceCall<OfficeSurfaceTilesReply>(OFFICE_SURFACE_METHODS.tiles, { viewId: state.viewId, layoutRevision: state.layoutRevision, renderGeneration: state.renderGeneration, partIndex: state.partIndex, tiles: batch });
           if (!mounted.current || token !== generation.current || !isOfficeSurfaceState(reply.state) || !sameIdentity(state, reply.state) || reply.partIndex !== state.partIndex || reply.renderGeneration !== state.renderGeneration || reply.layoutRevision !== state.layoutRevision) break;
           const expected = new Map(batch.map(spec => [spec.key, spec]));
-          for (const tile of reply.tiles) {
-            const spec = expected.get(tile.key), ticket = tickets.get(tile.key); if (!spec || !ticket || tile.width !== spec.pixelWidth || tile.height !== spec.pixelHeight || JSON.stringify(tile.rectTwips) !== JSON.stringify(spec.rectTwips)) throw new Error('Office tile 回执目标不匹配。');
-            const bitmap = await createImageBitmap(new ImageData(officeTileRgba(tile), tile.width, tile.height));
-            if (!mounted.current || token !== generation.current) { bitmap.close(); break; }
-            painted = cache.admit(ticket, bitmap, tile.width * tile.height * 4) || painted; tickets.delete(tile.key);
-          }
+          await consumeOfficeTileBatch(reply.tiles, {
+            current: () => mounted.current && token === generation.current,
+            validate: tile => {
+              const spec = expected.get(tile.key), ticket = tickets.get(tile.key); if (!spec || !ticket || tile.width !== spec.pixelWidth || tile.height !== spec.pixelHeight || JSON.stringify(tile.rectTwips) !== JSON.stringify(spec.rectTwips)) throw new Error('Office tile 回执目标不匹配。');
+            },
+            decode: image => createImageBitmap(image),
+            admit: (tile, bitmap) => {
+              const admitted = cache.admit(tickets.get(tile.key)!, bitmap, tile.width * tile.height * 4);
+              painted = admitted || painted; tickets.delete(tile.key);
+              // Present complete visible pixels now; the same batch may still
+              // be decoding its offscreen prefetch. All display guards remain
+              // in paint(), and the usual batch-end scheduling is preserved.
+              if (admitted && visibleCompletion.admitted(prefix + tile.key)) scheduleRef.current();
+            },
+          });
           if(painted)scheduleRef.current();
         } catch (cause) {
           if (!officeSurfaceStaleRead(cause, 'document')) throw cause;
           // Layout may advance while a batch waits on the engine thread. Its old pixels are simply retired.
           await refresh(); await synchronizeLayout(); tileQueued.current = true; break;
-        } finally { for (const ticket of tickets.values()) cache.cancel(ticket); }
+        } finally { if (Array.isArray(reply?.tiles)) reply.tiles.length = 0; for (const ticket of tickets.values()) cache.cancel(ticket); }
       }
       paintRetry.current = { after: 0, failures: 0 };
     } catch (cause) { const failures = paintRetry.current.failures + 1; paintRetry.current = { failures, after: performance.now() + Math.min(10000, 500 * 2 ** Math.min(failures, 5)) }; throw cause; }
     finally { tileFlight.current = false; const queued = tileQueued.current; tileQueued.current = false; if (mounted.current && (painted || queued)) schedule(); }
-  }, [cache,presenter, measure, refresh, synchronizeLayout,surfaceCall,identity,startupDocument]);
+  }, [cache,tilePlans,presenter, measure, refresh, synchronizeLayout,surfaceCall,identity,startupDocument]);
   const paintRef = useRef(paint); paintRef.current = paint;
   const schedule = useCallback(() => { if (!mounted.current || frame.current) return; frame.current = requestAnimationFrame(() => { frame.current = 0; void paintRef.current().catch(fail); }); }, [fail]);
   const scheduleRef = useRef(schedule); scheduleRef.current = schedule;
   useLayoutEffect(() => {
     mounted.current = true; current.current = undefined; generation.current++; lastLayout.current = ''; layoutRevision.current = 0; inputFailure.current = ''; paintRetry.current = { after: 0, failures: 0 }; lastSelectionProjection.current = '';pendingScroll.current.clear();
-    let stopped = false, running = false;
-    const poll = async () => { if (stopped || running || window.document.hidden) return; running = true; try { await refresh(); } catch (cause) { if (!stopped&&!officeSurfaceStaleRead(cause,'document')) { setFailure(cause instanceof Error ? cause.message : String(cause)); } } finally { running = false; } };
+    const observer=createOfficeSurfaceStateObserver({documentId:file.id,viewId:view.id},{
+      read:()=>surfaceCall<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.state,{viewId:view.id}),
+      current:()=>current.current,
+      accept:next=>{const previous=current.current;accept(next);if(current.current!==previous)scheduleRef.current();},
+      error:cause=>{if(!officeSurfaceStaleRead(cause,'document'))setFailure(cause instanceof Error?cause.message:String(cause));},
+      healthy:()=>{if(!inputFailure.current)setFailure('');},
+    },{now:()=>performance.now(),active:()=>mounted.current&&!latest.current.obscured&&!window.document.hidden,setTimer:(callback,delay)=>window.setTimeout(callback,delay),clearTimer:timer=>window.clearTimeout(timer as number)});
+    stateObserver.current=observer;
     const off = window.agentViewer?.onToolbar(value => {
+      observer.receive(value);
       const event = value as unknown as OfficeSurfaceEvent;
-      if (event.action === 'office-surface-state') { accept(event.state); scheduleRef.current(); }
-      else if (event.action === 'office-surface-invalidate') { const state = current.current; if (state && event.viewId === state.viewId && event.sessionId === state.sessionId && event.engineEpoch === state.engineEpoch && event.eventSequence > lastInvalidationSequence.current && event.renderGeneration >= state.renderGeneration) { lastInvalidationSequence.current = event.eventSequence; cache.invalidate(event.partIndex, event.rectTwips); if (!event.rectTwips) generation.current++; scheduleRef.current(); void poll(); } }
-      else if (event.action === 'office-surface-scroll') { const state = current.current;if(state){const scale=officeCssScale(zoom.current);if(pendingScroll.current.queue(state,{...event,x:event.scrollCss?.x??event.rectTwips.x*scale-24,y:event.scrollCss?.y??event.rectTwips.y*scale-48})){layoutRevision.current=Math.max(layoutRevision.current,event.layoutRevision);setViewportVersion(version=>version+1);void poll();}} }
+      if (event.action === 'office-surface-invalidate') { const state = current.current; if (state && event.viewId === state.viewId && event.sessionId === state.sessionId && event.engineEpoch === state.engineEpoch && event.eventSequence > lastInvalidationSequence.current && event.renderGeneration >= state.renderGeneration) { lastInvalidationSequence.current = event.eventSequence; cache.invalidate(event.partIndex, event.rectTwips); if (!event.rectTwips) generation.current++; scheduleRef.current(); void observer.poll(true); } }
+      else if (event.action === 'office-surface-scroll') { const state = current.current;if(state){const scale=officeCssScale(zoom.current);if(pendingScroll.current.queue(state,{...event,x:event.scrollCss?.x??event.rectTwips.x*scale-24,y:event.scrollCss?.y??event.rectTwips.y*scale-48})){layoutRevision.current=Math.max(layoutRevision.current,event.layoutRevision);setViewportVersion(version=>version+1);void observer.poll(true);}} }
     });
-    void poll(); const timer = window.setInterval(() => void poll(), 650);
-    return () => { stopped = true; mounted.current = false; generation.current++; off?.(); clearInterval(timer); cancelAnimationFrame(frame.current); frame.current = 0; cache.clear();presenter.clear();pendingScroll.current.clear(); };
-  }, [identity, accept, refresh, cache,presenter]);
+    const visibility=()=>observer.visibilityChanged();window.document.addEventListener('visibilitychange',visibility);void observer.start();
+    return () => { observer.dispose();if(stateObserver.current===observer)stateObserver.current=undefined;window.document.removeEventListener('visibilitychange',visibility);mounted.current = false; generation.current++; off?.(); cancelAnimationFrame(frame.current); frame.current = 0; cache.clear();tilePlans.clear();presenter.clear();pendingScroll.current.clear(); };
+  }, [identity, accept, surfaceCall, cache,tilePlans,presenter]);
+  useEffect(()=>stateObserver.current?.visibilityChanged(),[!!props.obscured]);
   useEffect(() => () => inputController.dispose(), [inputController]);
   useEffect(() => { const host = scroll.current; if (!host || !surface) return; const changed = () => { setViewportVersion(version => version + 1); lastLayout.current = ''; scheduleRef.current(); void synchronizeLayout().catch(fail); }; const observer = new ResizeObserver(changed); observer.observe(host); window.addEventListener('resize', changed); changed(); return () => { observer.disconnect(); window.removeEventListener('resize', changed); }; }, [!!surface, identity, synchronizeLayout, fail]);
   useEffect(() => { if (!surface) return; schedule(); void synchronizeLayout().catch(fail); }, [surface,viewportVersion, view.zoom, props.obscured, schedule, synchronizeLayout, fail]);
   useLayoutEffect(() => {
-    const draft: OfficeDraftController = { viewId: view.id, hasDrafts: () => officeSurfaceHasDrafts(inputController,current.current,formulaDraft.current), flush: () => flushOfficeSurfaceDraft(inputController,current.current,formulaDraft.current,async () => { await call('office-flush', { viewId: view.id }); await refresh(); }), discard: () => { formulaDraft.current?.discard(); if (inputController.compositionActive || inputController.failure || current.current?.pendingInput) throw new Error('输入法或未确认输入尚未稳定，不能静默丢弃。'); } };
+    const draft: OfficeDraftController = { viewId: view.id, hasDrafts: options => officeSurfaceHasDrafts(inputController,current.current,formulaDraft.current,options), flush: options => flushOfficeSurfaceDraft(inputController,current.current,formulaDraft.current,async () => { await call('office-flush', { viewId: view.id }); await refresh(); },options), history: direction => inputController.history(direction), discard: () => { formulaDraft.current?.discard(); if (inputController.compositionActive || inputController.failure || current.current?.pendingInput) throw new Error('输入法或未确认输入尚未稳定，不能静默丢弃。'); } };
     latest.current.onOfficeDraftController?.(draft); return () => latest.current.onOfficeDraftController?.(undefined);
   }, [identity, inputController, refresh]);
   const inputDirty = inputController.pendingEdit || inputController.compositionActive || !!inputController.failure || !!surface?.pendingInput;
@@ -356,7 +381,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     <div ref={scroll} id={'office-scroll-'+identity} className={'document-content embedded-office-content format-' + file.format} data-office-surface={view.id} data-office-page={pageIndex} tabIndex={-1} aria-label={file.title + ' 编辑区'} onWheelCapture={()=>pendingScroll.current.clear()} onScroll={() => { clicks.current.reset(); setViewportVersion(version => version + 1); latest.current.onReaderScroll?.(scroll.current?.scrollTop ?? 0); schedule(); void synchronizeLayout().catch(fail); }}>
       {size && <div className="embedded-office-stage" style={geometry?.stageSize??{ width: Math.max(size.width * scale, geometry?.viewport.width ?? 1), height: Math.max(size.height * scale, geometry?.viewport.height ?? 1) }}>
         {(surface.pages?.length ? surface.pages : file.format === 'pptx' ? [{ x: 0, y: 0, ...size }] : []).map((rect, index) => <span key={index} className="embedded-office-paper-base" style={rectStyle(rect)} />)}
-        <canvas ref={canvas} className="embedded-office-canvas" aria-hidden="true" style={{ width: geometry?.viewport.width ?? '100%', height: geometry?.viewport.height ?? '100%' }} />
+        <canvas ref={bindCanvas} className="embedded-office-canvas" aria-hidden="true" style={{ width: geometry?.viewport.width ?? '100%', height: geometry?.viewport.height ?? '100%' }} />
         <div className="embedded-office-interaction" style={{ cursor: surface?.mousePointer ?? 'text' }} onPointerDown={event => pointerEvent(event, 'down')} onPointerMove={event => pointerEvent(event, 'move')} onPointerUp={event => pointerEvent(event, 'up')} onPointerCancel={event => pointerEvent(event, 'cancel')} onContextMenu={event => event.preventDefault()}>
           {surface.selectionRects.map((rect, index) => <span key={index} className="embedded-office-selection" style={rectStyle(rect)} />)}
           {surface.cellCursor && <span className="embedded-office-cell-cursor" style={rectStyle(surface.cellCursor)} />}

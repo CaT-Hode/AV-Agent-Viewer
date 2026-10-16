@@ -15,6 +15,40 @@
   border-radius:0 0 21px 21px;
 }
 .adaptive-panel-natural { display:flow-root; min-width:0; transform-origin:top center; }
+/* Hidden scrollbars reserve no changing gutter, keeping natural tool height
+   independent of whether a spring briefly crosses the overflow threshold. */
+:root[data-theme] :is(.floating-side-panel,.activity-rail,.ai-rail),
+:root[data-theme] :is(.floating-side-panel,.activity-rail,.ai-rail) * { scrollbar-width:none; scrollbar-gutter:auto; }
+:root[data-theme] :is(.floating-side-panel,.activity-rail,.ai-rail)::-webkit-scrollbar,
+:root[data-theme] :is(.floating-side-panel,.activity-rail,.ai-rail) *::-webkit-scrollbar { display:none; width:0; height:0; }
+/* Readable cards share the panel's scrolling and edge cues instead of
+   concealing another scrollbar and wheel trap inside the same tool page. */
+:root[data-theme] .floating-side-panel :is(.selection-preview,.job-card pre,.translation-result) { max-height:none;overflow:visible;overflow-wrap:anywhere; }
+.panel-scroll-hints {
+  position:absolute;
+  top:var(--scroll-hint-top,0px);left:var(--scroll-hint-left,0px);
+  width:var(--scroll-hint-width,100%);height:var(--scroll-hint-height,100%);
+  z-index:4;pointer-events:none;overflow:hidden;border-radius:inherit;
+  --scroll-hint-tint:rgb(242 247 250 / .84);
+  --scroll-hint-ink:rgb(65 83 98 / .62);
+}
+:root[data-theme="dark"] .panel-scroll-hints { --scroll-hint-tint:rgb(31 35 40 / .86);--scroll-hint-ink:rgb(222 230 235 / .7); }
+.panel-scroll-hint { position:absolute;display:flex;align-items:center;justify-content:center;opacity:0;color:var(--scroll-hint-ink);transition:opacity 180ms ease; }
+.panel-scroll-hint-top,.panel-scroll-hint-bottom { left:0;right:0;height:23px; }
+.panel-scroll-hint-top { top:0;background:linear-gradient(to bottom,var(--scroll-hint-tint),transparent); }
+.panel-scroll-hint-bottom { bottom:0;background:linear-gradient(to top,var(--scroll-hint-tint),transparent); }
+.panel-scroll-hint-top svg { rotate:90deg; }
+.panel-scroll-hint-bottom svg { rotate:-90deg; }
+.panel-scroll-hint-left,.panel-scroll-hint-right { top:0;bottom:0;width:23px; }
+.panel-scroll-hint-left { left:0;background:linear-gradient(to right,var(--scroll-hint-tint),transparent); }
+.panel-scroll-hint-right { right:0;background:linear-gradient(to left,var(--scroll-hint-tint),transparent); }
+.panel-scroll-hint-right svg { rotate:180deg; }
+.panel-scroll-hints[data-top="true"] .panel-scroll-hint-top,
+.panel-scroll-hints[data-bottom="true"] .panel-scroll-hint-bottom,
+.panel-scroll-hints[data-left="true"] .panel-scroll-hint-left,
+.panel-scroll-hints[data-right="true"] .panel-scroll-hint-right { opacity:1; }
+:root:is([data-motion="off"],[data-motion="reduced"]) .panel-scroll-hint { transition:none; }
+@media (prefers-reduced-motion:reduce) { .panel-scroll-hint { transition:none; } }
 .adaptive-panel-natural > :is(.format-scroll,.drawer-content) { flex:none; height:auto; min-height:0; overflow:visible; animation:none!important; }
 :root.reader-panel-window .reader-panel-ported[data-panel-adaptive="true"] {
   height:var(--adaptive-panel-height,auto)!important;

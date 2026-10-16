@@ -1,3 +1,5 @@
+import { scheduleLayoutRead } from './layout-frame';
+
 export type NavigationLane = { left: number; right: number; width: number; center: number };
 type Rect = { left: number; right: number };
 const reservationProperties = ['--navigation-reservation-left','--navigation-reservation-right','--sidebar-space-scale-x'];
@@ -12,7 +14,13 @@ function panelLayoutBounds(panel: HTMLElement) {
   const top = box.top + (parent.clientTop + panel.offsetTop - parent.scrollTop) * sy;
   return {left,right:left + panel.offsetWidth * sx,top,bottom:top + panel.offsetHeight * sy,width:panel.offsetWidth * sx,height:panel.offsetHeight * sy,sx};
 }
-function readingPanels(reader: HTMLElement) { return [...(reader.closest('.workbench')?.querySelectorAll<HTMLElement>(':scope > .floating-side-panel') ?? [])]; }
+const panelCache = new WeakMap<Element, HTMLElement[]>();
+function readingPanels(reader: HTMLElement) {
+  const workbench = reader.closest('.workbench'); if (!workbench) return [];
+  let panels = panelCache.get(workbench);
+  if (!panels) { panels = [...workbench.querySelectorAll<HTMLElement>(':scope > .floating-side-panel')]; panelCache.set(workbench, panels); }
+  return panels;
+}
 function localLane(reader: DOMRect, lane: NavigationLane) { return {...lane,left:lane.left-reader.left,right:lane.right-reader.left,center:lane.center-reader.left}; }
 
 /** Entering panes announce their final width immediately. A closing pane keeps
@@ -38,18 +46,23 @@ export function sidebarNavigationScale(side:'left'|'right', panel:Rect, navigati
 function setVariable(element:HTMLElement,name:string,value:string) { if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name,value); }
 /** Coordinates are reader-local CSS pixels. The trusted Web toolbar forwards
  * the same actual capsule bounds, rather than its full transparent window. */
-export function syncSidebarNavigationReservation(reader:HTMLElement,left:number,right:number) {
-  setVariable(reader,'--navigation-reservation-left',left.toFixed(3)+'px');
-  setVariable(reader,'--navigation-reservation-right',right.toFixed(3)+'px');
-  const box = reader.getBoundingClientRect();
-  for (const panel of readingPanels(reader)) {
-    const side = panel.dataset.side; if (side !== 'left' && side !== 'right') continue;
+export function prepareSidebarNavigationReservation(reader:HTMLElement,left:number,right:number,box=reader.getBoundingClientRect()) {
+  const updates = readingPanels(reader).flatMap(panel => {
+    const side = panel.dataset.side; if (side !== 'left' && side !== 'right') return [];
     const bounds = panelLayoutBounds(panel), sx = 'sx' in bounds ? bounds.sx : 1;
     const translation = (Number.parseFloat(panel.style.getPropertyValue('--sidebar-spring-x')) || 0) * sx;
     const scale = sidebarNavigationScale(side,bounds,{left:box.left+left,right:box.left+right},translation,12*sx);
-    setVariable(panel,'--sidebar-space-scale-x',scale.toFixed(6));
-  }
+    return [{panel,scale:scale.toFixed(6)}];
+  });
+  // Read every pane before writing reservation variables. Their CSS can
+  // affect transformed bounds, so interleaving these creates forced layout.
+  return () => {
+    setVariable(reader,'--navigation-reservation-left',left.toFixed(3)+'px');
+    setVariable(reader,'--navigation-reservation-right',right.toFixed(3)+'px');
+    for (const {panel,scale} of updates) setVariable(panel,'--sidebar-space-scale-x',scale);
+  };
 }
+export function syncSidebarNavigationReservation(reader:HTMLElement,left:number,right:number) { prepareSidebarNavigationReservation(reader,left,right)(); }
 export function clearSidebarNavigationReservation(reader:HTMLElement) {
   for (const name of reservationProperties.slice(0,2)) reader.style.removeProperty(name);
   for (const panel of readingPanels(reader)) panel.style.removeProperty('--sidebar-space-scale-x');
@@ -84,29 +97,38 @@ export function readNavigationLane(reader: HTMLElement): NavigationLane {
 }
 /** Width previews happen outside React, and closing panes remain present until
  * their real exit ends. Observe actual boxes instead of just open booleans. */
-export function observeNavigationLane(reader: HTMLElement, update: (beforePaint?:boolean) => void) {
+export function observeNavigationLane(reader: HTMLElement, update: (beforePaint?:boolean) => void | (() => void), followMotion = true) {
   const workbench = reader.closest<HTMLElement>('.workbench') ?? reader;
-  let frame = 0, movingUntil = 0, disposed = false;
+  let cancelFrame: (() => void) | undefined, disposed = false, movingUntil = 0;
   const observed = new Set<Element>();
-  const tick = () => { frame = 0; if (disposed) return; update(true); if (performance.now() < movingUntil) frame = requestAnimationFrame(tick); };
-  const schedule = () => { if (!disposed && !frame) frame = requestAnimationFrame(tick); };
-  const resize = new ResizeObserver(() => { if (!disposed) update(true); schedule(); });
+  // The target lane uses untransformed layout bounds. Presence springs do
+  // not change that target and require no duration-based polling loop.
+  const schedule = () => { if (!disposed && !cancelFrame) cancelFrame = scheduleLayoutRead(() => {
+    cancelFrame = undefined; if (disposed) return;
+    const write = update();
+    return () => { write?.(); if (followMotion && performance.now() < movingUntil) schedule(); };
+  }); };
+  const resize = new ResizeObserver(schedule);
   const changes = new MutationObserver(records => {
     if (records.every(record => record.type === 'attributes' && record.attributeName === 'style' && withoutReservation(record.oldValue) === withoutReservation((record.target as HTMLElement).getAttribute('style')))) return;
-    for (const record of records) if (record.attributeName === 'data-motion-phase') {
-      const duration = Number.parseFloat(getComputedStyle(record.target as Element).getPropertyValue('--motion-duration')) || 220;
+    if (followMotion && records.some(record => record.attributeName === 'data-motion-phase')) {
+      const target = records.find(record => record.attributeName === 'data-motion-phase')!.target as Element;
+      const duration = Number.parseFloat(getComputedStyle(target).getPropertyValue('--motion-duration')) || 220;
       movingUntil = performance.now() + Math.min(1600,duration + 80);
     }
-    observe(); if (!disposed) update(true); schedule();
+    if (records.some(record => record.type === 'childList')) { panelCache.delete(workbench); changes.disconnect(); for (const target of observed) resize.unobserve(target); observed.clear(); observe(); }
+    schedule();
   });
   const observe = () => {
-    for (const element of [reader,workbench,...workbench.querySelectorAll(':scope > .floating-side-panel')]) if (!observed.has(element)) {
+    const targets = new Set([reader,workbench,...readingPanels(reader)]);
+    for (const element of observed) if (!targets.has(element as HTMLElement)) { observed.delete(element); resize.unobserve(element); }
+    for (const element of targets) if (!observed.has(element)) {
       observed.add(element); resize.observe(element);
       changes.observe(element,{attributes:true,attributeOldValue:true,attributeFilter:['style','data-motion-phase'],...(element === workbench ? {childList:true} : {})});
     }
   };
-  observe(); update();
-  return () => { disposed = true; cancelAnimationFrame(frame); resize.disconnect(); changes.disconnect(); };
+  observe(); const write = update(); write?.();
+  return () => { disposed = true; cancelFrame?.(); resize.disconnect(); changes.disconnect(); panelCache.delete(workbench); };
 }
 export type NavigationDensity = 'wide'|'tight'|'compact'|'small'|'minimal'|'micro';
 export function navigationDensity(width: number): NavigationDensity { return width >= 760 ? 'wide' : width >= 580 ? 'tight' : width >= 400 ? 'compact' : width >= 330 ? 'small' : width >= 110 ? 'minimal' : 'micro'; }

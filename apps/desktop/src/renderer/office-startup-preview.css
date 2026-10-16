@@ -4,7 +4,7 @@
 .office-startup-preview-caption small { font-size:10px;opacity:.8; }
 .office-startup-preview-scroll { flex:1;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;outline:none; }
 .office-startup-preview-scroll:focus-visible { outline:1px solid var(--document-paper-rule,#dfe3e7);outline-offset:-1px; }
-.office-startup-preview-docx { padding-top:0;background:transparent; }
+.office-startup-preview-docx { top:var(--office-word-top-inset,84px);left:var(--office-word-left-inset,12px);right:var(--office-word-right-inset,12px);bottom:12px;padding-top:0;background:transparent; }
 .office-startup-word-paper { box-sizing:border-box;max-width:none;margin:0 auto 20px;background:var(--document-paper,#fff);color:var(--document-paper-ink,#24303b);font:16px/1.6 Calibri,'Microsoft YaHei',sans-serif; }
 .office-startup-word-paper p { min-height:1.2em;margin:0 0 12px;overflow-wrap:anywhere; }
 .office-startup-word-paper [data-style=Heading1] { font-size:28px;font-weight:700; }

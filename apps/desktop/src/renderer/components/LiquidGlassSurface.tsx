@@ -1,7 +1,9 @@
 import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react';
-import { createGlassOptics, glassGeometryStyleSignature, glassOpticsKey, readGlassRadii, type GlassOptics, type GlassProfile } from '../lib/liquid-glass-optics';
+import { requestGlassOptics, glassGeometryStyleSignature, glassOpticsKey, readGlassRadii, type GlassOpticsLease, type GlassProfile } from '../lib/liquid-glass-optics';
 import { KUBE_GLASS_PRESETS, REFRACTIVE_BLUR_LIMIT_PX } from '../lib/glass-presets';
 import { glassCaptureOverscan, NAVIGATION_METRICS } from '../lib/navigation-optics';
+import { scheduleLayoutRead } from '../lib/layout-frame';
+import { observeGlassBusy } from '../lib/glass-work-budget';
 
 export type LiquidGlassVariant = 'panel' | 'search' | 'switch' | 'slider' | 'capsule' | 'button' | 'tooltip' | 'lens';
 export type LiquidGlassEffect = 'frosted' | 'refractive';
@@ -17,6 +19,10 @@ export type LiquidGlassSurfaceProps = {
   profile?: GlassProfile;
   bezelWidth?: number;
   blur?: number;
+  /** Explicit per-surface exception; ordinary optics retain the global crisp policy. */
+  blurLimit?: number;
+  /** The interaction shell is ready immediately; optical assets arrive later. */
+  onReady?(ready: boolean): void;
   strength?: number;
   glassThickness?: number;
   refractiveIndex?: number;
@@ -41,14 +47,18 @@ const finite = (value: number | undefined, fallback: number, minimum: number, ma
 
 /** Optical background only. Original controls, labels and inputs stay siblings;
  * neither their pixels nor an ancestor are filtered or faded by this surface. */
-export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect, profile: requestedProfile, bezelWidth, blur, strength, glassThickness, refractiveIndex, specularOpacity, specularSaturation, concave = false, lensZoom, fallback = false, backdropImage, backdropSample, bounds, surfaceRef, className, interaction = 'auto', navigation = false }: LiquidGlassSurfaceProps) {
+export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect, profile: requestedProfile, bezelWidth, blur, blurLimit, onReady, strength, glassThickness, refractiveIndex, specularOpacity, specularSaturation, concave = false, lensZoom, fallback = false, backdropImage, backdropSample, bounds, surfaceRef, className, interaction = 'auto', navigation = false }: LiquidGlassSurfaceProps) {
   const effect = requestedEffect ?? (navigation ? 'refractive' : 'frosted'), refractive = effect === 'refractive';
   const preset = KUBE_GLASS_PRESETS[variant === 'capsule' || variant === 'button' || variant === 'tooltip' ? 'search' : variant];
-  const opticalBlur = refractive ? Math.min(finite(blur, preset.blur, 0, 40), REFRACTIVE_BLUR_LIMIT_PX) : finite(blur, preset.blur, 0, 40);
+  const opticalBlur = refractive ? Math.min(finite(blur, preset.blur, 0, 40), finite(blurLimit, REFRACTIVE_BLUR_LIMIT_PX, 0, 2)) : finite(blur, preset.blur, 0, 40);
   const profile = requestedProfile ?? preset.profile;
   const root = useRef<HTMLSpanElement>(null);
-  const [optics, setOptics] = useState<GlassOptics>();
-  const measured = useRef<{ key: string; optics: GlassOptics } | undefined>(undefined);
+  const [asset, setAsset] = useState<GlassOpticsLease>();
+  const optics = asset?.optics;
+  const [automaticFallback,setAutomaticFallback]=useState(false);
+  const [renderingBusy,setRenderingBusy]=useState(false);
+  useLayoutEffect(() => refractive ? observeGlassBusy(setRenderingBusy) : undefined,[refractive]);
+  useLayoutEffect(() => () => asset?.release(), [asset]);
   const id = `liquid-glass-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const assignRef = useCallback((node: HTMLSpanElement | null) => {
     root.current = node;
@@ -62,21 +72,25 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     // Frosted surfaces never subscribe to geometry, create canvases or retain
     // refraction fields. CSS alone handles appearance/contrast preferences.
     if (!refractive || fallback) {
-      measured.current = undefined; setOptics(previous => previous ? undefined : previous);
+      setAsset(previous => previous ? undefined : previous);
       if (!navigation) for (const property of ['left', 'top', 'width', 'height']) surface.style.removeProperty(property);
       return;
     }
-    let frame = 0;
+    let cancelMeasure: (() => void) | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    let request: AbortController | undefined, disposed = false, measuredKey = '';
     const media = ['(prefers-reduced-transparency: reduce)', '(prefers-contrast: more)', '(forced-colors: active)'].map(query => matchMedia(query));
     const measure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      cancelMeasure?.();
+      cancelMeasure = scheduleLayoutRead(() => {
         const appearance = document.documentElement.dataset;
         // Desktop preferences arrive asynchronously. Do not generate default
         // optical assets for one startup frame before learning glass is off.
         // The observed data-glass update schedules the real requested material.
         if (window.agentViewer && !appearance.glass) return;
-        if (fallback || appearance.glass === 'off' || appearance.contrast === 'high' || appearance.reduceTransparency === 'true' || media.some(query => query.matches)) { setOptics(previous => previous ? undefined : previous); return; }
+        if (appearance.glass === 'off' || appearance.contrast === 'high' || appearance.reduceTransparency === 'true' || media.some(query => query.matches)) return () => {
+          clearTimeout(timer); request?.abort(); measuredKey = '';
+          setAutomaticFallback(true); setAsset(previous => previous ? undefined : previous);
+        };
         const rect = host.getBoundingClientRect(), hostStyle = getComputedStyle(host), style = getComputedStyle(surface);
         const usedSize = (axis: 'width' | 'height') => {
           const used = Number.parseFloat(hostStyle[axis]);
@@ -102,16 +116,33 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
         const overscan = navigation ? NAVIGATION_METRICS.captureOverscan : glassCaptureOverscan(band, thickness, index, concave ? 'concave' : profile, strength ?? preset.refraction, opticalBlur);
         const options = { width, height, radii: readGlassRadii(hostStyle, width, height), density, bezelWidth: band, glassThickness: thickness, refractiveIndex: index, strength: 1, profile, concave, overscan };
         const key = glassOpticsKey(options);
-        const next = measured.current?.key === key ? measured.current.optics : createGlassOptics(options);
-        measured.current = { key, optics: next };
-        setOptics(previous => previous === next ? previous : next);
-        // Absolute positioning begins at the padding box. These offsets cover
-        // the host's real border box without a new wrapper or altered layout.
-        if (!navigation) {
-          surface.style.left = `${-Number.parseFloat(hostStyle.borderLeftWidth || '0')}px`;
-          surface.style.top = `${-Number.parseFloat(hostStyle.borderTopWidth || '0')}px`;
-          surface.style.width = `${width}px`; surface.style.height = `${height}px`;
-        }
+        const left = `${-Number.parseFloat(hostStyle.borderLeftWidth || '0')}px`, top = `${-Number.parseFloat(hostStyle.borderTopWidth || '0')}px`;
+        return () => {
+          // Keep the existing decoded field while geometry is moving. Only
+          // the settled size requests a new field; stale jobs stop in worker.
+          if (measuredKey !== key) {
+            measuredKey = key; clearTimeout(timer); request?.abort();
+            timer = setTimeout(() => {
+              if (disposed) return;
+              request = new AbortController(); const signal = request.signal;
+              void requestGlassOptics(options, signal).then(async next => {
+                if (!next) { if (!signal.aborted && !disposed) setAutomaticFallback(true); return; }
+                if (signal.aborted || disposed) { next.release(); return; }
+                try {
+                  await Promise.all([next.optics.map, next.optics.highlight, next.optics.centerMap].filter((url): url is string => !!url).map(async url => { const image = new Image(); image.src = url; await image.decode(); }));
+                } catch { next.release(); if (!signal.aborted && !disposed) setAutomaticFallback(true); return; }
+                if (signal.aborted || disposed) { next.release(); return; }
+                setAutomaticFallback(false); setAsset(next);
+              });
+            }, 120);
+          }
+          // Absolute positioning covers the border box. All reads for sibling
+          // surfaces have finished before these shared-frame writes occur.
+          if (!navigation) {
+            const values = { left, top, width: `${width}px`, height: `${height}px` };
+            for (const [property, value] of Object.entries(values)) if (surface.style.getPropertyValue(property) !== value) surface.style.setProperty(property, value);
+          }
+        };
       });
     };
     const size = new ResizeObserver(measure); size.observe(host);
@@ -129,10 +160,14 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-glass', 'data-contrast', 'data-reduce-transparency'] });
     const transition = (event: TransitionEvent) => { if (event.target === host && !['opacity', 'scale', 'translate', 'transform', 'background-color', 'box-shadow'].includes(event.propertyName)) measure(); };
     window.addEventListener('resize', measure); host.addEventListener('transitionend', transition); media.forEach(query => query.addEventListener('change', measure)); measure();
-    return () => { cancelAnimationFrame(frame); size.disconnect(); appearance.disconnect(); window.removeEventListener('resize', measure); host.removeEventListener('transitionend', transition); media.forEach(query => query.removeEventListener('change', measure)); };
+    return () => { disposed = true; cancelMeasure?.(); clearTimeout(timer); request?.abort(); size.disconnect(); appearance.disconnect(); window.removeEventListener('resize', measure); host.removeEventListener('transitionend', transition); media.forEach(query => query.removeEventListener('change', measure)); };
   }, [refractive, bezelWidth, opticalBlur, strength, glassThickness, refractiveIndex, profile, concave, lensZoom, fallback, navigation, variant]);
 
-  const activeOptics = refractive && !fallback ? optics : undefined;
+  const activeOptics = refractive && !fallback && !automaticFallback && !renderingBusy ? optics : undefined;
+  useLayoutEffect(() => { root.current?.dispatchEvent(new Event('agentviewer:glass-optics', { bubbles: true })); },[activeOptics]);
+  useLayoutEffect(()=>{
+    onReady?.(true);
+  },[onReady]);
   const sampled = !!backdropImage, overscan = !refractive ? 0 : activeOptics?.overscan ?? (navigation ? NAVIGATION_METRICS.captureOverscan : glassCaptureOverscan(bezelWidth ?? preset.bezelWidth, glassThickness ?? preset.glassThickness, refractiveIndex ?? preset.refractiveIndex, concave ? 'concave' : profile, strength ?? preset.refraction, opticalBlur));
   const totalWidth = activeOptics ? activeOptics.width + overscan * 2 : undefined, totalHeight = activeOptics ? activeOptics.height + overscan * 2 : undefined;
   const sourceStyle: CSSProperties = {
@@ -174,7 +209,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
   </filter>;
   const definitions = useMemo(() => activeOptics ? <svg className={names('definitions')} width="0" height="0" aria-hidden="true" focusable="false"><defs>{filter('edge', true)}{filter('center', false)}</defs></svg> : undefined, [activeOptics, id, opticalBlur, refraction, defaultMultiplier, specularSaturation, preset.specularSaturation, specularOpacity, preset.specularOpacity, navigation]);
 
-  return <span ref={assignRef} className={`liquid-glass-surface${navigation ? ' navigation-glass' : ''}${className ? ` ${className}` : ''}`} data-glass-effect={effect} data-glass-variant={variant} data-glass-interaction={variant === 'tooltip' ? 'none' : interaction} data-glass-profile={profile} data-glass-concave={concave || undefined} data-glass-fallback={fallback || undefined} data-source={sampled ? 'sampled' : 'live'} aria-hidden="true" style={style}>
+  return <span ref={assignRef} className={`liquid-glass-surface${navigation ? ' navigation-glass' : ''}${className ? ` ${className}` : ''}`} data-glass-effect={effect} data-glass-variant={variant} data-glass-interaction={variant === 'tooltip' ? 'none' : interaction} data-glass-profile={profile} data-glass-concave={concave || undefined} data-glass-fallback={fallback || automaticFallback || undefined} data-glass-pending={refractive && !activeOptics || undefined} data-source={sampled ? 'sampled' : 'live'} aria-hidden="true" style={style}>
     {definitions}
     <span className={`${names('center')}${navigation && sampled ? ' native-glass-backdrop' : ''}`} aria-hidden="true" style={refractive ? { ...sourceStyle, clipPath: activeOptics?.centerClip } : undefined} />
     {activeOptics && <span className={names('edge')} aria-hidden="true" style={{ ...sourceStyle, maskImage: activeOptics.ring, WebkitMaskImage: activeOptics.ring }} />}

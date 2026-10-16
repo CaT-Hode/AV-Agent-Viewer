@@ -1,7 +1,7 @@
 import { _electron as electron, type Page } from 'playwright';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -27,7 +27,7 @@ const env: Record<string, string> = { ...Object.fromEntries(Object.entries(proce
 delete env.ELECTRON_RUN_AS_NODE;
 const app = await electron.launch({ executablePath: require('electron'), args: ['--force-device-scale-factor=1', '.'], cwd: resolve('.'), env, timeout: 45000 });
 const main = await app.firstWindow(), errors: string[] = [], results: Record<string, unknown> = {};
-const watch = (target: Page) => target.on('pageerror', error => errors.push(`${target.url()}: ${error.message}`));
+const watch = (target: Page) => target.on('pageerror', error => errors.push(`${target.url()}: ${error.stack ?? error.message}`));
 app.context().pages().forEach(watch); app.context().on('page', watch);
 const invoke = <T = unknown>(target: Page, method: string, args: Record<string, unknown> = {}) => target.evaluate(input => window.agentViewer!.call(input.method, input.args), { method, args }) as Promise<T>;
 const state = () => invoke<WorkspaceState>(main, 'state');
@@ -59,7 +59,7 @@ const dropBackedFiles = async (paths: string[]) => {
 };
 
 try {
-  await main.locator('.prose h1').waitFor();
+  await main.locator('.markdown-live .md-heading-1').waitFor();
   await invoke(main, 'settings-set', { id: 'appearance.autoHideToolbar', value: false });
   await invoke(main, 'settings-set', { id: 'appearance.motion', value: 'off' });
   await invoke(main, 'settings-set', { id: 'appearance.theme', value: 'light' });
@@ -67,11 +67,11 @@ try {
   const initial = await state(), markdown = initial.views.find(view => initial.documents.find(document => document.id === view.documentId)?.format === 'markdown')!;
   assert.ok(markdown); await until(async () => await main.getByRole('spinbutton', { name: '正文缩放比例' }).inputValue() === '100', 'initial zoom input');
   const mainContentsId = await app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find(contents => contents.getURL() === url)!.id, main.url());
-  const baseline = await main.locator('.prose h1').evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const glyph = range.getClientRects()[0], box = element.getBoundingClientRect(); return { height: box.height, glyphHeight: glyph.height }; });
+  const baseline = await main.locator('.markdown-live .md-heading-1').evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const glyph = range.getClientRects()[0], box = element.getBoundingClientRect(); return { height: box.height, glyphHeight: glyph.height }; });
   const tabBar = await main.locator('.tab-strip').boundingBox(), capsule = await main.locator('.navigation-capsule').boundingBox(); assert.ok(tabBar && capsule);
   await commitZoom(main, 150);
   await until(async () => await currentZoom(markdown.id) === 1.5 && await main.locator('.document-content').getAttribute('data-reading-zoom') === '1.5', 'Markdown zoom reaches 150%');
-  const enlarged = await main.locator('.prose h1').evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); return { height: element.getBoundingClientRect().height, glyphHeight: range.getClientRects()[0].height }; });
+  const enlarged = await main.locator('.markdown-live .md-heading-1').evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); return { height: element.getBoundingClientRect().height, glyphHeight: range.getClientRects()[0].height }; });
   assert.ok(Math.abs(enlarged.glyphHeight / baseline.glyphHeight - 1.5) < .04, 'painted text height follows document zoom');
   assert.ok(enlarged.height >= baseline.height * 1.4);
   assert.deepEqual(await main.locator('.tab-strip').boundingBox(), tabBar, 'tabs stay at application scale');
@@ -94,6 +94,159 @@ try {
   results.markdown = { baseline, enlarged, wheelUp, shellZoom: 1, escapeCancels: true };
   console.log('Markdown zoom, keyboard wheel, fixed chrome and Escape: PASS');
 
+  const markdownFile = initial.documents.find(document => document.id === markdown.documentId)!;
+  const sourceBefore = markdownFile.model.text!, appended = 'Review 中文🙂';
+  const editor = main.locator('.markdown-live .cm-content');
+  await editor.click(); await main.keyboard.press('Control+End'); await main.keyboard.insertText(appended);
+  const text = async () => (await state()).documents.find(document => document.id === markdown.documentId)!.model.text;
+  await until(async () => await text() === sourceBefore + appended, 'live Markdown input reaches the shared document');
+  await main.keyboard.press('Control+z');
+  await until(async () => await text() === sourceBefore, 'editor undo reaches Core');
+  await main.keyboard.press('Control+y');
+  await until(async () => await text() === sourceBefore + appended, 'editor redo reaches Core');
+  await main.keyboard.press('Control+s');
+  await until(async () => await readFile(markdownFile.path!, 'utf8') === sourceBefore + appended, 'keyboard save writes the edited Markdown');
+  results.markdownEditing = { input: true, undo: true, redo: true, diskSave: true };
+
+  // One end-to-end authoring flow covers the shared source/history, table form,
+  // delayed renderer and sidebar command paths rather than many isolated tests.
+  const authoringSource = '---\ntitle: "Authoring"\nauthor: "Original"\n---\n\n# Authoring workflow\n\n[TOC]\n\nPlain text. Footnote[^check]. Emoji :rocket:.\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\nInline $x^2$ formula.\n\n$$\na^2+b^2=c^2\n$$\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```sequence\nAlice->Bob: Hello\nNote right of Bob: A note\nBob-->Alice: Reply\n```\n\n```flow\nst=>start: Start\nop=>operation: Action\ne=>end: End\nst->op->e\n```\n\n[^check]: Footnote content.\n\n<div><strong>Safe embedded HTML</strong><script>window.unsafeMarkdown=true</script></div>\n';
+  const embeddedImage='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6eFQAAAAASUVORK5CYII=';
+  const localImageName='local image#%.png'; await writeFile(join(directory,localImageName),Buffer.from(embeddedImage.split(',')[1],'base64'));
+  const authoringPath = join(directory, 'authoring-workflow.md'); await writeFile(authoringPath, authoringSource+'\n![Embedded fixture]('+embeddedImage+')\n\n![Local special filename]('+encodeURIComponent(localImageName)+')\n\nFootnote with colon[^a:b].\n\n[^a:b]: Colon footnote.\n');
+  const authoring = await invoke<ViewInfo>(main, 'open', { uri: authoringPath, windowId: 'main' });
+  await until(async () => await main.locator('[data-markdown-view=' + JSON.stringify(authoring.id) + ']').count() === 1, 'new source editor activates');
+  const authoredText = async () => (await state()).documents.find(item => item.id === authoring.documentId)!.model.text!;
+  await main.getByRole('button', { name: 'Markdown工具', exact: true }).click();
+  const tools = main.getByLabel('Markdown 编辑工具'), sourceEditor = main.locator('[data-markdown-view=' + JSON.stringify(authoring.id) + ']');
+  await sourceEditor.locator('.cm-content').click(); await main.keyboard.press('Control+End'); await main.keyboard.insertText('\n\nSelected'); await main.keyboard.press('Shift+Home');
+  await tools.getByRole('button', { name: '粗体', exact: true }).click();
+  await until(async () => (await authoredText()).endsWith('**Selected**'), 'sidebar preserves source selection and applies bold');
+  const changeMode = async (mode: string) => { const button = main.getByRole('button', { name: mode, exact: true }); if (!await button.isVisible()) await main.getByRole('button', { name: '更多导航工具', exact: true }).click(); await button.click(); };
+  await changeMode('源码'); await main.locator('.markdown-editor:not(.markdown-live)').waitFor();
+  await tools.getByRole('button', { name: '撤销', exact: true }).click();
+  await until(async () => (await authoredText()).endsWith('Selected') && !(await authoredText()).endsWith('**Selected**'), 'live/source modes keep one undo history');
+  await tools.getByRole('button', { name: '重做', exact: true }).click(); await until(async () => (await authoredText()).endsWith('**Selected**'), 'source mode redo restores formatting');
+  await changeMode('阅读'); await main.locator('.markdown-live').waitFor();
+  const tableCell = sourceEditor.getByRole('textbox', { name: '表格第 2 行第 1 列', exact: true }); await tableCell.fill('Changed|cell'); await tableCell.press('Tab');
+  await until(async () => (await authoredText()).includes('Changed\\|cell'), 'visual table edit preserves literal pipes');
+  await sourceEditor.getByRole('button', { name: '增加一行', exact: true }).click();
+  await until(async () => await sourceEditor.locator('.md-table-widget tr').count() === 3, 'table row insertion updates source and visual controls');
+  await tools.getByRole('button', { name: '专注模式', exact: true }).click(); assert.equal(await sourceEditor.evaluate(node => node.classList.contains('markdown-focus')), true);
+  await tools.getByRole('button', { name: '打字机模式', exact: true }).click(); assert.equal(await sourceEditor.evaluate(node => node.classList.contains('markdown-typewriter')), true);
+  await tools.getByRole('button', { name: '替换', exact: true }).click(); await sourceEditor.locator('.cm-search input[name="replace"]').waitFor();
+  await sourceEditor.locator('.cm-search button[name="close"]').click();
+  const revealPreview = async (from: number) => { await main.evaluate(input => window.dispatchEvent(new CustomEvent('agentviewer:markdown-navigate', { detail: { ...input, select: false } })), { viewId: authoring.id, from }); };
+  await revealPreview((await authoredText()).indexOf('Inline $')); await sourceEditor.locator('.md-render-math svg').first().waitFor({ timeout: 45000 });
+  for (const language of ['mermaid', 'sequence', 'flow']) { await revealPreview((await authoredText()).indexOf('```' + language)); const diagram = sourceEditor.locator('[data-diagram-language=' + JSON.stringify(language) + ']'); await diagram.locator('svg').waitFor({ timeout: 45000 }); }
+  await revealPreview(0);
+  await sourceEditor.getByLabel('文档信息 author', { exact: true }).fill('"Updated"'); await sourceEditor.getByLabel('文档信息 author', { exact: true }).press('Enter');
+  await until(async () => (await authoredText()).includes('author: "Updated"'), 'Frontmatter field writes one source transaction');
+  await revealPreview((await authoredText()).indexOf('[^check]:'));
+  const footnote = sourceEditor.getByLabel('脚注内容 check', { exact: true }); await footnote.fill('Edited footnote.'); await footnote.press('Tab'); await until(async () => (await authoredText()).includes('[^check]: Edited footnote.'), 'footnote visual edit updates definition');
+  assert.equal(await main.evaluate(() => (window as Window & { unsafeMarkdown?: boolean }).unsafeMarkdown), undefined, 'raw HTML never executes document scripts');
+  const localLiveImage=sourceEditor.getByAltText('Local special filename',{exact:true});await localLiveImage.scrollIntoViewIfNeeded();await until(async()=>localLiveImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'relative local image with spaces/hash/percent decodes in live mode');await localLiveImage.evaluate(image=>(image as HTMLImageElement).decode());
+  const exportChunk = (await readdir(resolve('dist/renderer/assets'))).find(name => /^markdown-export-.*\.js$/.test(name)); assert.ok(exportChunk);
+  const exported = await main.evaluate(async input => { const module = await import(input.url); return module.renderMarkdownForExport(input.source, input.documentId) as Promise<string>; }, { url: new URL('assets/' + exportChunk, main.url()).href, source: await authoredText(), documentId: authoring.documentId });
+  const exportContents = await main.evaluate(html => { const document = new DOMParser().parseFromString(html, 'text/html'); return { svg: document.querySelectorAll('svg').length, footnote: document.body.textContent!.includes('Edited footnote.'), script: document.querySelectorAll('script').length, toc: document.querySelectorAll('.av-toc a').length, html: document.body.textContent!.includes('Safe embedded HTML'), emoji: document.body.textContent!.includes('🚀') }; }, exported);
+  assert.ok(exportContents.svg >= 5, 'frozen full source exports both formulas and all three diagram languages'); assert.equal(exportContents.script, 0); assert.equal(exportContents.footnote, true); assert.ok(exportContents.toc >= 1); assert.equal(exportContents.html, true); assert.equal(exportContents.emoji, true);
+  assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html,'text/html').querySelector('img[alt="Embedded fixture"]')?.getAttribute('src'),exported),embeddedImage,'embedded PNG survives full-source export and backend image validation');
+  assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html,'text/html').querySelector('img[alt="Local special filename"]')?.getAttribute('src'),exported),embeddedImage,'relative local image becomes a self-contained data URI in full-source export');
+  await writeFile(join(evidence, 'markdown-export.html'), exported);
+  const exportedFiles: Record<string, unknown> = {};
+  const revision = (await state()).documents.find(item => item.id === authoring.documentId)!.revision;
+  for (const format of ['html', 'pdf', 'png']) {
+    const destination = join(evidence, 'authoring-export.' + format);
+    await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, destination);
+    if (format === 'png') await app.evaluate(({ app }) => { const captures: unknown[] = []; (globalThis as typeof globalThis & { qaPngViewports?: unknown[] }).qaPngViewports = captures; app.once('browser-window-created', (_event, window) => { const capture = window.webContents.capturePage.bind(window.webContents); window.webContents.capturePage = async (...args) => { captures.push(await window.webContents.executeJavaScript('({clientWidth:document.documentElement.clientWidth,innerWidth,scrollY})')); return capture(...args); }; }); });
+    const output = await invoke<{ paths: string[]; revision: number }>(main, 'markdown-export', { documentId: authoring.documentId, expectedRevision: revision, format, html: exported });
+    assert.equal(output.revision, revision); assert.ok(output.paths.length > 0);
+    const buffers = await Promise.all(output.paths.map(path => readFile(path))); assert.ok(buffers.every(buffer => buffer.length > 100));
+    if (format === 'html') { assert.match(buffers[0].toString('utf8'), /Safe embedded HTML/); assert.match(buffers[0].toString('utf8'), /Edited footnote/); }
+    if (format === 'pdf') { const { PDFDocument } = await import('pdf-lib'); const pdf = await PDFDocument.load(buffers[0]); assert.ok(pdf.getPageCount() >= 2, 'complete authoring document spans multiple PDF pages'); exportedFiles.pdf = { paths: output.paths, pages: pdf.getPageCount() }; }
+    else if (format === 'png') {
+      assert.ok(buffers.length >= 2, 'tall export creates all numbered image segments');
+      const sizes = await app.evaluate(({ nativeImage }, paths) => paths.map(path => nativeImage.createFromPath(path).getSize()), output.paths);
+      assert.ok(sizes.every(size => size.width === 1100 && size.height > 0 && size.height <= 1200));
+      assert.ok(sizes.slice(0, -1).every(size => size.height === 1200));
+      const captures = await app.evaluate(() => (globalThis as typeof globalThis & { qaPngViewports?: { clientWidth: number; innerWidth: number; scrollY: number }[] }).qaPngViewports!);
+      assert.ok(captures.length === sizes.length && captures.every(item => item.clientWidth === 1100 && item.innerWidth === 1100), 'PNG capture uses the full content width without a scrollbar gutter');
+      const edgePixels = await app.evaluate(({ nativeImage }, paths) => paths.map(path => { const image = nativeImage.createFromPath(path), { width, height } = image.getSize(), bitmap = image.toBitmap(); let nonWhite = 0; for (let y = 0; y < height; y++) for (let x = width - 15; x < width; x++) { const index = (y * width + x) * 4; if (bitmap[index] < 245 || bitmap[index + 1] < 245 || bitmap[index + 2] < 245) nonWhite++; } return nonWhite; }), output.paths);
+      assert.ok(edgePixels.every(count => count === 0), 'PNG right margin has no captured scrollbar track or arrows');
+      const exportedHeight = await app.evaluate(async ({ BrowserWindow }, html) => { const preview = new BrowserWindow({ show: false, width: 1100, height: 1200, useContentSize: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }); try { await preview.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)); await preview.webContents.executeJavaScript('document.fonts.ready'); return await preview.webContents.executeJavaScript('Math.ceil(document.documentElement.scrollHeight)') as number; } finally { preview.destroy(); } }, exported);
+      assert.equal(sizes.reduce((height, size) => height + size.height, 0), exportedHeight, 'PNG segments cover the entire exported document without a missing bottom crop');
+      exportedFiles.png = { paths: output.paths, sizes, height: exportedHeight, captures, edgePixels };
+    } else exportedFiles.html = { paths: output.paths };
+  }
+  assert.equal((await state()).documents.find(item => item.id === authoring.documentId)!.revision, revision, 'export does not mutate the source revision');
+  assert.match(await sourceEditor.getByLabel('文档统计').innerText(), /字词.*字符.*行/);
+  await changeMode('分栏');
+  const splitPreview = main.locator('[data-markdown-preview=' + JSON.stringify(authoring.id) + ']'); await splitPreview.waitFor();
+  const localSplitImage=splitPreview.getByAltText('Local special filename',{exact:true});await localSplitImage.scrollIntoViewIfNeeded();await until(async()=>localSplitImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'same local image decodes in the virtual split preview');await localSplitImage.evaluate(image=>(image as HTMLImageElement).decode());
+  assert.equal(await splitPreview.locator('.cm-content').getAttribute('contenteditable'), 'false'); assert.equal(await splitPreview.locator('.md-table-widget input').count(), 0, 'mirror table has static cells rather than independent editable inputs');
+  let codeMirrorChunk: string | undefined;
+  for (const name of await readdir(resolve('dist/renderer/assets'))) if (name.endsWith('.js') && (await readFile(resolve('dist/renderer/assets', name), 'utf8')).includes('findFromDOM')) { codeMirrorChunk = name; break; }
+  assert.ok(codeMirrorChunk);
+  const blockedWrite = await splitPreview.evaluate(async (node, url) => { const module = await import(url); const Editor = Object.values(module).find((value: any) => typeof value?.findFromDOM === 'function') as { findFromDOM(node: Element): { state: { doc: { length: number } }; dispatch(input: unknown): void } }; if (!Editor) throw new Error('Missing public EditorView.findFromDOM'); const view = Editor.findFromDOM(node.querySelector('.cm-content')!)!; const length = view.state.doc.length; view.dispatch({ changes: { from: 0, insert: 'Forbidden mirror write' } }); view.dispatch({ changes: { from: 0, insert: 'Forbidden unfiltered mirror write' }, filter: false }); return { before: length, after: view.state.doc.length }; }, new URL('assets/' + codeMirrorChunk, main.url()).href);
+  assert.equal(blockedWrite.after, blockedWrite.before, 'preview transaction filter blocks programmatic widget writes as well as keyboard input');
+  await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().scrollIntoViewIfNeeded();
+  await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().evaluate(node => { const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const offset = text.textContent!.indexOf('Plain text.'); if (offset < 0) continue; const range = document.createRange(); range.setStart(text, offset); range.setEnd(text, offset + 'Plain text.'.length); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); return; } throw new Error('Missing preview text'); });
+  const previewFrom = (await authoredText()).indexOf('Plain text.');
+  await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === 'Plain text.' && context.selection.locator?.from === previewFrom && context.selection.locator?.to === previewFrom + 'Plain text.'.length; }, 'preview reports the true UTF16 source range without stale source selection overwriting it');
+  const floatingSelection = main.getByRole('toolbar', { name: '选区工具', exact: true });
+  console.log('Markdown full exports and split source mapping: PASS; checking floating toolbar history');
+  await floatingSelection.getByRole('button', { name: '加粗选区', exact: true }).click(); await until(async () => (await authoredText()).includes('**Plain text.**'), 'real floating toolbar formats the single source document');
+  await sourceEditor.locator('.cm-content').focus(); await main.keyboard.press('Control+z'); await until(async () => !(await authoredText()).includes('**Plain text.**'), 'floating toolbar edit belongs to keyboard undo history');
+  await main.keyboard.press('Control+y'); await until(async () => (await authoredText()).includes('**Plain text.**'), 'keyboard redo restores the floating toolbar edit');
+  await tools.getByRole('button', { name: '撤销', exact: true }).click(); await until(async () => !(await authoredText()).includes('**Plain text.**'), 'sidebar undo shares floating toolbar history');
+  await tools.getByRole('button', { name: '重做', exact: true }).click(); await until(async () => (await authoredText()).includes('**Plain text.**'), 'sidebar redo shares floating toolbar history');
+  const topUndo = main.getByRole('button', { name: '撤销最近修改', exact: true }); if (!await topUndo.isVisible()) await main.getByRole('button', { name: '更多导航工具', exact: true }).click();
+  await topUndo.click(); await until(async () => !(await authoredText()).includes('**Plain text.**'), 'top navigation undo shares floating toolbar history');
+  console.log('Floating toolbar keyboard/sidebar/navigation undo and redo: PASS');
+  for (const [selector, visibleText, sourceText] of [['.md-table-widget td', 'Changed|cell', 'Changed\\|cell'], ['.md-render-metadata dd span', '"Updated"', '"Updated"'], ['.md-render-footnote span', 'Colon footnote.', 'Colon footnote.']]) {
+    const field = splitPreview.locator(selector).filter({ hasText: visibleText }).first(); await field.scrollIntoViewIfNeeded();
+    await field.evaluate(node => { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
+    const from = (await authoredText()).indexOf(sourceText); assert.ok(from >= 0);
+    await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === sourceText && context.selection.locator?.from === from && context.selection.locator?.to === from + sourceText.length; }, 'readonly widget maps its exact source range: ' + visibleText);
+  }
+  await changeMode('阅读');
+  results.markdownAuthoring = { sidebarSelection: true, sharedModeHistory: true, tableCellAndRow: true, focus: true, typewriter: true, replacePanel: true, formulaWorker: true, diagramLanguages: ['mermaid', 'sequence', 'flow'], sourceStatistics: true, frontmatter: true, footnotes: true, exported: exportContents, exportedFiles };
+  await main.screenshot({ path: join(evidence, 'markdown-authoring.png'), scale: 'css' });
+  const unsaved = await invoke<ViewInfo>(main, 'create-text', { title: 'Unsaved image fixture.md', text: '# Unsaved image fixture\n\nImage follows.\n\n', windowId: 'main' });
+  console.log('Checking unsaved backed image paste, consecutive resize, split, export and save');
+  const assetEditor = main.locator('[data-markdown-view=' + JSON.stringify(unsaved.id) + ']'), assetText = async () => (await state()).documents.find(item => item.id === unsaved.documentId)!.model.text!;
+  await assetEditor.locator('.cm-content').waitFor(); assert.equal((await state()).documents.find(item => item.id === unsaved.documentId)!.path, undefined);
+  await assetEditor.locator('.cm-content').click(); await main.keyboard.press('Control+End');
+  await main.evaluate(() => { const input = document.createElement('input'); input.type = 'file'; input.id = 'qa-pasted-image'; input.hidden = true; document.body.append(input); });
+  await main.locator('#qa-pasted-image').setInputFiles(join(directory, localImageName));
+  await assetEditor.locator('.cm-content').evaluate(node => { const input = document.getElementById('qa-pasted-image') as HTMLInputElement, transfer = new DataTransfer(); for (const file of input.files!) transfer.items.add(file); node.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer })); input.remove(); });
+  await until(async () => (await assetText()).includes('agentviewer-asset://'), 'pasted backed image is staged for the unsaved document');
+  await main.evaluate(viewId => window.dispatchEvent(new CustomEvent('agentviewer:markdown-navigate', { detail: { viewId, from: 0 } })), unsaved.id);
+  for (const width of ['50%', '75%']) {
+    await assetEditor.getByAltText(localImageName, { exact: true }).hover();
+    await assetEditor.getByRole('button', { name: '图片宽度 ' + width, exact: true }).click();
+    await until(async () => (await assetText()).includes('width: ' + width), 'consecutive image resize preserves source: ' + width);
+    const image = assetEditor.getByAltText(localImageName, { exact: true }); await image.scrollIntoViewIfNeeded(); await until(async () => image.evaluate(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth === 1), 'staged raw img decodes after resize ' + width); await image.evaluate(image => (image as HTMLImageElement).decode());
+    assert.equal(await assetEditor.getByRole('button', { name: '图片宽度 75%', exact: true, includeHidden: true }).count(), 1, 'standalone raw img keeps image controls');
+  }
+  await changeMode('分栏'); const assetPreview = main.locator('[data-markdown-preview=' + JSON.stringify(unsaved.id) + ']'), previewImage = assetPreview.getByAltText(localImageName, { exact: true });
+  await previewImage.scrollIntoViewIfNeeded(); await until(async () => previewImage.evaluate(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth === 1), 'staged resized image decodes in split preview'); await previewImage.evaluate(image => (image as HTMLImageElement).decode());
+  const stagedSource = await assetText(), stagedHtml = await main.evaluate(async input => { const module = await import(input.url); return module.renderMarkdownForExport(input.source, input.documentId) as Promise<string>; }, { url: new URL('assets/' + exportChunk, main.url()).href, source: stagedSource, documentId: unsaved.documentId });
+  assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html, 'text/html').querySelector('img')?.getAttribute('src'), stagedHtml), embeddedImage, 'unsaved resized image is self-contained in full-source export');
+  assert.equal(await main.evaluate(html => (new DOMParser().parseFromString(html, 'text/html').querySelector('img') as HTMLImageElement).style.width, stagedHtml), '75%');
+  const stagedExportPath = join(evidence, 'unsaved-resized-export.html'); await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, stagedExportPath);
+  await invoke(main, 'markdown-export', { documentId: unsaved.documentId, expectedRevision: (await state()).documents.find(item => item.id === unsaved.documentId)!.revision, format: 'html', html: stagedHtml }); assert.ok((await readFile(stagedExportPath, 'utf8')).includes(embeddedImage));
+  const savedAssetPath = join(directory, 'saved-image-fixture.md'); await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, savedAssetPath);
+  await assetEditor.locator('.cm-content').focus(); await main.keyboard.press('Control+s'); await until(async () => (await state()).documents.find(item => item.id === unsaved.documentId)!.path === savedAssetPath, 'save materializes the staged image');
+  const savedAssetSource = await readFile(savedAssetPath, 'utf8'); assert.ok(!savedAssetSource.includes('agentviewer-asset:')); assert.match(savedAssetSource, /width: 75%/);
+  // Open persisted bytes through a fresh path so the document library cannot
+  // satisfy the check by returning its already cached model.
+  const reopenedAssetPath = join(directory, 'reopened-image-fixture.md'); await writeFile(reopenedAssetPath, savedAssetSource); const reopenedAsset = await invoke<ViewInfo>(main, 'open', { uri: reopenedAssetPath, windowId: 'main' });
+  const reopenedImage = main.locator('[data-markdown-view=' + JSON.stringify(reopenedAsset.id) + ']').getByAltText(localImageName, { exact: true }); await reopenedImage.scrollIntoViewIfNeeded(); await until(async () => reopenedImage.evaluate(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth === 1), 'freshly parsed saved relative image decodes'); await reopenedImage.evaluate(image => (image as HTMLImageElement).decode());
+  results.markdownImages = { backedPaste: true, unsavedAsset: true, consecutiveResize: ['50%', '75%'], liveAndSplitDecode: true, fullHtmlExport: true, savedRelativeSource: true, freshParseFromDisk: true };
+  await activate(markdown.id);
+  console.log('Markdown authoring selection, table, source/live history, modes, search and deferred renders: PASS');
+
   const pdf = initial.views.find(view => initial.documents.find(document => document.id === view.documentId)?.format === 'pdf')!;
   await main.locator('.tab').filter({ hasText: '示例.pdf' }).locator('.tab-select').click();
   await main.locator('.pdf-page .textLayer span').first().waitFor();
@@ -109,7 +262,9 @@ try {
 
   const native = initial.views.find(view => initial.documents.find(document => document.id === view.documentId)?.format === 'web')!;
   const fixtureUrl = `http://127.0.0.1:${port}/fixtures/interaction.html`;
-  await main.locator('.tab').filter({ hasText: '交互测试页' }).locator('.tab-select').click();
+  // Background webpages are loaded on activation, so their title is not yet
+  // known. Target the actual view rather than assuming an eager navigation.
+  await main.locator('.tab[data-view-id=' + JSON.stringify(native.id) + '] .tab-select').click();
   await until(async () => app.context().pages().some(target => target.url().includes('#/web-toolbar')), 'trusted native toolbar');
   const toolbar = app.context().pages().find(target => target.url().includes('#/web-toolbar'))!;
   await until(async () => { const current = await toolbarState(toolbar); return current.viewId === native.id && !!current.backdropSample; }, 'native source identity');

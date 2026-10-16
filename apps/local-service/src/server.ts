@@ -9,13 +9,20 @@ import { dispatch } from '../../../packages/sdk/src/dispatch';
 import { ensureSamples } from '../../../packages/document-core/src/fixtures';
 import { libreOfficePath } from '../../office-gateway/src/conversion';
 import { ZodError } from 'zod';
+import { MarkdownWorkspace } from '../../../packages/markdown/src/workspace';
 
 export function dataDir() { return process.env.AGENTVIEWER_DATA_DIR ?? join(process.env.APPDATA ?? process.env.HOME ?? '.', 'AgentViewer'); }
 export async function startServer(core: ViewerCore, root: string, directory: string, port = 3210) {
+  const markdownWorkspace = new MarkdownWorkspace(core, directory);
+  core.extensions.set('markdown-workspace-root', async args => markdownWorkspace.resourceRoot(String(args.documentId)));
+  core.extensions.set('markdown-workspace-list', async args => markdownWorkspace.list(String(args.documentId), String(args.path ?? '')));
+  core.extensions.set('markdown-workspace-search', async args => markdownWorkspace.search(String(args.documentId), String(args.query ?? ''), args.caseSensitive === true, String(args.mode ?? 'content')));
+  core.extensions.set('markdown-workspace-set-root', async (args, actor) => { if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '请选择工作文件夹。'); return markdownWorkspace.setRoot(String(args.documentId), String(args.path)); });
+  core.extensions.set('markdown-workspace-change', async (args, actor) => { if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '文件管理由阅读窗口发起。'); return markdownWorkspace.change(args as any); });
   const token = randomBytes(32).toString('hex'), app = express();
   const validOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`, 'http://127.0.0.1:5173', 'http://localhost:5173']);
   const sampleFiles = await ensureSamples(join(directory, 'samples'));
-  app.use(express.json({ limit: '20mb' }));
+  app.use(express.json({ limit: '48mb' }));
   app.use((req, res, next) => { const origin = req.headers.origin; if (origin && !validOrigins.has(origin)) { res.status(403).json({ error: { code: 'ORIGIN_DENIED', message: '此网页不能访问本地接口。' } }); return; } if (origin) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Vary', 'Origin'); } if (req.method === 'OPTIONS') { res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS'); res.sendStatus(204); return; } next(); });
   app.get('/api/bootstrap', (req, res) => { if (req.headers['sec-fetch-site'] === 'cross-site') return res.sendStatus(403); res.cookie('av_session', token, { httpOnly: true, sameSite: 'strict', path: '/' }); res.json({ protocolVersion: PROTOCOL_VERSION }); });
   app.use(['/api', '/v1'], (req, res, next) => {
@@ -28,7 +35,15 @@ export async function startServer(core: ViewerCore, root: string, directory: str
   app.get('/api/samples', (_req, res) => res.json(sampleFiles));
   app.get('/api/state', (_req, res) => res.json(core.state()));
   app.get('/api/documents/:id/bytes', (req, res, next) => { try { res.type('application/octet-stream').send(Buffer.from(core.getDocument(req.params.id).bytes)); } catch (e) { next(e); } });
-  app.get('/api/events', (req, res) => { res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders(); const after = Number(req.query.after ?? 0); if (after && after < (core.eventLog[0]?.seq ?? 0)) res.write('event: resync_required\ndata: {}\n\n'); else for (const event of core.eventLog.filter(e => e.seq > after)) res.write('data: ' + JSON.stringify(event) + '\n\n'); const listener = (event: unknown) => res.write('data: ' + JSON.stringify(event) + '\n\n'); core.on('change', listener); req.on('close', () => core.off('change', listener)); });
+  app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
+    const cursor = Math.max(Number(req.query.after ?? 0), Number(req.headers['last-event-id'] ?? 0));
+    const after = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
+    const write = (event: {seq:number}) => res.write('id: ' + event.seq + '\ndata: ' + JSON.stringify(event) + '\n\n');
+    if (after && after < (core.eventLog[0]?.seq ?? 0)) res.write('id: ' + (core.eventLog.at(-1)?.seq ?? 0) + '\nevent: resync_required\ndata: {}\n\n');
+    else for (const event of core.eventLog) if (event.seq > after) write(event);
+    core.on('change', write); req.on('close', () => core.off('change', write));
+  });
   app.post('/api/command', async (req, res, next) => { try { const { method, args = {} } = req.body; if (typeof method !== 'string' || !args || typeof args !== 'object' || Array.isArray(args)) throw new ViewerError('INVALID_ARGUMENT', '需要 method 和对象类型 args。'); res.json(await dispatch(core, method, args, res.locals.actor)); } catch (e) { next(e); } });
   app.post('/v1/commands/prepare', async (req, res, next) => { try { res.json(await dispatch(core, 'prepare', req.body, 'agent')); } catch (e) { next(e); } });
   app.post('/v1/commands/commit', async (req, res, next) => { try { res.json(await dispatch(core, 'commit', req.body, 'agent')); } catch (e) { next(e); } });

@@ -1,5 +1,4 @@
 import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
-import fontkit from '@pdf-lib/fontkit';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { Capabilities, DocumentModel, EditOperation, Format, FormatAdapter } from '../../contracts/src/index';
@@ -28,7 +27,10 @@ export class TextAdapter implements FormatAdapter {
     this.preview(model, op);
     if (op.kind !== 'text.replace') return unsupported();
     const text = (model.text ?? '').slice(0, op.from) + op.text + (model.text ?? '').slice(op.to);
-    return { bytes: encoder.encode(text), model: { ...model, text }, warnings: [] };
+    const encoded = encoder.encode(text);
+    let bytes = encoded;
+    if (_bytes[0] === 0xef && _bytes[1] === 0xbb && _bytes[2] === 0xbf) { bytes = new Uint8Array(encoded.length + 3); bytes.set([0xef, 0xbb, 0xbf]); bytes.set(encoded, 3); }
+    return { bytes, model: { ...model, text }, warnings: [] };
   }
 }
 
@@ -65,7 +67,10 @@ export class PdfAdapter implements FormatAdapter {
       const page = pdf.getPage(op.pageIndex), { width, height } = page.getSize();
       assertRange(page.getRotation().angle === 0 && page.getCropBox().x === 0 && page.getCropBox().y === 0, '当前增补坐标仅支持未旋转且 CropBox 原点为零的页面；先使用原方向或等待坐标适配升级。');
       if (op.kind === 'pdf.addText') {
-        pdf.registerFontkit(fontkit);
+        if (this.fontPath) {
+          const { default: fontkit } = await import('@pdf-lib/fontkit');
+          pdf.registerFontkit(fontkit);
+        }
         const font = this.fontPath ? await pdf.embedFont(await readFile(this.fontPath), { subset: true }) : await pdf.embedFont(StandardFonts.Helvetica);
         const charset = new Set(font.getCharacterSet());
         assertRange([...op.text].every(c => charset.has(c.codePointAt(0)!)), '当前 PDF 字体不支持所输入字符，请配置 AGENTVIEWER_PDF_FONT。');

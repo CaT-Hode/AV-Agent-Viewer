@@ -5,12 +5,16 @@ import type { ViewerCore } from '../../document-core/src/index';
 import { randomUUID } from 'node:crypto';
 
 interface BrowserEntry { view: WebContentsView; navigationId: string; layoutRevision: number; owner: BrowserWindow; visible: boolean; injecting: boolean; actor: Actor; sourceRevision: number; sourceSequence: number; sourceReady?: boolean; sourceClock?: number; deviceScaleFactor?: number; scrollAt: number; scrollX: number; scrollY: number; topHover?: boolean; sourceReading?: boolean; sourcePending?: { reason: string }; layoutBounds?: Rect }
-type BrowserSurfaceOptions = { preload?: string; onSourceChanged?(owner: BrowserWindow, viewId: string): void };
+type BrowserSurfaceOptions = { preload?: string; backgroundLoading?(): 'lazy' | 'eager'; onSourceChanged?(owner: BrowserWindow, viewId: string): void };
+type PendingPage = { url: string; generation: number; deferred: boolean };
 import { readContextScript } from './context-script';
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class ElectronBrowserRuntime implements BrowserRuntime {
   entries = new Map<string, BrowserEntry>();
+  private pendingPages = new Map<string, PendingPage>();
+  private loadingPages = new Map<string, Promise<void>>();
+  private pageGeneration = 0;
   private requestedLayouts = new Map<string, { windowId: string; bounds: Rect }>();
   private pointerOverlays = new Map<BrowserWindow, { window: BrowserWindow; ready: Promise<void>; timer?: NodeJS.Timeout }>();
   constructor(readonly core: ViewerCore, readonly windowFor: (id: string) => BrowserWindow, readonly localOrigins: () => string[] = () => [], readonly pointerEnabled: () => boolean = () => true, private readonly surfaceOptions: BrowserSurfaceOptions = {}) {}
@@ -71,21 +75,57 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     await overlay.window.webContents.executeJavaScript('window.agentPointer(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ',' + JSON.stringify(kind) + ')');
     overlay.timer = setTimeout(() => { if (!overlay!.window.isDestroyed()) overlay!.window.close(); }, 1600);
   }
-  async open(viewId: string, url: string) {
+  async open(viewId: string, url: string, options: { background?: boolean } = {}) {
     const normalized = normalizeWebAddress(url);
     if (!normalized) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。');
-    url = normalized;
-    if (this.entries.has(viewId)) return;
+    this.core.getView(viewId);
+    // Preferences apply only when registering a new page. A loaded page and
+    // an existing pending registration are never evicted/reloaded by a toggle.
+    const existing = this.entries.get(viewId);
+    if (existing && !existing.view.webContents.isDestroyed()) { await this.loadingPages.get(viewId); return; }
+    if (!this.pendingPages.has(viewId)) this.pendingPages.set(viewId, { url: normalized, generation: ++this.pageGeneration, deferred: !!options.background && this.surfaceOptions.backgroundLoading?.() === 'lazy' });
+    const layout = this.requestedLayouts.get(viewId);
+    if (options.background && this.pendingPages.get(viewId)!.deferred && (!layout || layout.windowId !== this.core.getView(viewId).windowId)) return;
+    await this.ensureLoaded(viewId);
+  }
+  private ensureLoaded(viewId: string): Promise<void> {
+    const flight = this.loadingPages.get(viewId); if (flight) return flight;
+    const existing = this.entries.get(viewId);
+    if (existing && !existing.view.webContents.isDestroyed()) return Promise.resolve();
+    if (existing) this.retireEntry(viewId, existing);
+    const metadata = this.core.getView(viewId), document = this.core.getDocument(metadata.documentId).info;
+    if (document.format !== 'web') return Promise.reject(new ViewerError('TARGET_NOT_FOUND', '目标不是网页。'));
+    let pending = this.pendingPages.get(viewId);
+    if (!pending) {
+      const url = normalizeWebAddress(document.model.url ?? '');
+      if (!url) return Promise.reject(new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。'));
+      pending = { url, generation: ++this.pageGeneration, deferred: false }; this.pendingPages.set(viewId, pending);
+    }
+    // Install the flight before creating WebContents: navigation notifications
+    // may synchronously lead another consumer back to this target.
+    const registration = pending, result = Promise.resolve().then(() => this.loadPage(viewId, registration));
+    this.loadingPages.set(viewId, result);
+    void result.finally(() => { if (this.loadingPages.get(viewId) === result) this.loadingPages.delete(viewId); }).catch(() => {});
+    return result;
+  }
+  private async loadPage(viewId: string, pending: PendingPage) {
+    if (this.pendingPages.get(viewId) !== pending || !this.core.views.has(viewId)) throw new ViewerError('TARGET_NOT_FOUND', '网页已关闭。');
     const metadata = this.core.getView(viewId), owner = this.windowFor(metadata.windowId);
+    if (owner.isDestroyed()) throw new ViewerError('TARGET_NOT_FOUND', '网页所属窗口已关闭。');
     const view = new WebContentsView({ webPreferences: { preload: this.surfaceOptions.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'persist:agentviewer-web' } });
     const entry: BrowserEntry = { view, owner, navigationId: randomUUID(), layoutRevision: 0, visible: false, injecting: false, actor: 'human', sourceRevision: 0, sourceSequence: 0, scrollAt: 0, scrollX: 0, scrollY: 0 };
-    this.entries.set(viewId, entry); owner.contentView.addChildView(view); view.setVisible(false);
+    this.entries.set(viewId, entry);
+    try {
+    owner.contentView.addChildView(view); view.setVisible(false);
     const layout = this.requestedLayouts.get(viewId);
-    if (layout) this.layout(layout.windowId, [...this.requestedLayouts.entries()].filter(([, value]) => value.windowId === layout.windowId).map(([id, value]) => ({ viewId: id, bounds: value.bounds })));
+    if (layout && layout.windowId === metadata.windowId) this.layout(layout.windowId, [...this.requestedLayouts.entries()].filter(([, value]) => value.windowId === layout.windowId).map(([id, value]) => ({ viewId: id, bounds: value.bounds })));
     const wc = view.webContents;
+    const current = () => this.entries.get(viewId) === entry && this.pendingPages.get(viewId) === pending && this.core.views.has(viewId) && !wc.isDestroyed();
+    const alive = () => this.entries.get(viewId) === entry && this.core.views.has(viewId) && !wc.isDestroyed();
     wc.setZoomMode('isolated');
     wc.setZoomFactor(metadata.zoom ?? 1);
     wc.on('zoom-changed', (_event, direction) => {
+      if (!alive()) return;
       const current = this.core.getView(viewId).zoom ?? wc.getZoomFactor();
       this.core.setViewZoom(viewId, Math.max(.25, Math.min(4, current + (direction === 'in' ? .1 : -.1))), entry.injecting ? 'agent' : 'human');
       if (!entry.owner.isDestroyed()) entry.owner.webContents.send('agentviewer:toolbar', { action: 'zoom-updated', viewId });
@@ -96,26 +136,27 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
       return [parsed.origin, alias.origin];
     }));
     wc.session.webRequest.onBeforeRequest({ urls: [...protectedOrigins].flatMap(origin => [origin + '/api/*', origin + '/v1/*']) }, (_details, callback) => callback({ cancel: true }));
-    wc.setWindowOpenHandler(({ url: target }) => { if (/^https?:/.test(target)) void this.core.openWeb(target, metadata.windowId).catch(e => this.core.event('browser.error', { viewId, error: String(e) })); return { action: 'deny' }; });
+    wc.setWindowOpenHandler(({ url: target }) => { if (alive() && /^https?:/.test(target)) void this.core.openWeb(target, this.core.getView(viewId).windowId).catch(e => this.core.event('browser.error', { viewId, error: String(e) })); return { action: 'deny' }; });
     wc.on('will-navigate', (event, url) => { if (!/^https?:/.test(url)) event.preventDefault(); });
-    wc.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => { if (isMainFrame) { entry.navigationId = randomUUID(); entry.layoutRevision = 0; entry.sourceReady = false; entry.sourceRevision++; if (!inPlace) { entry.sourceSequence = 0; entry.sourceClock = undefined; } this.core.event('browser.navigation', { viewId, navigationId: entry.navigationId }); this.surfaceOptions.onSourceChanged?.(entry.owner, viewId); } });
-    const readySource = () => { entry.sourceRevision++; entry.sourcePending = { reason: 'ready' }; if (!entry.sourceReading) void this.readSource(viewId, entry); };
+    wc.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => { if (alive() && isMainFrame) { entry.navigationId = randomUUID(); entry.layoutRevision = 0; entry.sourceReady = false; entry.sourceRevision++; if (!inPlace) { entry.sourceSequence = 0; entry.sourceClock = undefined; } this.core.event('browser.navigation', { viewId, navigationId: entry.navigationId }); this.surfaceOptions.onSourceChanged?.(entry.owner, viewId); } });
+    const readySource = () => { if (!alive()) return; entry.sourceRevision++; entry.sourcePending = { reason: 'ready' }; if (!entry.sourceReading) void this.readSource(viewId, entry); };
     wc.on('did-finish-load', readySource);
     wc.on('did-navigate-in-page', (_event, currentUrl, isMainFrame) => {
-      if (!isMainFrame) return;
+      if (!alive() || !isMainFrame) return;
       this.core.getDocument(metadata.documentId).info.model.url = currentUrl;
       readySource();
     });
-    wc.on('page-title-updated', (_e, title) => { const doc = this.core.getDocument(metadata.documentId); doc.info.title = title; this.core.event('browser.title', { viewId }); });
-    wc.on('did-navigate', (_e, currentUrl) => { this.core.getDocument(metadata.documentId).info.model.url = currentUrl; });
+    wc.on('page-title-updated', (_e, title) => { if (!alive()) return; const doc = this.core.getDocument(metadata.documentId); doc.info.title = title; this.core.event('browser.title', { viewId }); });
+    wc.on('did-navigate', (_e, currentUrl) => { if (alive()) this.core.getDocument(metadata.documentId).info.model.url = currentUrl; });
     wc.on('before-input-event', (event, input) => {
-      if (!entry.visible || entry.injecting) return;
+      if (!alive() || !entry.visible || entry.injecting) return;
       entry.actor = 'human'; this.core.activate(viewId, 'human');
       if (input.type === 'keyDown' && (input.control || input.meta) && input.key.toLowerCase() === 'l') {
         event.preventDefault(); entry.owner.webContents.send('agentviewer:toolbar', { action: 'focus-address-request', viewId });
       }
     });
     wc.on('before-mouse-event', (_event, mouse) => {
+      if (!alive()) return;
       if (!entry.injecting && mouse.type === 'mouseMove') {
         const top = mouse.y >= 0 && mouse.y <= NAVIGATION_EDGE_REVEAL_PX;
         if (top && !entry.topHover) entry.owner.webContents.send('agentviewer:toolbar', { action: 'reveal', viewId, distanceToTop: mouse.y });
@@ -124,14 +165,31 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
       }
       if (entry.visible && !entry.injecting && mouse.type === 'mouseDown') { entry.actor = 'human'; this.core.activate(viewId, 'human'); }
     });
-    // Chromium may focus an autofocus element as a hidden page finishes
-    // loading. That is not a user's change of reading target.
-    wc.on('focus', () => { if (entry.visible && !entry.injecting) { entry.actor = 'human'; this.core.activate(viewId, 'human'); } });
-    wc.on('did-fail-load', (_e, code, message, _url, main) => { if (main && code !== -3) this.core.event('browser.error', { viewId, error: message }); });
+    // Initial load/autofocus is not a human target change, even when layout
+    // and an agent activation concurrently reveal the pending page. Genuine
+    // mouse/key input above still takes ownership while the load is pending.
+    wc.on('focus', () => {
+      if (!alive() || !entry.visible || entry.injecting || this.loadingPages.has(viewId) || !entry.owner.isFocused()) return;
+      const active = this.core.views.get(this.core.activeViewId ?? ''), target = this.core.views.get(viewId)!;
+      // Core receives a tab intent before the renderer withdraws old native
+      // bounds. A late page autofocus in that gap cannot reverse the choice.
+      // Real focus into another reader window can still choose its visible tab.
+      if (active && active.windowId === target.windowId && active.id !== viewId) return;
+      entry.actor = 'human'; this.core.activate(viewId, 'human');
+    });
+    wc.on('did-fail-load', (_e, code, message, _url, main) => { if (alive() && main && code !== -3) this.core.event('browser.error', { viewId, error: message }); });
     wc.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    await wc.loadURL(url);
+      await wc.loadURL(pending.url);
+      if (!current() || entry.owner.isDestroyed()) throw new ViewerError('TARGET_NOT_FOUND', '网页或所属窗口已关闭。');
+      this.pendingPages.delete(viewId);
+    } catch (error) {
+      // Retire only this generation. An explicit later retry may use the same
+      // pending URL; a closed/replaced target must never be revived by it.
+      if (this.entries.get(viewId) === entry) this.retireEntry(viewId, entry);
+      throw error;
+    }
   }
-  private entry(viewId: string) { const entry = this.entries.get(viewId); if (!entry || entry.view.webContents.isDestroyed()) throw new ViewerError('TARGET_NOT_FOUND', '网页视图不存在或已关闭。'); return entry; }
+  private entry(viewId: string) { const entry = this.entries.get(viewId); if (!entry || entry.view.webContents.isDestroyed()) { if (this.pendingPages.has(viewId)) throw new ViewerError('VIEW_NOT_VISIBLE', '请先激活网页标签并等待页面就绪。'); throw new ViewerError('TARGET_NOT_FOUND', '网页视图不存在或已关闭。'); } return entry; }
   setZoom(viewId: string, factor: number) {
     const entry = this.entries.get(viewId); if (!entry || entry.view.webContents.isDestroyed()) return;
     if (Math.abs(entry.view.webContents.getZoomFactor() - factor) < .001) return;
@@ -146,7 +204,12 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     for (const layout of layouts) this.requestedLayouts.set(layout.viewId, { windowId, bounds: layout.bounds });
     for (const [id, entry] of this.entries) if (this.core.views.get(id)?.windowId === windowId) { entry.visible = ids.has(id); entry.view.setVisible(entry.visible); }
     for (const layout of layouts) {
-      const entry = this.entries.get(layout.viewId); if (!entry) continue;
+      const entry = this.entries.get(layout.viewId);
+      if (!entry) {
+        const target = this.core.views.get(layout.viewId);
+        if (target?.windowId === windowId && this.core.getDocument(target.documentId).info.format === 'web') void this.ensureLoaded(layout.viewId).catch(error => { if (this.core.views.has(layout.viewId)) this.core.event('browser.error', { viewId: layout.viewId, error: String(error) }); });
+        continue;
+      }
       const owner = this.windowFor(windowId); if (owner !== entry.owner) { entry.owner.contentView.removeChildView(entry.view); owner.contentView.addChildView(entry.view); entry.owner = owner; }
       const bounds = { x: Math.round(layout.bounds.x), y: Math.round(layout.bounds.y), width: Math.max(1, Math.round(layout.bounds.width)), height: Math.max(1, Math.round(layout.bounds.height)) }, previous = entry.layoutBounds;
       const changed = !previous || ['x', 'y', 'width', 'height'].some(key => previous[key as keyof Rect] !== bounds[key as keyof Rect]);
@@ -163,9 +226,17 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     }
   }
   async context(viewId: string, actor?: Actor): Promise<ReadingContext> {
+    await this.ensureLoaded(viewId);
     const entry = this.entry(viewId), view = this.core.getView(viewId), doc = this.core.getDocument(view.documentId);
+    const notReady = (): ReadingContext => ({ viewId, documentId: view.documentId, contentRevision: doc.info.revision, viewRevision: view.context?.viewRevision ?? 0, capturedAt: new Date().toISOString(), quality: 'not-ready', actor: actor ?? entry.actor, locator: { kind: 'web-viewport', navigationId: entry.navigationId }, visibleText: '', selection: { kind: 'none', text: '' }, viewport: undefined });
+    // A loaded background page has no reading position until an actual reader
+    // layout has supplied its viewport. Do not create fake bounds to extract
+    // "visible" text, or promote a restored locator to current confirmation.
+    // Explicit full-source reads use html() and do not need a visible viewport.
+    if (!entry.layoutBounds || entry.layoutBounds.width <= 0 || entry.layoutBounds.height <= 0) return notReady();
     if (entry.view.webContents.isLoading()) return { viewId, documentId: view.documentId, contentRevision: doc.info.revision, viewRevision: view.context?.viewRevision ?? 0, capturedAt: new Date().toISOString(), quality: 'not-ready', actor: actor ?? entry.actor, locator: { kind: 'web-viewport', navigationId: entry.navigationId }, visibleText: '', selection: { kind: 'none', text: '' }, viewport: { width: entry.view.getBounds().width, height: entry.view.getBounds().height, scrollX: 0, scrollY: 0, deviceScaleFactor: 1, navigationId: entry.navigationId, layoutRevision: entry.layoutRevision } };
     const data = await entry.view.webContents.executeJavaScript(readContextScript) as { selectionRect?: Rect; title: string; url: string; heading: string; visibleText: string; selection: string; width: number; height: number; scrollX: number; scrollY: number; deviceScaleFactor: number; frameCount: number };
+    if (![data.width, data.height].every(value => Number.isFinite(value) && value > 0)) return notReady();
     return { viewId, documentId: view.documentId, contentRevision: doc.info.revision, viewRevision: (view.context?.viewRevision ?? 0) + 1, capturedAt: new Date().toISOString(), quality: entry.visible ? 'confirmed' : 'last-confirmed', actor: actor ?? entry.actor, locator: { kind: 'web-viewport', navigationId: entry.navigationId, scrollTop: data.scrollY, quote: data.heading }, visibleText: data.visibleText, selection: { kind: data.selection ? 'text' : 'none', text: data.selection, rect:data.selectionRect, locator: data.selection ? { kind: 'web-text-quote', navigationId: entry.navigationId, quote: data.selection } : undefined }, viewport: { width: data.width, height: data.height, scrollX: data.scrollX, scrollY: data.scrollY, deviceScaleFactor: data.deviceScaleFactor, navigationId: entry.navigationId, layoutRevision: entry.layoutRevision } };
   }
   async input(request: BrowserRequest) {
@@ -204,11 +275,21 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     } finally { entry.injecting = false; }
   }
   async navigate(viewId: string, action: 'back' | 'forward' | 'reload' | 'url', url?: string) {
+    const normalized = action === 'url' ? url && normalizeWebAddress(url) : undefined;
+    if (action === 'url' && !normalized) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。');
+    const virgin = !this.entries.has(viewId);
+    if (virgin && normalized) {
+      const pending = this.pendingPages.get(viewId);
+      if (pending) pending.url = normalized;
+      else this.pendingPages.set(viewId, { url: normalized, generation: ++this.pageGeneration, deferred: false });
+    }
+    await this.ensureLoaded(viewId);
     const wc = this.entry(viewId).view.webContents;
+    if (virgin && (action === 'reload' || action === 'url')) return;
     if (action === 'reload') wc.reload();
     else if (action === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     else if (action === 'forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
-    else if (action === 'url') { const normalized = url && normalizeWebAddress(url); if (!normalized) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网页地址。'); await wc.loadURL(normalized); }
+    else if (action === 'url') await wc.loadURL(normalized!);
   }
   async capture(viewId: string) {
     const entry = this.entry(viewId), context = await this.context(viewId), navigationId = entry.navigationId;
@@ -222,6 +303,7 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     return { mimeType: 'image/png', data: png.toString('base64'), width: png.readUInt32BE(16), height: png.readUInt32BE(20), navigationId, viewport: context.viewport };
   }
   async html(viewId: string) {
+    await this.ensureLoaded(viewId);
     return this.entry(viewId).view.webContents.executeJavaScript(`(() => {
       const copy = document.documentElement.cloneNode(true);
       copy.querySelectorAll('script,iframe,frame,object,embed').forEach(node=>node.remove());
@@ -231,6 +313,7 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     })()`);
   }
   async translationUnits(viewId: string, scope: 'page' | 'selection' = 'page') {
+    await this.ensureLoaded(viewId);
     const entry = this.entry(viewId), navigationId = entry.navigationId;
     const units = await entry.view.webContents.executeJavaScriptInIsolatedWorld(999, [{ code: `(() => {
       const key = '__agentViewerTranslationState';
@@ -282,5 +365,6 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     if (restored.restored) { entry.layoutRevision++; this.core.event('browser.translation-restored', { viewId, layoutRevision: entry.layoutRevision }); }
     return restored as { restored: number; skipped: number };
   }
-  close(viewId: string) { this.requestedLayouts.delete(viewId); const entry = this.entries.get(viewId); if (!entry) return; if (!entry.owner.isDestroyed()) entry.owner.contentView.removeChildView(entry.view); if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close(); this.entries.delete(viewId); }
+  private retireEntry(viewId: string, entry: BrowserEntry) { if (this.entries.get(viewId) === entry) this.entries.delete(viewId); if (!entry.owner.isDestroyed()) entry.owner.contentView.removeChildView(entry.view); if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close(); }
+  close(viewId: string) { this.requestedLayouts.delete(viewId); this.pendingPages.delete(viewId); this.loadingPages.delete(viewId); const entry = this.entries.get(viewId); if (entry) this.retireEntry(viewId, entry); }
 }

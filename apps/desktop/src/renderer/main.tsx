@@ -1,15 +1,15 @@
-import { SelectionTools } from './components/SelectionTools';
 import { TooltipHost } from './TooltipHost';
+import { lazy, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
-import { WebToolbar } from './WebToolbar';
-import { AgentOperationToolbar } from './AgentOperationToolbar';
-import { AIResultToolbar } from './AIResultToolbar';
-import { App, rendererPollStats } from './App';
 import { glassOpticsCacheStats } from './lib/liquid-glass-optics';
-import { officeRenderStats } from './components/OfficeDocument';
-import { SettingsApp } from './SettingsApp';
 import { GlassInteractionHost } from './components/GlassInteractionHost';
-import { ReaderPanelWindow } from './ReaderPanelWindow';
+const App = lazy(() => import('./App').then(module => ({ default: module.App })));
+const SettingsApp = lazy(() => import('./SettingsApp').then(module => ({ default: module.SettingsApp })));
+const WebToolbar = lazy(() => import('./WebToolbar').then(module => ({ default: module.WebToolbar })));
+const AgentOperationToolbar = lazy(() => import('./AgentOperationToolbar').then(module => ({ default: module.AgentOperationToolbar })));
+const AIResultToolbar = lazy(() => import('./AIResultToolbar').then(module => ({ default: module.AIResultToolbar })));
+const ReaderPanelWindow = lazy(() => import('./ReaderPanelWindow').then(module => ({ default: module.ReaderPanelWindow })));
+const SelectionTools = lazy(() => import('./components/SelectionTools').then(module => ({ default: module.SelectionTools })));
 import './reader-panel-window.css';
 import './styles.css';
 import './new-ui.css';
@@ -30,6 +30,6 @@ import './document-paper.css';
 import './frosted-shadow.css';
 import './sidebar-presence.css';
 import './adaptive-panel.css';
-declare global { interface Window { __agentViewerRenderingDiagnostics?: () => { glass: ReturnType<typeof glassOpticsCacheStats>; office: ReturnType<typeof officeRenderStats>; poll: ReturnType<typeof rendererPollStats> } } }
-if (window.agentViewer?.testMode) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats(), office: officeRenderStats(), poll: rendererPollStats() }) });
-createRoot(document.getElementById('root')!).render(<>{location.hash.startsWith('#/reader-panel?') ? <ReaderPanelWindow /> : location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/agent-toolbar') ? <AgentOperationToolbar /> : location.hash.startsWith('#/ai-result-toolbar') ? <AIResultToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}<TooltipHost /><GlassInteractionHost /></>);
+declare global { interface Window { __agentViewerRenderingDiagnostics?: () => { glass: ReturnType<typeof glassOpticsCacheStats> } } }
+if (window.agentViewer?.testMode) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats() }) });
+createRoot(document.getElementById('root')!).render(<><Suspense fallback={null}>{location.hash.startsWith('#/reader-panel?') ? <ReaderPanelWindow /> : location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/agent-toolbar') ? <AgentOperationToolbar /> : location.hash.startsWith('#/ai-result-toolbar') ? <AIResultToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}</Suspense><TooltipHost /><GlassInteractionHost /></>);

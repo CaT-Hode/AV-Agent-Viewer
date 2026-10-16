@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
 import { LiquidGlassSurface } from './LiquidGlassSurface';
+import { SELECTION_GLASS_BLUR_PX } from '../lib/glass-presets';
 
 const colorCache = new Map<string, number[] | undefined>();
 
@@ -18,8 +19,9 @@ function colorChannels(color: string) {
 }
 
 /** Background optics only; navigation labels and inputs remain sibling layers. */
-export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, onSurface }: { backdropImage?: string; backdropSample?: NavigationBackdropSample; capsuleBounds?: NavigationBounds; onSurface?(surface: 'light' | 'dark'): void }) {
+export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, onSurface, softness = 'navigation', onReady }: { backdropImage?: string; backdropSample?: NavigationBackdropSample; capsuleBounds?: NavigationBounds; onSurface?(surface: 'light' | 'dark'): void; softness?: 'navigation' | 'selection'; onReady?(ready:boolean):void }) {
   const root = useRef<HTMLSpanElement>(null);
+  const resample = useRef<(() => void) | undefined>(undefined);
 
   useEffect(() => {
     if (!onSurface) return;
@@ -45,10 +47,14 @@ export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, 
     }
     // Live documents need no screenshots: inspect their actual opaque page
     // surface, never navigation descendants. PDF and HTML retain page colors.
-    let frame = 0;
+    let frame = 0, timer: ReturnType<typeof setTimeout> | undefined;
     const measure = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      clearTimeout(timer);
+      // Movement and document mutation can fire once per animation/input
+      // frame. Infer contrast once they settle instead of rescanning the DOM
+      // and reattaching listeners for every reported capsule coordinate.
+      timer = setTimeout(() => { frame = requestAnimationFrame(() => {
         const capsule = root.current?.parentElement; if (!capsule) return;
         const box = capsule.getBoundingClientRect();
         const underneath = document.elementsFromPoint(box.x + box.width / 2, box.y + box.height / 2).find(node => !capsule.contains(node) && !node.contains(capsule) && !node.closest('.reader-toolbar'));
@@ -79,16 +85,18 @@ export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, 
           }
           node = node.parentElement;
         }
-      });
+      }); }, 80);
     };
+    resample.current = measure;
     const appearance = new MutationObserver(measure);
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-document-background', 'data-document-tone', 'data-document-paper'] });
     const content = new MutationObserver(measure);
     const documentHost = root.current?.closest('.reader-panel')?.querySelector('.document-content');
     if (documentHost) content.observe(documentHost, { childList: true, subtree: true, characterData: true });
-    document.addEventListener('scroll', measure, true); window.addEventListener('resize', measure); window.addEventListener('agentviewer:html-surface', measure); measure();
-    return () => { cancelAnimationFrame(frame); appearance.disconnect(); content.disconnect(); document.removeEventListener('scroll', measure, true); window.removeEventListener('resize', measure); window.removeEventListener('agentviewer:html-surface', measure); };
+    document.addEventListener('scroll', measure, true); window.addEventListener('resize', measure); window.addEventListener('agentviewer:html-surface', measure); window.addEventListener('agentviewer:selection-material-position',measure); measure();
+    return () => { resample.current = undefined; clearTimeout(timer); cancelAnimationFrame(frame); appearance.disconnect(); content.disconnect(); document.removeEventListener('scroll', measure, true); window.removeEventListener('resize', measure); window.removeEventListener('agentviewer:html-surface', measure); window.removeEventListener('agentviewer:selection-material-position',measure); };
   }, [backdropImage, onSurface]);
+  useEffect(() => resample.current?.(),[capsuleBounds?.x,capsuleBounds?.y,capsuleBounds?.width,capsuleBounds?.height]);
 
-  return <LiquidGlassSurface navigation variant="search" bezelWidth={NAVIGATION_METRICS.bezelWidth} glassThickness={NAVIGATION_METRICS.glassThickness} refractiveIndex={NAVIGATION_METRICS.refractiveIndex} blur={NAVIGATION_METRICS.blur} strength={NAVIGATION_METRICS.refraction} specularOpacity={NAVIGATION_METRICS.specularOpacity} specularSaturation={NAVIGATION_METRICS.specularSaturation} backdropImage={backdropImage} backdropSample={backdropSample} bounds={capsuleBounds} surfaceRef={root} />;
+  return <LiquidGlassSurface navigation variant="search" bezelWidth={NAVIGATION_METRICS.bezelWidth} glassThickness={NAVIGATION_METRICS.glassThickness} refractiveIndex={NAVIGATION_METRICS.refractiveIndex} blur={softness === 'selection' ? SELECTION_GLASS_BLUR_PX : NAVIGATION_METRICS.blur} blurLimit={softness === 'selection' ? SELECTION_GLASS_BLUR_PX : undefined} onReady={onReady} strength={NAVIGATION_METRICS.refraction} specularOpacity={NAVIGATION_METRICS.specularOpacity} specularSaturation={NAVIGATION_METRICS.specularSaturation} backdropImage={backdropImage} backdropSample={backdropSample} bounds={capsuleBounds} surfaceRef={root} />;
 }

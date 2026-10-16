@@ -2,6 +2,12 @@ export type NativeOfficeReadKind = 'poll' | 'catalog' | 'status' | 'navigation';
 export type NativeOfficeReadErrors = Partial<Record<NativeOfficeReadKind, { key: string; message: string; awaitingSession: boolean }>>;
 export type NativeOfficeReadAction = { kind: NativeOfficeReadKind; key: string; outcome: 'success' } | { kind: NativeOfficeReadKind; key: string; outcome: 'failure'; cause: unknown };
 
+export function nativeOfficeReadNotReady(cause: unknown) {
+  const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return code === 'NATIVE_NOT_READY' || /\bNATIVE_NOT_READY\b/.test(message);
+}
+
 /** Read failures belong to a specific request scope, never to an edit transaction. */
 export function updateNativeOfficeReadErrors(previous: NativeOfficeReadErrors, action: NativeOfficeReadAction): NativeOfficeReadErrors {
   if (action.outcome === 'success') {
@@ -9,9 +15,8 @@ export function updateNativeOfficeReadErrors(previous: NativeOfficeReadErrors, a
     const next = { ...previous }; delete next[action.kind]; return next;
   }
   const message = action.cause instanceof Error ? action.cause.message : String(action.cause);
-  const code = action.cause && typeof action.cause === 'object' && 'code' in action.cause ? String(action.cause.code) : '';
   // Electron's invoke error serialization preserves message but drops ViewerError.code.
-  const awaitingSession = code === 'NATIVE_SESSION_EXPIRED' || /\bNATIVE_SESSION_EXPIRED\b/.test(message) || message.includes('原生Office会话已关闭或不可用，请重新打开。');
+  const awaitingSession = nativeOfficeReadNotReady(action.cause);
   return { ...previous, [action.kind]: { key: action.key, message, awaitingSession } };
 }
 

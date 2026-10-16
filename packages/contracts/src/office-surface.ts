@@ -4,7 +4,10 @@ import type { NativeOfficeState } from './native-office';
 /** This is an internal renderer protocol. Public MCP continues to use versioned office tools. */
 export type OfficeSurfaceIdentity = { sessionId: string; documentId: string; viewId: string; engineEpoch: string };
 export type OfficeSurfacePart = { index: number; name: string; hash?: string; visible?: boolean; sizeTwips?: { width: number; height: number } };
-export type OfficeSurfaceWindow = { id: number; instanceId: string; kind: 'dialog' | 'child' | 'deck' | 'tooltip'; title?: string; width: number; height: number; visible: boolean; generation: number; /** Actual engine modality when known; absence never asserts a native modal lock. */ modal?: boolean; parentId?: number; positionCss?: { x: number; y: number }; cursor?: Rect; cursorVisible?: boolean };
+export type OfficeSurfaceDialogActionKind = 'click' | 'set-text' | 'toggle' | 'select';
+export type OfficeSurfaceDialogNode = { id: string; nativeId?: string; kind: 'container' | 'label' | 'button' | 'checkbox' | 'radio' | 'text' | 'number' | 'select' | 'tabs' | 'unknown'; text?: string; value?: string; /** Native text fields may preserve and accept line breaks. */ multiline?: boolean; checked?: boolean; enabled: boolean; visible: boolean; children?: OfficeSurfaceDialogNode[]; options?: { id: string; text: string; selected?: boolean }[]; actions: OfficeSurfaceDialogActionKind[] };
+export type OfficeSurfaceDialog = { source: 'native-uno-uitest' | 'native-uno-accessibility'; revision: number; root: OfficeSurfaceDialogNode; /** Whether every visible interactive native control has a supported DOM action. */ complete: boolean; unsupported?: { nodeId: string; nativeType: string; reason: string }[] };
+export type OfficeSurfaceWindow = { id: number; instanceId: string; kind: 'dialog' | 'child' | 'deck' | 'tooltip'; title?: string; width: number; height: number; visible: boolean; generation: number; /** Actual engine modality when known; absence never asserts a native modal lock. */ modal?: boolean; parentId?: number; positionCss?: { x: number; y: number }; cursor?: Rect; cursorVisible?: boolean; dialog?: OfficeSurfaceDialog };
 /** All document coordinates are twips; DOM geometry and viewport are CSS pixels. */
 export interface OfficeSurfaceState extends NativeOfficeState {
   surfaceKind: 'tiled';
@@ -78,13 +81,16 @@ export type OfficeSurfaceWindowInputEvent = Exclude<OfficeSurfaceInputEvent, { k
 export type OfficeSurfaceWindowInputRequest = OfficeSurfaceWindowIdentity & { streamId: string; sequence: number; event: OfficeSurfaceWindowInputEvent };
 export type OfficeSurfaceWindowCloseRequest = OfficeSurfaceWindowIdentity;
 export type OfficeSurfaceWindowClipboardReply = { state: OfficeSurfaceState; windowId: number; windowInstanceId: string; items: { mimeType: string; data: Uint8Array }[] };
+export type OfficeSurfaceWindowControlsReply = { state: OfficeSurfaceState; windowId: number; windowInstanceId: string; dialog?: OfficeSurfaceDialog };
+export type OfficeSurfaceWindowActionRequest = OfficeSurfaceWindowIdentity & { revision: number; nodeId: string; requestId: string; action: { kind: OfficeSurfaceDialogActionKind; value?: string | boolean } };
+export type OfficeSurfaceWindowActionReply = OfficeSurfaceWindowControlsReply;
 export type OfficeSurfaceSelectionProjection = OfficeSurfaceIdentity & { engineRevision: number; selectionEpoch?: number; layoutRevision: number; actor?: NativeOfficeState['actor']; selection?: NativeOfficeState['selection']; rects: Rect[]; visibleTwips: Rect; viewportCss: Rect; pageIndex?: number; partIndex: number };
 export type OfficeSurfaceEvent =
   | { action: 'office-surface-state'; state: OfficeSurfaceState }
   | { action: 'office-surface-invalidate'; viewId: string; sessionId: string; engineEpoch: string; partIndex: number; renderGeneration: number; engineRevision: number; eventSequence: number; rectTwips?: Rect }
   | { action: 'office-surface-scroll'; viewId: string; sessionId: string; engineEpoch: string; layoutRevision: number; partIndex: number; rectTwips: Rect; /** Exact DOM offsets for an actual scroll action; absent for an anchor jump. */ scrollCss?: { x: number; y: number }; requestId?: string };
 
-export const OFFICE_SURFACE_METHODS = { state: 'office-surface-state', layout: 'office-surface-layout', tiles: 'office-surface-tiles', input: 'office-surface-input', windowPaint: 'office-surface-window-paint', windowInput: 'office-surface-window-input', windowClose: 'office-surface-window-close', windowClipboard: 'office-surface-window-clipboard' } as const;
+export const OFFICE_SURFACE_METHODS = { state: 'office-surface-state', layout: 'office-surface-layout', tiles: 'office-surface-tiles', input: 'office-surface-input', windowPaint: 'office-surface-window-paint', windowInput: 'office-surface-window-input', windowClose: 'office-surface-window-close', windowClipboard: 'office-surface-window-clipboard', windowControls: 'office-surface-window-controls', windowAction: 'office-surface-window-action' } as const;
 
 export function isOfficeSurfaceState(value: unknown): value is OfficeSurfaceState {
   if (!value || typeof value !== 'object') return false;

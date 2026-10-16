@@ -1,0 +1,35 @@
+.markdown-configuration{display:flex;flex-direction:column;gap:10px;min-width:0;color:var(--text-primary,currentColor);font-size:11px}
+.markdown-configuration-heading{display:flex;align-items:center;gap:5px}
+.markdown-configuration-heading h3{margin:0;flex:1;min-width:0;font-size:12px;font-weight:600}
+.markdown-configuration .icon-button{width:26px;height:26px;min-height:26px;flex-shrink:0;border-radius:7px;color:inherit}
+.markdown-configuration fieldset{display:flex;flex-direction:column;gap:10px;min-width:0;margin:0;padding:0;border:0}
+.markdown-configuration details{min-width:0;border-top:1px solid color-mix(in srgb,currentColor 9%,transparent);padding-top:9px}
+.markdown-configuration details>summary{cursor:pointer;font-size:11px;font-weight:600;margin-bottom:9px;color:var(--soft,currentColor)}
+.markdown-configuration details>label{display:flex;flex-direction:column;gap:5px;margin-bottom:9px;min-width:0}
+.markdown-configuration input:not([type=checkbox]),.markdown-configuration textarea{box-sizing:border-box;width:100%;min-width:0;border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:7px;padding:7px;background:color-mix(in srgb,var(--chrome,#f5f6f9) 60%,transparent);color:inherit;font:inherit;line-height:1.5;resize:vertical}
+.markdown-configuration textarea{min-height:50px;max-height:360px}
+.markdown-configuration .markdown-configuration-code{font-family:var(--font-mono,Consolas,monospace);font-size:10px;tab-size:2}
+.markdown-configuration input:focus-visible,.markdown-configuration textarea:focus-visible,.markdown-configuration button:focus-visible,.markdown-configuration summary:focus-visible{outline:2px solid var(--accent,#7263e8);outline-offset:1px}
+.markdown-configuration details>.markdown-configuration-toggle{display:flex;flex-direction:row;align-items:center;gap:6px;cursor:pointer;line-height:1.5}
+.markdown-configuration-toggle input{accent-color:var(--accent,#7263e8)}
+.markdown-configuration-note,.markdown-configuration-error{margin:0 0 6px;line-height:1.6;overflow-wrap:anywhere;color:var(--muted,#85899c);font-size:10px}
+.markdown-configuration-note>svg{display:inline-block;vertical-align:-2px;margin-right:4px}
+.markdown-configuration-error{color:var(--danger,#b84655)}
+.markdown-configuration .markdown-configuration-help{border:0;padding:0;margin:0 0 8px;color:var(--muted,#85899c)}
+.markdown-configuration-help summary{font-size:10px;font-weight:400;margin:0}
+.markdown-configuration-help p{font-family:var(--font-mono,Consolas,monospace);font-size:10px;line-height:1.6;overflow-wrap:anywhere;margin:5px 0}
+.markdown-configuration-footer{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.markdown-configuration-footer .button{font-size:11px;min-height:28px;padding:5px 8px}
+.markdown-resources-list{display:flex;flex-direction:column;gap:3px;max-height:340px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.markdown-resources-item{display:flex;align-items:flex-start;gap:7px;padding:7px 5px;border-radius:7px;min-width:0;cursor:pointer}
+.markdown-resources-item:hover{background:color-mix(in srgb,currentColor 5%,transparent)}
+.markdown-resources-item input{margin:2px 0 0;accent-color:var(--accent,#7263e8);flex-shrink:0}
+.markdown-resources-item>span{min-width:0;flex:1}
+.markdown-resources-title{display:flex;align-items:center;gap:5px;min-width:0;font-size:11px}
+.markdown-resources-title>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.markdown-resources-title>svg{flex-shrink:0;color:var(--muted,#85899c)}
+.markdown-resources-item small{display:block;margin-top:3px;color:var(--muted,#85899c);font-size:10px;line-height:1.4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.markdown-resources-select{display:flex;align-items:center;justify-content:space-between;gap:5px;color:var(--muted,#85899c);font-size:10px}
+.markdown-resources-select>label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.markdown-resources-select input{accent-color:var(--accent,#7263e8)}
+.markdown-resources-unresolved{margin:0;padding-left:17px;color:var(--muted,#85899c);font-size:10px;line-height:1.6;overflow-wrap:anywhere;max-height:150px;overflow:auto}

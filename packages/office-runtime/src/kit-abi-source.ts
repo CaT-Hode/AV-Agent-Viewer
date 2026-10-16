@@ -27,6 +27,27 @@ vcl_reschedule=getattr(dll,'?Reschedule@Application@@SA_N_N@Z');vcl_reschedule.a
 vcl_main_thread=getattr(dll,'?IsMainThread@Application@@SA_NXZ');vcl_main_thread.argtypes=[];vcl_main_thread.restype=B
 vcl_system_loop=getattr(dll,'?IsUseSystemEventLoop@Application@@SA_NXZ');vcl_system_loop.argtypes=[];vcl_system_loop.restype=B
 
+# Exact LOK window -> UNO top-window binding. The existing adapter has already
+# checked the complete mergedlo.dll SHA-256. FindLOKWindow returns VclPtr<Window>
+# into caller storage on Windows x64. Its acquire uses Window's vbptr at +8 and
+# vbtable displacement at +4 (pinned RVA 0x2dae65d); balance that same reference
+# through the vendor's release, never retain an extra native dialog reference.
+vcl_find_window=getattr(dll,'?FindLOKWindow@Window@vcl@@SA?AV?$VclPtr@VWindow@vcl@@@@K@Z');vcl_find_window.argtypes=[P,U];vcl_find_window.restype=P
+vcl_window_system=getattr(dll,'?GetSystemData@Window@vcl@@UEBAPEBUSystemEnvData@@XZ');vcl_window_system.argtypes=[P];vcl_window_system.restype=P
+vcl_release=getattr(dll,'?release@VclReferenceBase@@QEBAXXZ');vcl_release.argtypes=[P];vcl_release.restype=None
+
+def kit_window_handle(identifier):
+    holder=P();vcl_find_window(C.byref(holder),identifier);window=holder.value
+    if not window:return None
+    table=C.c_void_p.from_address(window+8).value;displacement=C.c_int.from_address(table+4).value
+    if not 0<=displacement<=8192:fail('OFFICE_KIT_WINDOW_ABI_MISMATCH','Office 窗口引用布局与绑定版本不符。')
+    reference=window+8+displacement
+    try:
+        system=vcl_window_system(window)
+        # SystemEnvData on Windows: SalFrame*, widget*, HWND.
+        return C.c_void_p.from_address(system+16).value if system else None
+    finally:vcl_release(reference)
+
 def native_event_fence():
     # Run inside the existing UI callback with RPC reentry excluded. Native
     # key/IME events can enqueue accelerators and callback flushes, so continue

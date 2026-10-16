@@ -1,0 +1,43 @@
+{
+  "unit": [
+    "core.test.ts",
+    "office-editing.test.ts",
+    "native-office-mapped-shape-style.test.ts",
+    "translation-selection.test.ts"
+  ],
+  "integration": [
+    {
+      "id": "home",
+      "runtime": "electron",
+      "file": "home-search.e2e.ts",
+      "cases": ["新标签页搜索文件、打开网址和异步导航"]
+    },
+    {
+      "id": "reader",
+      "runtime": "electron",
+      "file": "reader-interaction.e2e.ts",
+      "cases": ["Markdown 阅读、编辑、缩放、拖入文件和设置"]
+    },
+    {
+      "id": "office",
+      "runtime": "electron",
+      "file": "embedded-office.e2e.ts",
+      "env": { "AGENTVIEWER_QA_ONLY": "" },
+      "cases": ["Word 原生编辑和保存重开", "Excel 公式、滚动和保存重开", "PPT 原生编辑、缩放和保存重开"]
+    },
+    {
+      "id": "office-dialog",
+      "runtime": "electron",
+      "file": "embedded-office.e2e.ts",
+      "env": { "AGENTVIEWER_QA_ONLY": "theme", "AGENTVIEWER_QA_WIDTH": "1280", "AGENTVIEWER_QA_HEIGHT": "800" },
+      "cases": ["Office 弹窗主题、输入、取消及实际插表保存"]
+    },
+    {
+      "id": "office-export",
+      "runtime": "engine",
+      "file": "office-export.integration.ts",
+      "env": { "AGENTVIEWER_EXPORT_ITERATIONS": "2" },
+      "cases": ["Word 独立导出和撤销", "Excel 独立导出及公式保留", "PPT 样式、独立导出和撤销重做"]
+    }
+  ]
+}

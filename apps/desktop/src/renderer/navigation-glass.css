@@ -100,6 +100,10 @@
   opacity: calc(1 - var(--navigation-hide-progress));
   transition: opacity var(--navigation-hide-duration) var(--navigation-motion-easing, linear);
 }
+.floating-capsule.navigation-capsule .navigation-glass:is([data-glass-pending="true"],[data-glass-fallback="true"]) .navigation-glass-tint {
+  background: color-mix(in srgb, var(--navigation-solid) 88%, transparent);
+}
+.floating-capsule.navigation-capsule .navigation-glass[data-glass-fallback="true"] :is(.navigation-glass-center,.navigation-glass-edge) { display:none; }
 .floating-capsule.navigation-capsule .navigation-glass-highlight {
   position: absolute;
   inset: auto;

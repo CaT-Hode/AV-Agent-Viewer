@@ -134,6 +134,13 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
   const original = variables.map(name => ({ name, value: presentation.style.getPropertyValue(name), priority: presentation.style.getPropertyPriority(name) }));
   const originalWillChange = presentation.style.getPropertyValue('will-change'), originalWillPriority = presentation.style.getPropertyPriority('will-change');
   const originalShadow = presentation.style.getPropertyValue('box-shadow');
+  let displacementMaps: SVGElement[] = [], magnificationMaps: SVGElement[] = [];
+  const readOpticalMaps = () => {
+    const surface = [...element.children].find(child => child.classList.contains('liquid-glass-surface'));
+    displacementMaps = surface ? [...surface.querySelectorAll<SVGElement>('[data-glass-displacement]')] : [];
+    magnificationMaps = surface ? [...surface.querySelectorAll<SVGElement>('[data-glass-magnification]')] : [];
+  };
+  readOpticalMaps();
   const hadClass = element.classList.contains('glass-elastic'), originalState = element.getAttribute('data-glass-elastic-state');
   const originalOwner = element.getAttribute('data-glass-elastic-owner'), originalLayer = element.getAttribute('data-glass-elastic-layer');
   const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -152,8 +159,8 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
     presentation.style.setProperty(variables[5], `${origin.x.toFixed(3)}%`); presentation.style.setProperty(variables[6], `${origin.y.toFixed(3)}%`);
     // A panel must not change a nested switch's maps or green fill. Each
     // optical leaf belongs to its immediate material host only.
-    for (const map of element.querySelectorAll<SVGElement>('[data-glass-displacement]')) if (map.closest('.liquid-glass-surface')?.parentElement === element) map.setAttribute('scale', String(Number(map.dataset.glassBaseScale) * material.refraction.value));
-    for (const map of element.querySelectorAll<SVGElement>('[data-glass-magnification]')) if (map.closest('.liquid-glass-surface')?.parentElement === element) map.setAttribute('scale', String(material.magnification.value));
+    for (const map of displacementMaps) map.setAttribute('scale', String(Number(map.dataset.glassBaseScale) * material.refraction.value));
+    for (const map of magnificationMaps) map.setAttribute('scale', String(material.magnification.value));
     if (preset === 'panel') {
       presentation.style.setProperty(variables[7], `${shadow.x.value.toFixed(3)}px`); presentation.style.setProperty(variables[8], `${shadow.y.value.toFixed(3)}px`);
       presentation.style.setProperty(variables[9], `${shadow.blur.value.toFixed(3)}px`); presentation.style.setProperty(variables[10], shadow.alpha.value.toFixed(5)); presentation.style.setProperty(variables[11], shadow.inset.value.toFixed(5));
@@ -277,10 +284,13 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
       for (const [name, value] of [['data-glass-elastic-owner', originalOwner], ['data-glass-elastic-layer', originalLayer]] as const) { if (value === null) element.removeAttribute(name); else element.setAttribute(name, value); }
       if (registeredControllers.get(element)?.controller === controller) registeredControllers.delete(element);
       element.removeEventListener?.(replaceControllerEvent, retire);
+      element.removeEventListener('agentviewer:glass-optics', refreshOpticalMaps);
     },
   };
   const retire = () => controller.destroy();
+  const refreshOpticalMaps = (event: Event) => { if ((event.target as Element | null)?.parentElement === element) { readOpticalMaps(); draw(); } };
   element.addEventListener?.(replaceControllerEvent, retire);
+  element.addEventListener('agentviewer:glass-optics', refreshOpticalMaps);
   registeredControllers.set(element, { owner, controller });
   return controller;
 }

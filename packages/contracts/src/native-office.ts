@@ -21,13 +21,22 @@ export interface NativeOfficeStyleInspection { targetKind: NativeOfficeStyleTarg
 
 export type NativeOfficeFormat = Extract<Format, 'docx' | 'pptx' | 'xlsx'>;
 export type UNOProperty = { name: string; type?: 'string' | 'boolean' | 'short' | 'long' | 'hyper' | 'double'; value: string | number | boolean };
-export type NativeOfficeQuery = { kind: 'document' | 'selection' | 'sheets' | 'slides' } | { kind: 'cell-range'; sheetName: string; range: string } | { kind: 'shapes'; slideIndex: number } | { kind: 'shape'; slideIndex: number; name: string } | { kind: 'properties'; target: 'document' | 'selection'; names?: string[] } | { kind: 'style'; target: NativeOfficeStyleTarget };
+/** A thumbnail belongs to a real model and its rendered content, never just a page number. */
+export interface NativeOfficeThumbnailSource { documentId: string; sessionId: string; engineEpoch: string; engineRevision: number; partGeometryGeneration: number; appearanceKey: string; geometryKey: string; renderKey: string }
+export type NativeOfficeQuery = { kind: 'document' | 'selection' | 'sheets' } | { kind: 'slides'; includeThumbnails?: boolean } | { kind: 'slide-thumbnails'; indices: number[]; source: NativeOfficeThumbnailSource } | { kind: 'cell-range'; sheetName: string; range: string } | { kind: 'shapes'; slideIndex: number } | { kind: 'shape'; slideIndex: number; name: string } | { kind: 'properties'; target: 'document' | 'selection'; names?: string[] } | { kind: 'style'; target: NativeOfficeStyleTarget };
 export type NativeOfficeNavigateTarget = { kind: 'page'; pageIndex: number } | { kind: 'paragraph'; paragraphIndex: number; select?: boolean } | { kind: 'sheet' | 'slide'; index: number } | { kind: 'cell'; sheetName: string; address: string } | { kind: 'shape'; slideIndex: number; name: string };
 export type NativeOfficeExportFormat = NativeOfficeFormat | 'pdf' | 'odt' | 'ods' | 'odp';
+/** Editing context is not an unacknowledged input. Checkpoints/history may
+ * require leaving it, while selection reads and formatting can remain live. */
+export interface NativeInputState { composing: boolean; inFlight: boolean; editing: 'none' | 'text' | 'cell'; modal: boolean }
+export interface NativeOfficeInspection { state: NativeOfficeState; data?: unknown; commands?: NativeOfficeCommand[] }
+export type NativeOfficeSelectionLease = Pick<NativeOfficeState, 'sessionId' | 'engineEpoch' | 'engineRevision' | 'selectionEpoch'>;
+export function nativeOfficeInteractionBlocked(state: NativeOfficeState): boolean { return state.inputState ? state.inputState.composing || state.inputState.inFlight || state.inputState.modal : !!state.pendingInput; }
 export interface NativeOfficeState {
   sessionId: string; documentId: string; viewId?: string; format: NativeOfficeFormat;
   engineEpoch: string; engineRevision: number; selectionEpoch?: number; revision?: number;
   dirty: boolean; status?: 'opening' | 'ready' | 'failed'; actor?: Actor; pendingInput?: boolean; nativeGeometry?: boolean;
+  inputState?: NativeInputState;
   /** Content has changed since the last validated application save. A native temporary save must not clear this history. */
   unsavedContentChanges?: boolean;
   nativeHwnd?: string; nativePid?: number; visible?: boolean; focused?: boolean; zoom?: number;
@@ -35,6 +44,8 @@ export interface NativeOfficeState {
   selection?: { kind: 'none' | 'text' | 'cells' | 'objects'; text: string; rect?: Rect; locator?: Locator; pageIndex?: number; sheetIndex?: number; sheetName?: string; range?: string; slideIndex?: number; objectNames?: string[] };
   visibleText?: string; visibleTextTruncated?: boolean; visibleTextReady?: boolean; visibleTextSource?: 'actual-a11y' | 'actual-model-projection' | 'unavailable';
   undo?: { canUndo: boolean; canRedo: boolean; title?: string; count: number; token?: string };
+  /** Actual active Outliner command capabilities; never a document undo token. */
+  textHistory?: { canUndo: boolean; canRedo: boolean };
   nativeUi?: { menus: boolean; toolbars: boolean; statusbar: boolean; sidebar?: boolean; deckId?: string };
   supportedOperations?: string[]; selectionActions?: string[]; warnings?: string[];
 }
@@ -43,9 +54,13 @@ export interface NativeOfficeSnapshot {
   bytes: Uint8Array; format: NativeOfficeFormat; state: NativeOfficeState;
   engineRevisionBefore: number; engineRevisionAfter: number; stable: boolean; sha256?: string; undoToken?: string;
 }
+/** Optional borrowed, already-owned mirror. It never crosses the public API;
+ * the runtime verifies these bytes before accepting an unchanged native reply. */
+export interface NativeOfficeSnapshotReuse { bytes: Uint8Array; sha256: string; engineEpoch: string; engineRevision: number }
 export interface NativeOfficeCommand { command: string; label?: string; group?: number | string; available?: boolean; enabled?: boolean; state?: unknown; reason?: string; requiresSelection?: boolean; opensDialog?: boolean; parameters?: { name: string; type?: string; required?: boolean }[] }
 export interface NativeOfficeExecution {
   status: 'dispatched' | 'applied' | 'no-change'; state: NativeOfficeState; undoToken?: string; warnings?: string[];
+  historyScope?: 'text' | 'document';
 }
 export interface NativeOfficeExecuteRequest {
   sessionId: string; viewId: string; expectedEngineEpoch: string; expectedEngineRevision: number;
@@ -60,9 +75,10 @@ export interface NativeOfficeCapture { mimeType: 'image/png'; data: string; widt
 export interface NativeOfficeDriver {
   open(request: { documentId: string; viewId: string; format: NativeOfficeFormat; bytes: Uint8Array; revision: number; sourcePath?: string }): Promise<NativeOfficeState>;
   state(sessionId: string, viewId?: string): Promise<NativeOfficeState>;
-  snapshot(sessionId: string): Promise<NativeOfficeSnapshot>;
+  snapshot(sessionId: string, reuse?: NativeOfficeSnapshotReuse): Promise<NativeOfficeSnapshot>;
   commands(sessionId: string, viewId: string): Promise<NativeOfficeCommand[]>;
   commandStatus?(sessionId: string, viewId: string, commands: string[]): Promise<NativeOfficeCommand[]>;
+  inspect?(sessionId: string, viewId: string, request: { target?: NativeOfficeQuery; commands?: string[] }): Promise<NativeOfficeInspection>;
   query(sessionId: string, viewId: string, target: NativeOfficeQuery): Promise<unknown>;
   input?(request: NativeOfficeInputRequest): Promise<{ state: NativeOfficeState }>;
   captureNative?(sessionId: string, viewId: string, rect?: Rect): Promise<NativeOfficeCapture>;

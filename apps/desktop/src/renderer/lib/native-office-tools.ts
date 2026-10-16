@@ -1,10 +1,25 @@
 import type { NativeOfficeCommand, NativeOfficeFormat, NativeOfficeNavigateTarget, NativeOfficeState, NativeOfficeStylePatch, NativeOfficeStyleTarget, NativeOfficeStyleValues, UNOProperty } from '../../../../../packages/contracts/src/native-office';
-import { nativeOfficeStylePatchSchema } from '../../../../../packages/contracts/src/native-office';
+import { nativeOfficeInteractionBlocked, nativeOfficeStylePatchSchema } from '../../../../../packages/contracts/src/native-office';
 import { nativeOfficeCommandPolicy } from '../../../../../packages/contracts/src/native-office-policy';
 import type { OfficeToolboxCategory } from '../components/office/toolbox-contributions';
 
 export type NativeOfficeRequest = <T = unknown>(method: string, args?: Record<string, unknown>) => Promise<T>;
+type ReadJob = { start(): Promise<unknown>; resolve(value: unknown): void; reject(error: unknown): void };
+const reads = new WeakMap<NativeOfficeRequest, Map<string, { next?: ReadJob }>>();
+/** One read in flight and one latest replacement per visible control group. */
+export function latestNativeOfficeRead<T>(request: NativeOfficeRequest, key: string, method: string, args: Record<string, unknown>): Promise<T> {
+  let groups=reads.get(request);if(!groups){groups=new Map();reads.set(request,groups);}
+  return new Promise<T>((resolve,reject)=>{
+    const job:ReadJob={start:()=>request(method,args),resolve:value=>resolve(value as T),reject};
+    const existing=groups.get(key);if(existing){existing.next?.reject(new Error('OFFICE_READ_SUPERSEDED'));existing.next=job;return;}
+    const slot:{next?:ReadJob}={};groups.set(key,slot);
+    const run=async(current:ReadJob)=>{try{current.resolve(await current.start());}catch(error){current.reject(error);}finally{const next=slot.next;slot.next=undefined;if(next)void run(next);else if(groups.get(key)===slot)groups.delete(key);}};
+    void run(job);
+  });
+}
 export type NativeOfficeCommandGroup = { title: string; commands: readonly { command: string; label: string; icon?: string }[] };
+/** Presentation-only omission; engine discovery and harness policy stay intact. */
+export function nativeOfficeCommandVisible(command: Pick<NativeOfficeCommand, 'command'>) { return command.command !== '.uno:NewWindow'; }
 const group = (title: string, commands: readonly (readonly [string, string, string?])[]): NativeOfficeCommandGroup => ({ title, commands: commands.map(([name, label, icon]) => ({ command: '.uno:' + name, label, icon })) });
 const font = group('字体', [['Bold', '粗体', 'bold'], ['Italic', '斜体', 'italic'], ['Underline', '下划线', 'underline'], ['Strikeout', '删除线', 'strike'], ['SuperScript', '上标'], ['SubScript', '下标'], ['FontDialog', '字体设置'], ['ResetAttributes', '清除直接格式']]);
 const paragraph = group('段落', [['LeftPara', '左对齐', 'left'], ['CenterPara', '居中', 'center'], ['RightPara', '右对齐', 'right'], ['JustifyPara', '两端对齐', 'justify'], ['DefaultBullet', '项目符号'], ['DefaultNumbering', '编号'], ['ParagraphDialog', '段落设置']]);
@@ -41,6 +56,37 @@ const groups: Record<NativeOfficeFormat, Partial<Record<OfficeToolboxCategory, r
     notes: [group('备注编辑', [['NotesMode', '备注页'], ['NotesPage', '备注页模式'], ['PageMode', '返回幻灯片']]), group('备注版式', [['NotesMasterPage', '备注母版'], ['MasterLayoutsNotes', '备注母版元素']])],
   },
 };
+// Build once: catalog labels can be untranslated UNO identifiers, whereas our
+// format contributions already carry the names users see in the toolbox.
+const commandLabels = Object.fromEntries(Object.entries(groups).map(([format, categories]) => [format, new Map(Object.values(categories).flatMap(items => items.flatMap(item => item.commands)).map(item => [item.command, item.label]))])) as Record<NativeOfficeFormat, Map<string, string>>;
+const commandDescriptions: Readonly<Record<string, string>> = {
+  Bold: '切换所选文字的粗体', Italic: '切换所选文字的斜体', Underline: '为所选文字添加或移除下划线', Strikeout: '为所选文字添加或移除删除线',
+  SuperScript: '将所选文字设为上标', SubScript: '将所选文字设为下标', FontDialog: '设置字体、字号和文字效果', ResetAttributes: '清除直接格式，保留样式',
+  ParagraphDialog: '设置段落的缩进、间距和对齐方式',
+  InsertRowsBefore: '在当前行上方插入表格行', InsertRowsAfter: '在当前行下方插入表格行', InsertColumnsBefore: '在当前列左侧插入表格列', InsertColumnsAfter: '在当前列右侧插入表格列',
+  DeleteRows: '删除选中的行', DeleteColumns: '删除选中的列', MergeCells: '将选中的单元格合并', SplitCell: '将当前单元格拆分为多个单元格',
+  DuplicatePage: '复制当前幻灯片', DuplicateSlide: '复制当前幻灯片', AutoSum: '为选中区域插入求和公式', Calculate: '重新计算需要更新的公式', CalculateHard: '重新计算所有公式',
+};
+const characterLabels: Readonly<Record<string, string>> = { CharFontName: '字体', CharHeight: '字号', CharColor: '文字颜色', CharBackColor: '文字底色' };
+export type NativeOfficeCommandPresentation = { label: string; description?: string };
+function readableCommandLabel(value: string | undefined, command: string) {
+  const label = value?.replace(/\([~&][A-Za-z]\)/g, '').replace(/[~&](?=[\p{L}\p{N}])/gu, '').replace(/\s+/g, ' ').trim().replace(/(?:\.{3}|…)$/, '').trim();
+  if (!label || label.length > 160 || /[<>\x00-\x1f]|\.uno:|\b(?:com|org)\.[\w.]+/i.test(label) || label === command || label === command.slice(5) || /^[A-Za-z_$][\w$.:/-]*$/.test(label)) return undefined;
+  return label;
+}
+/** Presentation only: never changes discovery, dispatch IDs, policy or MCP. */
+export function nativeOfficeCommandPresentation(format: NativeOfficeFormat, command: Pick<NativeOfficeCommand, 'command' | 'label'>): NativeOfficeCommandPresentation {
+  const name = command.command.replace(/^\.uno:/, '');
+  const label = commandLabels[format].get(command.command) ?? characterLabels[name] ?? (format === 'pptx' && name === 'DuplicateSlide' ? '复制幻灯片' : undefined) ?? readableCommandLabel(command.label, command.command);
+  return label ? { label, description: commandDescriptions[name] ?? (characterLabels[name] ? '设置所选文字的' + label.replace(/^文字/, '') : label) } : { label: '其他文档操作' };
+}
+export function nativeOfficeCommandTooltip(presentation: NativeOfficeCommandPresentation, reason?: string) {
+  const explanation = presentation.description && (presentation.description === presentation.label ? presentation.label : presentation.label + ' · ' + presentation.description);
+  // Unknown commands stay inspectable in technical details without presenting
+  // engine/component identifiers as a purported explanation on hover.
+  const readableReason = reason && !/\.uno:|\b(?:com|org)\.[\w.]+/i.test(reason) ? reason : undefined;
+  return [explanation, readableReason].filter(Boolean).join('\n') || undefined;
+}
 /** Cheap candidates for live status queries; no full menu catalogue or assumed enablement. */
 export function nativeOfficeToolCandidates(format: NativeOfficeFormat, category: OfficeToolboxCategory): readonly NativeOfficeCommandGroup[] {
   return groups[format][category] ?? [];
@@ -51,7 +97,7 @@ export function nativeOfficeToolGroups(format: NativeOfficeFormat, category: Off
   const discovered = (command: string) => available.has(command) && !(command === '.uno:NotesPage' && available.has('.uno:NotesMode'));
   return (groups[format][category] ?? []).map(item => ({ title: item.title, commands: item.commands.filter(command => discovered(command.command)).map(command => ({ ...available.get(command.command)!, ...command })) })).filter(item => item.commands.length);
 }
-export function nativeOfficeStatusKey(state: NativeOfficeState) { return JSON.stringify([state.documentId, state.viewId, state.sessionId, state.engineEpoch, state.engineRevision, state.selectionEpoch ?? null, state.pendingInput ?? false]); }
+export function nativeOfficeStatusKey(state: NativeOfficeState) { return JSON.stringify([state.documentId, state.viewId, state.sessionId, state.engineEpoch, state.engineRevision, state.selectionEpoch ?? null, nativeOfficeInteractionBlocked(state), state.inputState?.editing, state.textHistory]); }
 export function nativeOfficeOwnedState(state: NativeOfficeState | undefined, identity: { documentId: string; viewId: string; format?: NativeOfficeFormat }): state is NativeOfficeState {
   return !!state && state.documentId === identity.documentId && state.viewId === identity.viewId && (!identity.format || state.format === identity.format);
 }
@@ -66,7 +112,8 @@ export function nativeOfficeCommandAvailability(command: NativeOfficeCommand, st
   if (policy.blocked) return { enabled: false, reason: policy.reason };
   if (state?.status === 'failed') return { enabled: false, reason: '文档引擎未就绪。' };
   if (!state || state.status !== 'ready') return { enabled: false, reason: '文档引擎正在准备。' };
-  if (state.pendingInput) return { enabled: false, reason: '请先完成正文中的输入。' };
+  if (nativeOfficeInteractionBlocked(state)) return { enabled: false, reason: '请先完成中文输入或关闭原生对话框。' };
+  if (state.format === 'pptx' && state.pendingInput && ['.uno:Undo', '.uno:Redo'].includes(command.command)) return { enabled: false, reason: '请先完成幻灯片文字编辑，再撤销文档操作。' };
   if (command.available === false) return { enabled: false, reason: command.reason ?? '当前引擎不支持此命令。' };
   if (command.enabled === false) return { enabled: false, reason: command.reason ?? '当前选区或文档状态不可用。' };
   if (command.enabled !== true) return { enabled: false, reason: '尚未取得此命令的实际可用状态。' };
@@ -103,7 +150,7 @@ export function createNativeOfficeToolController(identity: { documentId: string;
     const state = options.current();
     if (!active || !nativeOfficeOwnedState(state, identity)) throw new Error('当前 Office 视图已变化。');
     if (state.status && state.status !== 'ready') throw new Error('文档引擎未就绪。');
-    if (state.pendingInput) throw new Error('请先完成正文中的输入。');
+    if (nativeOfficeInteractionBlocked(state)) throw new Error('请先完成中文输入或关闭原生对话框。');
     return state;
   };
   const unchanged = (before: NativeOfficeState) => {
@@ -152,7 +199,7 @@ export function createNativeOfficeToolController(identity: { documentId: string;
       unchanged(before);
       const versions = { viewId: identity.viewId, expectedEngineEpoch: before.engineEpoch, expectedEngineRevision: before.engineRevision, expectedSelectionEpoch: before.selectionEpoch, idempotencyKey: options.makeKey?.() ?? crypto.randomUUID() };
       if (action === 'execute' || action === 'style') {
-        const result = await options.request<{ receipt: { status: 'dispatched' | 'applied' | 'no-change'; warnings?: string[] }; state: NativeOfficeState }>('office-execute', { ...versions, ...(action === 'style' ? { style: target } : { command: target, args }) });
+        const result = await options.request<{ receipt: { status: 'dispatched' | 'applied' | 'no-change'; warnings?: string[] }; state: NativeOfficeState }>('office-execute', { ...versions, completion: 'applied', ...(action === 'style' ? { style: target } : { command: target, args }) });
         if (!result.receipt || !['dispatched', 'applied', 'no-change'].includes(result.receipt.status)) throw new Error('引擎未返回有效的操作回执。');
         accept(before, result.state); return { state: result.state, status: result.receipt.status, warnings: result.receipt.warnings };
       }

@@ -1,9 +1,8 @@
 import JSZip from 'jszip';
-import ExcelJS from 'exceljs';
-import PptxGenJS from 'pptxgenjs';
 import { PDFDocument } from 'pdf-lib';
 import type { Format } from '../../contracts/src/index';
 import { ensureWordParagraphStyles } from '../../format-adapters/src/word-styles';
+import { officeDocumentTemplateBytes } from './office-templates';
 
 /** User documents start empty. Demonstration samples remain in fixtures.ts. */
 export async function emptyDocumentBytes(format: Exclude<Format, 'web'>): Promise<Uint8Array> {
@@ -17,13 +16,6 @@ export async function emptyDocumentBytes(format: Exclude<Format, 'web'>): Promis
     await ensureWordParagraphStyles(zip, ['Normal']);
     return zip.generateAsync({ type: 'uint8array' });
   }
-  if (format === 'xlsx') {
-    const workbook = new ExcelJS.Workbook(); workbook.addWorksheet('工作表1');
-    return new Uint8Array(await workbook.xlsx.writeBuffer());
-  }
-  if (format === 'pptx') {
-    const presentation = new PptxGenJS(); presentation.layout = 'LAYOUT_WIDE'; presentation.addSlide();
-    return new Uint8Array(await presentation.write({ outputType: 'arraybuffer' }) as ArrayBuffer);
-  }
+  if (format === 'pptx' || format === 'xlsx') return officeDocumentTemplateBytes('empty.' + format as 'empty.pptx' | 'empty.xlsx');
   const pdf = await PDFDocument.create(); pdf.addPage([595, 842]); return pdf.save();
 }

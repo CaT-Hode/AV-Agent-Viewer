@@ -72,7 +72,7 @@ def bootstrap_read_seed(directory,catalog):
 
 def prepare_bootstrap_profile():
     profile=pathlib.Path(tempfile.gettempdir())/('av-kit-profile-'+uuid.uuid4().hex[:12]);profile.mkdir()
-    context={'profile':profile,'ready':False}
+    info=profile.stat(follow_symlinks=False);context={'profile':profile,'profileIdentity':(info.st_dev,info.st_ino),'ready':False}
     try:
         catalog=bootstrap_registration_fingerprint(PROGRAM);cache_root=ROOT.parent/'kit-seed';cache=cache_root/catalog[:20]
         context.update(catalog=catalog,cache=cache,cacheRoot=cache_root)

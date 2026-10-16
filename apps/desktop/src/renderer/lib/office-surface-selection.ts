@@ -1,8 +1,8 @@
-import type { ReadingSnapshot, Rect } from '../../../../../packages/contracts/src/index';
+import type { ReadingSnapshot, SelectionContext, Rect } from '../../../../../packages/contracts/src/index';
 import type { OfficeSurfaceSelectionProjection } from '../../../../../packages/contracts/src/office-surface';
 
 export const OFFICE_SELECTION_EVENTS = { projection: 'agentviewer:office-surface-selection', ready: 'agentviewer:office-surface-selection-tools', dismiss: 'agentviewer:office-surface-selection-dismiss' } as const;
-export type OfficeSelectionToolState = { snapshot: ReadingSnapshot; actions: { id: string; label: string; input: boolean }[] };
+export type OfficeSelectionToolState = { snapshot: ReadingSnapshot | SelectionContext; actions: { id: string; label: string; input: boolean }[] };
 export type OfficeSelectionToolsEvent = { viewId: string; lease: string; visible: boolean; state?: OfficeSelectionToolState; rect?: Rect; viewport?: Rect; error?: string };
 const validRect = (rect: Rect | undefined) => !!rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width >= 0 && rect.height >= 0;
 export function isOfficeSelectionProjection(value: unknown): value is OfficeSurfaceSelectionProjection {
@@ -18,7 +18,7 @@ export function officeSelectionLease(projection: OfficeSurfaceSelectionProjectio
   const selection = projection.selection;
   return JSON.stringify([projection.viewId, projection.documentId, projection.sessionId, projection.engineEpoch, projection.engineRevision, projection.selectionEpoch ?? null, selection?.kind ?? 'none', selection?.text, selection?.locator, selection?.range, selection?.objectNames]);
 }
-export function officeSelectionSnapshotMatches(projection: OfficeSurfaceSelectionProjection, snapshot: ReadingSnapshot): boolean {
+export function officeSelectionSnapshotMatches(projection: OfficeSurfaceSelectionProjection, snapshot: ReadingSnapshot | SelectionContext): boolean {
   const context = snapshot.context, native = context.nativeOffice, selection = projection.selection;
   return snapshot.document.id === projection.documentId && context.documentId === projection.documentId && context.viewId === projection.viewId && context.quality === 'confirmed'
     && !!native && native.sessionId === projection.sessionId && native.engineEpoch === projection.engineEpoch && native.engineRevision === projection.engineRevision
@@ -38,7 +38,7 @@ export class OfficeSurfaceSelectionBridge {
   private cached?: { lease: string; state: OfficeSelectionToolState };
   private dismissed?: string;
   private requested?: string;
-  constructor(readonly viewId: string, private options: { request(viewId: string): Promise<OfficeSelectionToolState>; publish(event: OfficeSelectionToolsEvent): void }) {}
+  constructor(readonly viewId: string, private options: { request(viewId: string, projection: OfficeSurfaceSelectionProjection): Promise<OfficeSelectionToolState>; publish(event: OfficeSelectionToolsEvent): void }) {}
   private publish(visible: boolean, state?: OfficeSelectionToolState, error?: string) {
     if (!this.alive || !this.current) return;
     this.options.publish({ viewId: this.viewId, lease: officeSelectionLease(this.current), visible, state, rect: officeSelectionRect(this.current.rects), viewport: this.current.viewportCss, error });
@@ -53,7 +53,7 @@ export class OfficeSurfaceSelectionBridge {
     if (this.cached?.lease === lease) { this.publish(true, this.cached.state); return; }
     this.publish(false); if (this.requested === lease) return;
     this.requested = lease; const sequence = ++this.sequence;
-    void this.options.request(this.viewId).then(state => {
+    void this.options.request(this.viewId,value).then(state => {
       if (!this.alive || sequence !== this.sequence || !this.current || officeSelectionLease(this.current) !== lease || this.dismissed === lease) return;
       if (!officeSelectionSnapshotMatches(this.current, state.snapshot)) { this.requested = undefined; this.publish(false); return; }
       this.cached = { lease, state };

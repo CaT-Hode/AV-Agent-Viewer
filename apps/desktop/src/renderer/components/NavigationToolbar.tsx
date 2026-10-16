@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { flushSync } from 'react-dom';
 import { ArrowLeft, ArrowRight, Copy, Languages, Minus, MoreHorizontal, Plus, RotateCw, Save, Undo2, X } from 'lucide-react';
 import { NavigationGlass } from './NavigationGlass';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
@@ -7,7 +6,9 @@ import { navigationMotionDuration, useMotionSnapshot } from '../lib/motion';
 import { LiquidGlassSurface } from './LiquidGlassSurface';
 import { useGlassSpringValue } from '../lib/glass-elasticity';
 import { KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
-import { boundedNavigationPresentation, clearSidebarNavigationReservation, navigationControlMetrics, navigationDensity, navigationLane, observeNavigationLane, preferredNavigationWidth, readNavigationTargetLane, syncSidebarNavigationReservation, type NavigationLane } from '../lib/navigation-lane';
+import { SELECTION_NAVIGATION_EVENT, type SelectionNavigationBounds } from '../lib/selection-position';
+import { boundedNavigationPresentation, clearSidebarNavigationReservation, navigationControlMetrics, navigationDensity, navigationLane, observeNavigationLane, preferredNavigationWidth, readNavigationTargetLane, prepareSidebarNavigationReservation, type NavigationLane } from '../lib/navigation-lane';
+import { scheduleLayoutRead } from '../lib/layout-frame';
 
 export type NavigationAction =
   | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' | 'dismiss' }
@@ -19,6 +20,7 @@ export type NavigationState = {
   mode?: 'read' | 'source' | 'split'; canUndo?: boolean; busy?: boolean; translated?: boolean; zoom?: number;
 };
 type ModuleProps = { state: NavigationState; dispatch(action: NavigationAction): void; addressDraft?: string; setAddressDraft?(value: string): void; zoomDraft?: string; setZoomDraft?(value: string): void; setZoomEditing?(value: boolean): void };
+const sameLane = (a: NavigationLane, b: NavigationLane) => a.left === b.left && a.right === b.right && a.width === b.width && a.center === b.center;
 
 function Divider() { return <span className="capsule-divider" aria-hidden="true" />; }
 function HistoryModule({ dispatch, forward = true, reload = true, back = true }: ModuleProps & { forward?: boolean; reload?: boolean; back?: boolean }) {
@@ -89,14 +91,10 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   useLayoutEffect(() => {
     const reader = nav.current?.closest<HTMLElement>('.reader-panel');
     if (!reader) { const next = navigationLane({left:nativeInset,right:nativeInset+(availableWidth??820)}); setCanvas(next); setLane(laneBounds??next); return; }
-    const dispose = observeNavigationLane(reader,beforePaint => {
+    const dispose = observeNavigationLane(reader,() => {
       const next = readNavigationTargetLane(reader), nextCanvas = navigationLane({left:0,right:reader.getBoundingClientRect().width});
-      const apply = () => { setLane(old => JSON.stringify(old) === JSON.stringify(next) ? old : next); setCanvas(old => JSON.stringify(old) === JSON.stringify(nextCanvas) ? old : nextCanvas); };
-      if (beforePaint) flushSync(apply); else apply();
-      const cap = capsule.current;
-      if (hidden) clearSidebarNavigationReservation(reader);
-      else if (cap) { const rect = cap.getBoundingClientRect(), box = reader.getBoundingClientRect(); syncSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left); }
-    });
+      return () => { setLane(old => sameLane(old,next) ? old : next); setCanvas(old => sameLane(old,nextCanvas) ? old : nextCanvas); };
+    },false);
     return () => { dispose(); clearSidebarNavigationReservation(reader); };
   },[availableWidth,laneBounds?.left,laneBounds?.right,laneBounds?.width,laneBounds?.center,nativeInset,hidden]);
   const animatedWidth = useGlassSpringValue(isSheet ? Math.min(lane.width,1060) : preferredNavigationWidth(lane.width),KUBE_GLASS_SPRINGS.lensShape);
@@ -151,28 +149,43 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   const [capsuleBounds, setCapsuleBounds] = useState<NavigationBounds>();
   const [surface, setSurface] = useState<'light' | 'dark'>();
   const reportGeometry = useRef(onGeometry); reportGeometry.current = onGeometry;
+  const presentation = useRef({ hidden, durationMs, sampled: !!backdropImage }); presentation.current = { hidden, durationMs, sampled: !!backdropImage };
   useLayoutEffect(() => {
-    if (!capsule.current) return;
-    let frame = 0;
-    const until = performance.now() + durationMs + 50;
+    const node = capsule.current, toolbar = nav.current;
+    if (!node || !toolbar) return;
+    let cancelFrame: (() => void) | undefined, movingUntil = 0, previous: NavigationBounds | undefined, previousHidden: boolean | undefined;
+    const reader = toolbar.closest<HTMLElement>('.reader-panel');
     const measure = () => {
-      cancelAnimationFrame(frame);
-      const node = capsule.current; if (!node) return;
       const rect = node.getBoundingClientRect();
       const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-      const reader = nav.current?.closest<HTMLElement>('.reader-panel');
-      if (reader) { if (hidden) clearSidebarNavigationReservation(reader); else { const box = reader.getBoundingClientRect(); syncSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left); } }
-      setCapsuleBounds(old => {
-        if (old && ['x', 'y', 'width', 'height'].every(key => Math.abs(old[key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) < .125)) return old;
-        return bounds;
-      });
-      reportGeometry.current?.(bounds);
-      if (performance.now() < until) frame = requestAnimationFrame(measure);
+      const { hidden, sampled } = presentation.current;
+      const changed = !previous || ['x', 'y', 'width', 'height'].some(key => Math.abs(previous![key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) >= .125) || hidden !== previousHidden;
+      const box = reader?.getBoundingClientRect();
+      const reserve = reader && box && !hidden ? prepareSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left,box) : undefined;
+      return () => {
+        if (reader) { if (hidden) clearSidebarNavigationReservation(reader); else reserve?.(); }
+        if (changed) {
+          previous = bounds; previousHidden = hidden;
+          if (sampled) setCapsuleBounds(bounds);
+          reportGeometry.current?.(bounds);
+          window.dispatchEvent(new CustomEvent<SelectionNavigationBounds>(SELECTION_NAVIGATION_EVENT, {detail:{visible:!hidden,bounds}}));
+        }
+        if (performance.now() < movingUntil) schedule();
+      };
     };
-    const observer = new ResizeObserver(measure); observer.observe(capsule.current);
-    measure();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [!!onGeometry, hidden, visualProgress, durationMs, state.format, fitted.center, fitted.width]);
+    const schedule = () => { if (!cancelFrame) cancelFrame = scheduleLayoutRead(() => { cancelFrame = undefined; return measure(); }); };
+    const transition = (event: TransitionEvent) => {
+      if (event.target !== node && event.target !== toolbar) return;
+      if (event.type === 'transitionrun') movingUntil = performance.now() + presentation.current.durationMs + 50;
+      else movingUntil = 0;
+      schedule();
+    };
+    const observer = new ResizeObserver(schedule); observer.observe(node);
+    const attributes = new MutationObserver(schedule); attributes.observe(toolbar,{attributes:true,attributeFilter:['style','class']});
+    for (const name of ['transitionrun','transitionend','transitioncancel']) toolbar.addEventListener(name,transition as EventListener);
+    window.addEventListener('resize',schedule); schedule();
+    return () => { cancelFrame?.(); observer.disconnect(); attributes.disconnect(); window.removeEventListener('resize',schedule); for (const name of ['transitionrun','transitionend','transitioncancel']) toolbar.removeEventListener(name,transition as EventListener); };
+  }, [!!onGeometry, !!backdropImage, state.format]);
   const metrics = navigationControlMetrics(density);
   const style = { '--navigation-slot-left': fitted.center + 'px', '--navigation-slot-width': fitted.width + 'px', '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': metrics.height + 'px', '--navigation-radius': metrics.radius + 'px', '--navigation-button-size': metrics.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
   return <nav ref={nav} className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} data-navigation-density={density} data-navigation-manual-hidden={manualHidden || undefined} style={style}

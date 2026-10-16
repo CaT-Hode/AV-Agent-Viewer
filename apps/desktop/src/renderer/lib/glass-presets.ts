@@ -4,6 +4,8 @@ export const KUBE_SOURCE_SHA = '1df5ee3e528410c9eeef55bd08a90af9796c62dc';
 // Application policy requested after the source study: clear refractive glass
 // has no Gaussian blur. The source presets remain intact for future tuning.
 export const REFRACTIVE_BLUR_LIMIT_PX = 0;
+/** Selection/caret capsules keep the same optics with a slightly softer source. */
+export const SELECTION_GLASS_BLUR_PX = REFRACTIVE_BLUR_LIMIT_PX + .65;
 export const KUBE_GLASS_PRESETS = {
   search: { width: 420, height: 56, radius: 28, bezelWidth: 27, glassThickness: 70, refractiveIndex: 1.5, profile: 'convex' as const, blur: 1, refraction: .7, specularOpacity: .2, specularSaturation: 4, restScale: .8, activeScale: 1, restAlpha: .05, activeAlpha: .2 },
   switch: { width: 146, height: 92, radius: 46, bezelWidth: 19, glassThickness: 47, refractiveIndex: 1.5, profile: 'lip' as const, blur: .2, refraction: 1, specularOpacity: .5, specularSaturation: 6, restScale: .65, activeScale: .9, restAlpha: 1, activeAlpha: .1 },
