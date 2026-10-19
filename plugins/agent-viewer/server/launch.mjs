@@ -8,7 +8,7 @@ const dataDir = process.env.AGENTVIEWER_DATA_DIR ?? join(process.env.APPDATA ?? 
 const configPath = process.env.AGENTVIEWER_CONNECTION_FILE ?? join(dataDir, 'runtime/connection.json');
 try {
   const config = JSON.parse(await readFile(configPath, 'utf8'));
-  if (config.protocolVersion !== '1.0') throw new Error('AgentViewer 协议版本不兼容。');
+  if (config.agentProtocolVersion !== '2.0') throw new Error('请运行当前构建的 AgentViewer；旧公共接口已移除。');
   const serverPath = config.mcpPath ?? join(root, 'dist/mcp/index.mjs');
   if (!existsSync(serverPath)) throw new Error('请先在 AgentViewer 项目执行 npm run build。');
   const child = spawn(process.execPath, [serverPath], { stdio: 'inherit', env: { ...process.env, AGENTVIEWER_CONNECTION_FILE: configPath }, windowsHide: true });

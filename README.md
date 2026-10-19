@@ -1,44 +1,45 @@
 # AgentViewer
 
-面向 Windows 横版桌面的文档工作台。用户与 Agent 共用文档、视图、选区和版本化修改；Electron、HTTP、CLI、MCP 连接同一核心。
+面向 Windows 横版桌面的文档工作台。用户与 Agent 共用真实文档，分别保留视图、位置与选区；编辑核对来源版本，保存明确确认磁盘结果。
+
+## 能力
+
+| 内容 | 工作台能力 |
+| --- | --- |
+| Markdown | 实时/源码/分栏、表格、公式图表、媒体、文件树、资源与转换 |
+| Word / Excel / PPT | 内嵌 Writer / Calc / Impress，文字、单元格、对象、样式、撤销与导出 |
+| HTML | 源码编辑、净化预览与源范围定位 |
+| PDF | 页面阅读、文字层、OCR、页面处理与标记；覆盖标记不是安全涂黑 |
+| 网页 | Chromium 浏览、正文提取、阅读副本与翻译 |
+| AI | 冻结来源、阅读分析、译文、任务与独立批注 |
+
+格式兼容以实际文件的读取、保存重开和导出为准。Markdown 按 [Typora 能力矩阵](docs/editing/refactor.md)对标；功能入口存在不代表任意复杂文件完全保真。
 
 ## 运行
 
-需要 Node.js 24、npm。构建 Windows Office 适配器还需要 Visual Studio Build Tools 的 MSVC x64 工具链。
+需要 Node.js 24、npm。Windows Office 适配器构建需要 MSVC x64 工具链。
 
 ```powershell
 npm.cmd ci
 npm.cmd run dev
-# 或构建后运行
 npm.cmd run build
 npm.cmd start
 ```
 
-`dev:web` 供浏览器预览；真实 Office、网页输入、多窗口和系统输入法需要 Electron 验收。外部引擎准备见[开发与发布](docs/development/README.md)。
+`dev:web` 仅预览网页界面。外部引擎与本机替换见[开发与发行](docs/development/README.md)。数据默认位于 `%APPDATA%\AgentViewer`，与安装目录分离；本地服务默认 `127.0.0.1:3210`。
 
-## 当前实现
+## Agent 接入
 
-| 内容 | 能力 |
-| --- | --- |
-| Markdown | 实时/源码/分栏编辑、可视表格、公式图表、文件工作区、资源批处理、偏好与导入导出 |
-| DOCX / XLSX / PPTX | 内嵌 LibreOffice 编辑、选区属性、查询、保存、撤销及独立导出 |
-| HTML / 网页 | 本地净化预览、Chromium 浏览、坐标输入、阅读副本与翻译 |
-| PDF | 阅读、OCR、增补文字、覆盖式标记、旋转与增页 |
-| AI | 按明确来源分析、选区翻译、独立全文译文与任务协作 |
+应用运行后执行 `npm.cmd run mcp`，打包后也可启动 `node dist/mcp/index.mjs`。插件位于 [plugins/agent-viewer](plugins/agent-viewer)。
 
-本轮实现与实测范围见[测试记录](tests/README.md)，格式保真以保存重开和导出产物为准。Markdown 按[官方 Windows 功能矩阵](docs/editing/refactor.md)逐项对标 Typora；转换使用随包Pandoc，媒体、文件树及资源流程有真实桌面验收；复杂文件兼容以矩阵边界为准。PDF 标记不会删除原文。
+初始工具只有 `av_workspace`、`av_tools`。先取得文档 ref，再按 Markdown、HTML、Word、Excel、PPT、PDF 或网页披露工具；高级包按需加载。工具使用扁平参数，ref 封装内部身份，req 标识同一次逻辑修改。默认修改后读回，保存单独调用。
 
-## 接入与数据
-
-应用运行后执行 `npm.cmd run mcp`；MCP 也可使用 `node dist/mcp/index.mjs`。CLI 示例：`npm.cmd run cli -- context`。插件位于 [plugins/agent-viewer](plugins/agent-viewer)。
-
-数据默认在 `%APPDATA%\AgentViewer`，服务默认监听 `127.0.0.1:3210`；可用 `AGENTVIEWER_DATA_DIR`、`AGENTVIEWER_PORT` 覆盖。恢复采用校验过的内容 blob 与小型清单，旧格式迁移保留备份。源文件冲突拒绝覆盖；新文档须指定保存路径。
+每格式基础与所有高级说明累计按参考 tokenizer 限制在 4500 tokens 内，为宿主预留 500；共享工具另计。`npm.cmd run mcp:budget` 是默认构建门禁。该参考测量尚未认证 Codex 实际工具包装与当前模型 tokenizer，详见 [MCP 协议](docs/automation/mcp.md)。旧公开工具、HTTP 方法和 SDK 别名不保留兼容入口。
 
 ## 文档
 
-- [架构](docs/architecture.md) · [审查与风险](docs/review.md)
-- [编辑能力](docs/editing/README.md) · [Typora 对标与重构](docs/editing/refactor.md)
-- [Office](docs/office/README.md) · [阅读界面](docs/reader/README.md) · [AI](docs/automation/README.md)
+- [架构](docs/architecture.md) · [代码审查](docs/review.md) · [编辑](docs/editing/README.md)
+- [Office](docs/office/README.md) · [阅读界面](docs/reader/README.md) · [AI 与连接](docs/automation/README.md)
 - [性能](docs/performance/README.md) · [开发](docs/development/README.md) · [许可](docs/development/dependencies.md) · [测试](tests/README.md)
 
-每篇完整 Unicode 字符不超过 2000，每模块最多两篇；`npm.cmd run docs:check` 校验清单、长度和链接。历史记录由 Git 保留。
+每篇完整 Unicode 字符≤2000，每功能模块最多两篇；`npm.cmd run docs:check` 校验清单、长度与本地链接。历史由 Git 保存。

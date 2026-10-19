@@ -29,6 +29,17 @@ import { mergeTextDraft, textReplacement } from '../apps/desktop/src/renderer/li
 import { markdownLinks, replaceMarkdownLinks } from '../packages/markdown/src/links';
 import { MarkdownWorkspace } from '../packages/markdown/src/workspace';
 import { AtomicExportSet } from '../apps/desktop/src/main/atomic-export';
+import { AgentSession } from '../packages/sdk/src/agent-session';
+import { AgentMemoryBudget, agentRetainedBytes } from '../packages/sdk/src/agent-memory';
+import { AgentReferences } from '../packages/sdk/src/agent-references';
+import { AgentAnalysisWait } from '../packages/sdk/src/agent-analysis';
+import { AgentClient } from '../packages/sdk/src/client';
+import { officeAuthoringCapabilities } from '../packages/office-runtime/src/authoring';
+import { toolByName } from '../packages/sdk/src/agent-tools';
+import { createAgentMcpServer } from '../apps/local-service/src/mcp-server';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
 async function setup() { const directory = await mkdtemp(join(tmpdir(), 'agentviewer-test-')); const core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json'))); return { directory, core }; }
 async function modify(core: ViewerCore, id: string, operation: EditOperation, key = crypto.randomUUID()) { const patch = core.prepare(id, core.getDocument(id).info.revision, operation); return { patch, receipt: await core.commit(patch.id, key) }; }
@@ -449,6 +460,13 @@ test('任务使用用户固定的快照，继续编辑不会改变提问内容',
   assert.equal(task.snapshotId, snapshot.id); assert.equal(supplied, '提问时正文');
   const other = core.addView(view.documentId);
   await assert.rejects(core.submitTask('test-driver', '错误目标', other.id, snapshot.id), /其他阅读视图/);
+  const driver=core.drivers.get('test-driver')!;let late:((text:string)=>void)|undefined,received=0;
+  const ignored={...driver,submit:async(_prompt:string,_source:typeof snapshot,emit:(text:string)=>void)=>{late=emit;await new Promise<void>(()=>{});}},cancel=new AbortController(),cancelled=new AgentAnalysisWait(cancel.signal);
+  const waiting=cancelled.submit(ignored,'read',snapshot,()=>{received++;});await new Promise<void>(done=>setImmediate(done));cancel.abort();
+  await assert.rejects(waiting,error=>(error as {code:string}).code==='CANCELLED');assert.doesNotThrow(()=>late?.('ignored after cancellation'));assert.equal(received,0);cancelled.dispose();
+  const timeout=new AgentAnalysisWait(undefined,5),timedOut=assert.rejects(timeout.submit(ignored,'read',snapshot,()=>{received++;}),error=>(error as {code:string}).code==='AI_TIMEOUT');
+  await Promise.all([timedOut,new Promise<void>(done=>setTimeout(done,15))]);assert.doesNotThrow(()=>late?.('ignored after timeout'));assert.equal(received,0);timeout.dispose();
+  const callbackFailure=new AgentAnalysisWait();await assert.rejects(callbackFailure.submit({...ignored,submit:async(_prompt,_source,emit)=>{emit('too much');await new Promise<void>(()=>{});}},'read',snapshot,()=>{throw new Error('bounded output failure');}),/bounded output failure/);callbackFailure.dispose();
 });
 
 test('PDF 增补和新增页面实际落盘，旋转页拒绝不支持的文字坐标', async () => {
@@ -468,15 +486,139 @@ test('外部接口不能伪造界面上下文；不支持能力显式失败', as
 test('HTTP 拒绝错误凭据、外部网页 Origin 与角色伪造', async () => {
   const { core, directory } = await setup(); const port = 3299; const runtime = await startServer(core, process.cwd(), directory, port);
   try {
-    assert.equal((await fetch(runtime.endpoint + '/api/state')).status, 401);
-    assert.equal((await fetch(runtime.endpoint + '/api/state', { headers: { Authorization: 'Bearer wrong' } })).status, 401);
-    assert.equal((await fetch(runtime.endpoint + '/api/state', { headers: { Authorization: 'Bearer ' + runtime.token, Origin: 'https://untrusted.example' } })).status, 403);
-    const response = await fetch(runtime.endpoint + '/api/command', { method: 'POST', headers: { Authorization: 'Bearer ' + runtime.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ method: 'report-context', args: { viewId: 'x', actor: 'human' } }) }); assert.equal(response.status, 400); assert.match(await response.text(), /AUTH_SCOPE_DENIED/);
-    core.browser = {} as never;
-    const invalidInput = await fetch(runtime.endpoint + '/v1/browser/input', { method: 'POST', headers: { Authorization: 'Bearer ' + runtime.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ viewId: 'invalid', action: { kind: 'click', x: -1, y: 0 } }) });
-    assert.equal(invalidInput.status, 400); assert.match(await invalidInput.text(), /INVALID_ARGUMENT/);
+    assert.equal((await fetch(runtime.endpoint + '/v2/info')).status, 401);
+    assert.equal((await fetch(runtime.endpoint + '/v2/info', { headers: { Authorization: 'Bearer wrong' } })).status, 401);
+    assert.equal((await fetch(runtime.endpoint + '/v2/info', { headers: { Authorization: 'Bearer ' + runtime.token, Origin: 'https://untrusted.example' } })).status, 403);
+    const headers={Authorization:'Bearer '+runtime.token,'Content-Type':'application/json'};
+    const response=await fetch(runtime.endpoint+'/internal/command',{method:'POST',headers,body:JSON.stringify({method:'report-context',args:{actor:'human'}})});assert.equal(response.status,403);assert.match(await response.text(),/AUTH_SCOPE_DENIED/);
+    assert.equal((await fetch(runtime.endpoint+'/v1/commands/prepare',{method:'POST',headers,body:'{}'})).status,404);
+    const opened=await fetch(runtime.endpoint+'/v2/sessions',{method:'POST',headers,body:JSON.stringify({client:'contract-client',connection:'contract-connection'})}),sessionId=(await opened.json()).session;
+    const invoke=async(name:string,input:unknown,session=sessionId)=>{const response=await fetch(runtime.endpoint+'/v2/tools/'+name,{method:'POST',headers,body:JSON.stringify({session,input})}),result=await response.json();if(!response.ok)throw new Error(result.error.code+': '+result.error.message);return result;};
+    await assert.rejects(invoke('av_read',{ref:'active'}),/TOOL_NOT_LOADED/);
+    await invoke('av_tools',{type:'markdown',pack:'all'});
+    const created=await invoke('av_workspace',{action:'create',type:'markdown',title:'contract.md',text:'# Title\n\nabc abc\n',req:'create'});
+    const firstPage=await invoke('av_read',{ref:created.ref,limit:2});assert.ok(firstPage.cursor);
+    const found=await invoke('av_find',{ref:created.ref,query:'abc',limit:1});assert.equal(found.results.length,1);assert.ok(found.cursor);
+    const duplicate=await invoke('av_workspace',{action:'create',type:'markdown',title:'duplicate.md',text:'# Title\n\nabc abc\n',req:'duplicate'});
+    await assert.rejects(invoke('av_find',{ref:duplicate.ref,query:'abc',limit:1,cursor:found.cursor}),/STALE_CURSOR/,'identical document text does not share a cursor source');
+    const evidence=await invoke('av_evidence',{action:'collect',refs:[created.ref],req:'evidence'}),otherEvidence=await invoke('av_evidence',{action:'collect',refs:[created.ref],req:'other-evidence'});
+    const evidencePage=await invoke('av_find',{ref:evidence.ref,query:'abc',limit:1});assert.ok(evidencePage.cursor);
+    await assert.rejects(invoke('av_find',{ref:otherEvidence.ref,query:'abc',limit:1,cursor:evidencePage.cursor}),/STALE_CURSOR/);
+    const webView=await core.openWeb('https://example.invalid','main',false);
+    core.updateContext(webView.id,{visibleText:'abc abc',locator:{kind:'web-viewport',navigationId:'before'}});
+    const webRef=(await invoke('av_workspace',{})).documents.find((value:{type:string})=>value.type==='web').ref;
+    const webPage=await invoke('av_find',{ref:webRef,query:'abc',limit:1});assert.ok(webPage.cursor);
+    core.updateContext(webView.id,{visibleText:'abc abc',locator:{kind:'web-viewport',navigationId:'after'}});
+    await assert.rejects(invoke('av_find',{ref:webRef,query:'abc',limit:1,cursor:webPage.cursor}),/STALE_CURSOR/,'navigation invalidates cursors even if the visible text is unchanged');
+    const command={ref:found.results[0].ref,text:'中文',req:'replace'};
+    const edited=await invoke('av_md_edit',command);assert.equal(edited.check,'verified');assert.equal(core.getDocument([...core.views.values()][0].documentId).info.model.text,'# Title\n\n中文 abc\n');
+    assert.equal((await invoke('av_md_edit',command)).replayed,true);
+    await assert.rejects(invoke('av_md_edit',{...command,text:'other'}),/REQ_CONFLICT/);
+    await assert.rejects(invoke('av_md_edit',{...command,req:'stale'}),/STALE_REF/);
+    await assert.rejects(invoke('av_read',{ref:created.ref,cursor:firstPage.cursor,limit:2}),/STALE_CURSOR/);
+    await assert.rejects(invoke('av_files',{action:'list',path:directory}),/AUTH_SCOPE_DENIED/);
+    await writeFile(join(directory,'markdown-workspaces.json'),JSON.stringify({roots:[['explicit-root',directory]]}));
+    const saved=await invoke('av_save',{ref:created.ref,path:join(directory,'saved.md'),req:'save'});assert.equal(saved.durability,'saved');assert.equal(await readFile(saved.path,'utf8'),'# Title\n\n中文 abc\n');
+    const isolated=new AgentSession(core,'isolated',directory),mcp=createAgentMcpServer({invoke:(name,input)=>isolated.invoke(name,input)}),client=new Client({name:'catalog-contract',version:'1'}),[clientTransport,serverTransport]=InMemoryTransport.createLinkedPair();let notifications=0;
+    client.setNotificationHandler(ToolListChangedNotificationSchema,async()=>{notifications++;});
+    await mcp.connect(serverTransport);await client.connect(clientTransport);
+    try {
+      assert.deepEqual((await client.listTools()).tools.map(tool=>tool.name),['av_workspace','av_tools']);
+      const loaded=await client.callTool({name:'av_tools',arguments:{type:'markdown',pack:'base'}});assert.ok(!loaded.isError);
+      const names=(await client.listTools()).tools.map(tool=>tool.name);assert.ok(names.includes('av_md_edit'));assert.ok(!names.some(name=>/word|xlsx|ppt|pdf|web_/.test(name)));
+      await new Promise<void>(done=>setImmediate(done));assert.ok(notifications>0);
+      const repeat=await client.callTool({name:'av_tools',arguments:{type:'markdown',pack:'table'}});assert.ok(!JSON.stringify(repeat).includes('Use block/range refs'));
+      await assert.rejects(isolated.invoke('av_read',{ref:created.ref}),/引用已过期/);
+    }finally{await client.close();await mcp.close();await isolated.dispose();}
+    const connect=async(connection:string)=>{const response=await fetch(runtime.endpoint+'/v2/sessions',{method:'POST',headers,body:JSON.stringify({client:'contract-client',connection})});assert.equal(response.status,200);return (await response.json()).session as string;};
+    const close=async(session:string)=>{const response=await fetch(runtime.endpoint+'/v2/sessions/close',{method:'POST',headers,body:JSON.stringify({session})});assert.equal(response.status,200);return response.json();};
+    assert.equal(await connect('contract-connection'),sessionId,'one connection reuses its live session');
+    const secondary=await connect('secondary-connection');assert.notEqual(secondary,sessionId);
+    await assert.rejects(invoke('av_md_edit',command,secondary),/TOOL_NOT_LOADED/);
+    assert.equal(typeof (await invoke('av_tools',{type:'markdown',pack:'base'},secondary)).instructions,'string');
+    await assert.rejects(invoke('av_read',{ref:created.ref},secondary),/STALE_REF/);
+    assert.equal((await close(secondary)).status,'closed');
+    await assert.rejects(invoke('av_workspace',{},secondary),/SESSION_EXPIRED/);
+    assert.equal((await close(secondary)).status,'closed','closing a retired session is idempotent');
+    const reopened=await connect('secondary-connection');assert.notEqual(reopened,secondary);
+    await assert.rejects(invoke('av_md_edit',command,reopened),/TOOL_NOT_LOADED/);
+    assert.equal(typeof (await invoke('av_tools',{type:'markdown',pack:'base'},reopened)).instructions,'string','a new connection receives format instructions again');
+    assert.equal((await close(reopened)).status,'closed');
+    let evidenceSupplied:string|undefined;
+    core.extensions.set('ai-reading-driver',async()=>({driver:{id:'evidence-reader',capabilities:{streaming:true,cancellation:true,attachExistingSession:false},async submit(_prompt:string,source:{document:{model:{text?:string}}},emit:(text:string)=>void){evidenceSupplied=source.document.model.text;emit('frozen evidence analyzed');}}}));
+    const evidenceAi=await invoke('av_ai',{ref:evidence.ref,req:'analyze-frozen-evidence'});let evidenceAiState=await invoke('av_task',{job:evidenceAi.job});
+    for(let attempt=0;evidenceAiState.status==='running'&&attempt<100;attempt++){await new Promise<void>(done=>setTimeout(done,1));evidenceAiState=await invoke('av_task',{job:evidenceAi.job});}
+    assert.equal(evidenceAiState.status,'completed');assert.equal(evidenceAiState.effect,'none');assert.equal(evidenceSupplied,'# Title\n\nabc abc\n','AI accepts an evidence ref and reads its frozen content after live edits');
+    const evidenceAiResult=JSON.parse((await invoke('av_task',{job:evidenceAi.job,action:'result'})).text);assert.equal(evidenceAiResult.output,'frozen evidence analyzed');assert.equal(evidenceAiResult.sourceDocumentsModified,false);
+    let lateAi:((text:string)=>void)|undefined;
+    core.extensions.set('ai-reading-driver',async()=>({driver:{id:'ignores-cancel',capabilities:{streaming:true,cancellation:false,attachExistingSession:false},async submit(_prompt:string,_source:unknown,emit:(text:string)=>void){lateAi=emit;await new Promise<void>(()=>{});}}}));
+    const ai=await invoke('av_ai',{ref:created.ref,req:'cancel-read-only-ai'});
+    for(let attempt=0;!lateAi&&attempt<100;attempt++)await new Promise<void>(done=>setTimeout(done,1));assert.equal(typeof lateAi,'function');
+    await invoke('av_task',{job:ai.job,action:'cancel'});let aiState=await invoke('av_task',{job:ai.job});
+    for(let attempt=0;aiState.status==='running'&&attempt<100;attempt++){await new Promise<void>(done=>setTimeout(done,1));aiState=await invoke('av_task',{job:ai.job});}
+    assert.equal(aiState.status,'cancelled');assert.equal(aiState.effect,'none');assert.equal(aiState.error.code,'CANCELLED');assert.doesNotThrow(()=>lateAi?.('ignored late result'));
+    let closedAiSession=await close(sessionId);
+    for(let attempt=0;closedAiSession.status==='draining'&&attempt<100;attempt++){await new Promise<void>(done=>setTimeout(done,5));closedAiSession=await close(sessionId);}
+    assert.equal(closedAiSession.status,'closed','cancelled pure AI never keeps session disposal waiting for its provider');
+    await assert.rejects(invoke('av_workspace',{}),/SESSION_EXPIRED/);
+    const matrix=[[12.5,false,null,'=SUM(A1:A2)','中文']];
+    const writeSchema=toolByName.get('av_xlsx_write')!.schema;
+    const parsedWrite=writeSchema.parse({ref:'range',req:'matrix',rows:matrix});assert.ok('rows' in parsedWrite);assert.deepEqual(parsedWrite.rows,matrix);
+    for(const value of [Infinity,NaN,{}])assert.equal(writeSchema.safeParse({ref:'range',req:'invalid',rows:[[value]]}).success,false);
+    const budgetCore={},firstBudget=new AgentMemoryBudget(budgetCore,{sessionBytes:80,coreBytes:100}),secondBudget=new AgentMemoryBudget(budgetCore,{sessionBytes:80,coreBytes:100});
+    const firstReservation=firstBudget.reserve('retained',60),secondReservation=secondBudget.reserve('retained',30);
+    assert.throws(()=>secondReservation.increment(20),error=>(error as {code:string}).code==='AGENT_MEMORY_LIMIT');
+    assert.equal(secondReservation.bytes,30);assert.equal(secondBudget.usage().coreBytes,90,'failed reservations leave the aggregate unchanged');
+    firstReservation.release();firstReservation.release();secondReservation.increment(40);
+    assert.equal(secondBudget.usage().coreBytes,70);
+    secondBudget.dispose();secondBudget.dispose();assert.equal(firstBudget.usage().coreBytes,0);
+    assert.throws(()=>secondBudget.reserve('closed',1),error=>(error as {code:string}).code==='AGENT_SESSION_CLOSED');
+    assert.throws(()=>secondReservation.increment(1),error=>(error as {code:string}).code==='AGENT_MEMORY_RELEASED');
+    firstBudget.reserve('reused',80);firstBudget.dispose();assert.equal(firstBudget.usage().coreBytes,0);
+    const buffer=new Uint8Array(4096);assert.ok(agentRetainedBytes(buffer.subarray(0,1))>=buffer.byteLength,'a retained slice still owns its backing buffer');
+    let retained=0;const references=new AgentReferences(delta=>{retained+=delta;});
+    assert.throws(()=>references.put({documentId:'d',viewId:'v',format:'markdown',kind:'text',native:{uncloneable:()=>{}}}));
+    assert.throws(()=>references.continue('source','query',{uncloneable:()=>{}}));assert.equal(retained,0,'clone failures do not retain memory charges or cursors');
+    const previousConnection=process.env.AGENTVIEWER_CONNECTION_FILE,sdk=new AgentClient('cache-client','cache-connection');
+    try {
+      process.env.AGENTVIEWER_CONNECTION_FILE=join(directory,'missing-connection.json');
+      await assert.rejects(sdk.execute('av_workspace',{}),/ENOENT/);
+      process.env.AGENTVIEWER_CONNECTION_FILE=join(directory,'runtime/connection.json');
+      await sdk.execute('av_workspace',{});
+      const sdkConnection=await fetch(runtime.endpoint+'/v2/sessions',{method:'POST',headers,body:JSON.stringify({client:sdk.clientId,connection:sdk.connectionId})}),sdkSession=(await sdkConnection.json()).session;
+      await close(sdkSession);
+      await assert.rejects(sdk.execute('av_workspace',{}),error=>(error as {code:string}).code==='SESSION_EXPIRED');
+      await sdk.execute('av_workspace',{});
+    } finally {await sdk.close();if(previousConnection===undefined)delete process.env.AGENTVIEWER_CONNECTION_FILE;else process.env.AGENTVIEWER_CONNECTION_FILE=previousConnection;}
+    const persistenceEntered=editGate(),persistenceRelease=editGate(),pendingCore=new ViewerCore({load:async()=>undefined,save:async()=>{persistenceEntered.resolve();await persistenceRelease.promise;}});
+    const pendingSession=new AgentSession(pendingCore,'pending-client',directory),otherConnection=new AgentSession(pendingCore,'pending-client',directory);
+    await pendingSession.invoke('av_tools',{type:'markdown',pack:'base'});
+    const pendingInput={action:'create',type:'markdown',title:'cancelled.md',text:'never created',req:'cancel-before-effect'},creating=pendingSession.invoke('av_workspace',pendingInput);
+    const cancelled=assert.rejects(creating,error=>(error as {name:string}).name==='AbortError');
+    try {
+      await persistenceEntered.promise;
+      const replay=await otherConnection.invoke('av_workspace',pendingInput) as {status:string;effect:string;reconcile:boolean;reason:string};
+      assert.equal(replay.status,'unknown');assert.equal(replay.effect,'unknown');assert.equal(replay.reconcile,true);assert.equal(replay.reason,'connection-result-unavailable');
+      const job=pendingSession.jobs.values().next().value!;
+      await pendingSession.invoke('av_task',{job:job.id,action:'cancel'});persistenceRelease.resolve();await cancelled;
+      assert.equal(job.status,'cancelled');assert.equal(job.effect,'none');assert.equal(pendingCore.documents.size,0,'cancellation during durable intent must stop before the document effect');
+    } finally {persistenceRelease.resolve();await Promise.all([pendingSession.dispose(),otherConnection.dispose()]);}
+    const capabilityCore=new ViewerCore({load:async()=>undefined,save:async()=>{}}),capabilityView=await capabilityCore.openBytes('capabilities.docx',await blankBytes('docx'),'docx'),capabilitySession=new AgentSession(capabilityCore,'capability-client',directory);
+    let capabilityQueries=0,failCapability=true;
+    capabilityCore.queryOfficeAuthoring=async(viewId,query)=>{assert.equal(query.kind,'capabilities');capabilityQueries++;await Promise.resolve();if(failCapability)throw new Error('capability unavailable');return {state:{sessionId:'capabilities',documentId:capabilityView.documentId,viewId,format:'docx',engineEpoch:'capabilities',engineRevision:0,dirty:false},data:officeAuthoringCapabilities('docx')};};
+    try {
+      const unbound=await capabilitySession.invoke('av_tools',{type:'docx',pack:'read'}) as {capabilities?:unknown};assert.equal(unbound.capabilities,undefined);assert.equal(capabilityQueries,0);
+      const capabilityRef=(await capabilitySession.invoke('av_workspace',{}) as {documents:{ref:string}[]}).documents[0].ref;
+      await assert.rejects(capabilitySession.invoke('av_tools',{ref:capabilityRef,pack:'base'}),/capability unavailable/);assert.equal(capabilitySession.loaded.has('av_word_read'),false);
+      failCapability=false;
+      const disclosed=await Promise.all(['base','table'].map(pack=>capabilitySession.invoke('av_tools',{ref:capabilityRef,pack}) as Promise<{capabilities?:unknown}>));
+      assert.equal(disclosed.filter(value=>value.capabilities).length,1,'concurrent packs disclose native capabilities once');
+      assert.deepEqual(disclosed.find(value=>value.capabilities)!.capabilities,officeAuthoringCapabilities('docx'));
+      const queryCount=capabilityQueries;await capabilitySession.invoke('av_tools',{ref:capabilityRef,pack:'layout'});assert.equal(capabilityQueries,queryCount);
+    } finally {await capabilitySession.dispose();}
     core.event('qa.sse.before',{});const cursor=core.eventLog.at(-1)!.seq;core.event('qa.sse.after',{});
-    const stream=await fetch(runtime.endpoint+'/api/events?after=0',{headers:{Authorization:'Bearer '+runtime.token,'Last-Event-ID':String(cursor)},signal:AbortSignal.timeout(2000)}),reader=stream.body!.getReader();
+    const bootstrap=await fetch(runtime.endpoint+'/internal/bootstrap'),cookie=bootstrap.headers.get('set-cookie')!.split(';')[0];
+    const stream=await fetch(runtime.endpoint+'/internal/events?after=0',{headers:{Cookie:cookie,'Last-Event-ID':String(cursor)},signal:AbortSignal.timeout(2000)}),reader=stream.body!.getReader();
     let replay='';try{while(!replay.includes('\n\n')){const chunk=await reader.read();if(chunk.done)break;replay+=new TextDecoder().decode(chunk.value);}}finally{await reader.cancel();}
     assert.match(replay,new RegExp('id: '+(cursor+1)+'\\n'));assert.match(replay,/qa\.sse\.after/);assert.doesNotMatch(replay,/qa\.sse\.before/,'SSE reconnect cursor does not replay previously delivered events');
   } finally { await new Promise<void>(resolve => runtime.server.close(() => resolve())); }

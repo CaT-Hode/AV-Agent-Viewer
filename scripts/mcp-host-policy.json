@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "requiredHost": "codex-desktop",
+  "formatLimit": 5000,
+  "exactTokenizers": [],
+  "note": "No exact tokenizer/model-visible serialization mapping for the current Codex model has been verified. Reference BPE profiles cannot certify a release. Add an entry only with independently captured official-model and desktop serialization evidence."
+}

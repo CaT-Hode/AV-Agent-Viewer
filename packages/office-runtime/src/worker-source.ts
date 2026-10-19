@@ -2,6 +2,7 @@
 import { nativeOfficeAccessibilitySource } from './accessibility-source';
 import { nativeOfficeAppearanceSource } from './appearance-source';
 import { nativeOfficeStyleSource } from './native-style-source';
+import { officeAuthoringSource } from './authoring-source';
 const nativeOfficeWorkerBody = String.raw`
 import base64, ctypes as C, hashlib, io, json, math, os, pathlib, queue, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse, uuid, zipfile, zlib
 import xml.etree.ElementTree as ET
@@ -452,6 +453,10 @@ def ppt_set_shape_text(session,view,op,args):
     # Viewless SvxShapeText::setString updates an Nbc text copy without native
     # document undo/modify notifications. Use the same real Outliner transaction
     # as selection replacement, after binding the entire actual top-level shape.
+    if args.get('background') or args.get('actor','agent')=='agent':
+        page,shape=mapped_shape(session,op['slideId'],op['shapeId']);index=mapped_slide(session,op['slideId'])[1];position=next((position for position in range(page.getCount()) if page.getByIndex(position)==shape),None)
+        if position is None:fail('INVALID_TARGET','原生顶层文字对象已经变化。')
+        return authoring_replace_slide_text(session,view,{'slideIndex':index,'objectPath':[position],'expectedText':shape.getText().getString(),'text':op['text']},args)
     for candidate in session['views'].values():
         if candidate.get('disposed'):continue
         cached=candidate.get('accessibilityCache',{}).get('data')
@@ -654,13 +659,30 @@ def excel_cell_formula(session,cell):
     except:fail('NATIVE_FORMULA_READ_FAILED','原生公式无法按 Excel 语法读取。')
 
 def query_cell_range(session,cells):
-    address=cells.getRangeAddress();formulas=[];errors=[]
+    address=cells.getRangeAddress();formulas=[];errors=[];kinds=[];logical=[];values=[list(row) for row in cells.getDataArray()];formats={}
     for row in range(address.EndRow-address.StartRow+1):
-        formula_row=[];error_row=[]
+        formula_row=[];error_row=[];kind_row=[];logical_row=[]
         for column in range(address.EndColumn-address.StartColumn+1):
             cell=cells.getCellByPosition(column,row);formula_row.append(excel_cell_formula(session,cell));error_row.append(int(cell.getError()))
-        formulas.append(formula_row);errors.append(error_row)
-    return {'values':cells.getDataArray(),'formulas':formulas,'errors':errors}
+            kind=cell.getType().value
+            numeric=kind=='VALUE';result_type=None
+            if kind=='FORMULA':
+                try:result_type=cell.getPropertyValue('FormulaResultType').value;numeric=result_type=='VALUE'
+                except:pass
+            if numeric:
+                key=int(cell.NumberFormat)
+                if key not in formats:formats[key]=int(session['doc'].getNumberFormats().getByKey(key).Type)
+                is_logical=bool(formats[key]&constant('com.sun.star.util.NumberFormat.LOGICAL',1024))
+            else:is_logical=None if kind=='FORMULA' and result_type is None else False
+            if cell.getError():is_logical=False
+            if is_logical and cell.getValue() in [0.,1.]:values[row][column]=bool(cell.getValue())
+            kind_row.append('formula' if kind=='FORMULA' else 'logical' if is_logical else {'EMPTY':'empty','VALUE':'number','TEXT':'text'}.get(kind,'unknown'))
+            logical_row.append(is_logical)
+        formulas.append(formula_row);errors.append(error_row);kinds.append(kind_row);logical.append(logical_row)
+    # Calc ISLOGICAL(reference) checks numeric native content plus LOGICAL
+    # number format. FormulaResultType keeps text/error formulas from becoming
+    # booleans. Noncanonical numeric values (e.g. 42 with BOOLEAN) stay intact.
+    return {'values':values,'formulas':formulas,'errors':errors,'kinds':kinds,'logical':logical,'logicalCoverage':'native-number-format'}
 
 def query(session,view,target):
     doc=session['doc'];kind=target['kind'];controller=view['controller']
@@ -887,6 +909,7 @@ def execute_operation(session,view,op,args=None):
                 for c,text in enumerate(row):table.getCellByName(letter(c)+str(r+1)).String=text
         elif kind=='word.setPageLayout':
             if op.get('sectionIndex',0)!=0:fail('NATIVE_OPERATION_UNSUPPORTED','当前原生页设置需要具体页面样式目标。')
+            if args and (args.get('background') or args.get('actor','agent')=='agent'):fail('BACKGROUND_EDIT_UNSUPPORTED','后台页面布局必须指定 pageStyleName，不读取人类光标所在页面样式。')
             style=doc.getStyleFamilies().getByName('PageStyles').getByName(view['controller'].getViewCursor().PageStyleName)
             if 'orientation' in op:
                 landscape=op['orientation']=='landscape';style.IsLandscape=landscape
@@ -936,7 +959,9 @@ def execute_operation(session,view,op,args=None):
         elif kind=='sheets.deleteWorksheet':
             if sheets.getCount()<=1:fail('INVALID_TARGET','工作簿必须保留至少一个工作表。')
             sheets.removeByName(sheet.Name)
-        elif kind=='sheets.setFreeze':view['controller'].setActiveSheet(sheet);view['controller'].freezeAtPosition(op['columns'],op['rows'])
+        elif kind=='sheets.setFreeze':
+            if args and (args.get('background') or args.get('actor','agent')=='agent'):fail('BACKGROUND_EDIT_UNSUPPORTED','冻结窗格依赖视图控制器，后台执行不会切换人类工作表。')
+            view['controller'].setActiveSheet(sheet);view['controller'].freezeAtPosition(op['columns'],op['rows'])
         elif kind=='sheets.setAutoFilter':
             if not op.get('range'):fail('INVALID_TARGET','原生筛选需要明确区域。')
             target=checked_range(sheet,op['range']);name='AgentViewerFilter'+str(target.getRangeAddress().Sheet);ranges=doc.DatabaseRanges
@@ -956,13 +981,14 @@ def execute_operation(session,view,op,args=None):
             shape=doc.createInstance('com.sun.star.drawing.TextShape');shape.Position=uno.createUnoStruct('com.sun.star.awt.Point',round(op['x']*page.Width),round(op['y']*page.Height));shape.Size=uno.createUnoStruct('com.sun.star.awt.Size',round(op['width']*page.Width),round(op['height']*page.Height));page.add(shape);shape.String=op['text']
         elif kind=='slides.deleteShape':page.remove(mapped_shape(session,op['slideId'],op['shapeId'])[1])
         elif kind=='slides.addSlide':
-            after=mapped_slide(session,op['afterSlideId'])[1] if op.get('afterSlideId') else pages.getCount()-1;new=pages.insertNewByIndex(after+1)
+            after=mapped_slide(session,op['afterSlideId'])[1] if op.get('afterSlideId') else pages.getCount()-1;new=pages.insertNewByIndex(after)
             if op.get('title'):
                 shape=doc.createInstance('com.sun.star.drawing.TextShape');shape.Position=uno.createUnoStruct('com.sun.star.awt.Point',1000,1000);shape.Size=uno.createUnoStruct('com.sun.star.awt.Size',new.Width-2000,3000);new.add(shape);shape.String=op['title']
         elif kind=='slides.deleteSlide':
             if pages.getCount()<=1:fail('INVALID_TARGET','演示文稿必须保留至少一页。')
             pages.remove(page)
         elif kind=='slides.duplicateSlide':doc.duplicate(page)
+        elif kind=='slides.moveSlide':authoring_move_slide(session,view,index,op['index'])
         elif kind=='slides.setBackground':background=doc.createInstance('com.sun.star.drawing.Background');background.FillStyle=uno.Enum('com.sun.star.drawing.FillStyle','SOLID');background.FillColor=int(op['color'],16);page.Background=background
         elif kind=='slides.setNotes':
             notes=page.getNotesPage();found=[notes.getByIndex(i) for i in range(notes.getCount()) if notes.getByIndex(i).ShapeType=='com.sun.star.presentation.NotesShape']
@@ -1346,6 +1372,8 @@ try:
                 elif method=='commands':result=commands(session,view)
                 elif method=='commandStatus':result=command_status(view,args['command'])
                 elif method=='query':result=query(session,view,args['target'])
+                elif method=='authoringQuery':result=authoring_query_request(session,view,args)
+                elif method=='authoringExecute':result=authoring_execute(session,view,args)
                 elif method=='input':
                     key='input:'+args['idempotencyKey'];signature=hashlib.sha256(json.dumps(args,sort_keys=True,ensure_ascii=False).encode()).hexdigest();prior=session['requests'].get(key)
                     if prior:
@@ -1458,4 +1486,4 @@ finally:
                 if attempt==4:emit({'type':'diagnostic','code':'NATIVE_PROFILE_RETAINED'})
                 else:time.sleep(.15)
 `;
-export const nativeOfficeWorkerSource = nativeOfficeAccessibilitySource + '\n' + nativeOfficeWorkerBody.replace('\nsessions={};', '\n' + nativeOfficeAppearanceSource + '\n' + nativeOfficeStyleSource + '\nsessions={};');
+export const nativeOfficeWorkerSource = nativeOfficeAccessibilitySource + '\n' + nativeOfficeWorkerBody.replace('\nsessions={};', '\n' + nativeOfficeAppearanceSource + '\n' + nativeOfficeStyleSource + '\n' + officeAuthoringSource + '\nsessions={};');

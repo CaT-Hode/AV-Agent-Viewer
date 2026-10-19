@@ -33,22 +33,44 @@ function tableContextFragment(fragment: TreeFragment, input: Input): TreeFragmen
   return end <= fragment.from ? undefined : new TreeFragment(fragment.from, end, fragment.tree, fragment.offset, fragment.openStart, true);
 }
 
+function lineBoundaryFragment(fragment: TreeFragment, input: Input): TreeFragment | undefined {
+  const end = Math.min(fragment.to, input.length), smallStart = Math.max(0, end - 256);
+  const small = input.read(smallStart, end), last = small.lastIndexOf('\n');
+  let boundary = last < 0 ? -1 : smallStart + last + 1;
+  if (boundary < 0 && smallStart > 0) {
+    const start = Math.max(0, end - fragmentLineBudget);
+    const previous = input.read(start, smallStart).lastIndexOf('\n');
+    if (previous >= 0) boundary = start + previous + 1;
+    else if (start > 0) {
+      // A huge final paragraph cannot be reused, but the earlier complete
+      // blocks can. The old tree locates that block without copying/scanning
+      // its multi-megabyte line. Confirm the real input still has its boundary.
+      let block = fragment.tree.resolveInner(end + fragment.offset, -1);
+      while (block.parent?.parent) block = block.parent;
+      const from = block.from - fragment.offset;
+      if (from > fragment.from && from <= end && input.read(from - 1, from) === '\n') boundary = from;
+    }
+  }
+  if (boundary <= fragment.from) return undefined;
+  // FragmentCursor itself discards everything after this same last newline.
+  // Shortening only that unusable tail preserves its reuse limit, while its
+  // backwards search now performs a single read rather than one per character.
+  return boundary === fragment.to ? fragment : new TreeFragment(fragment.from, boundary, fragment.tree, fragment.offset, fragment.openStart, fragment.openEnd);
+}
+
 /** Lezer Markdown searches backwards from each reused fragment's end one
  * character at a time to find a line boundary. A changed multi-megabyte line
  * cannot reuse its paragraph, but that search still performs millions of rope
- * reads. Discard only fragments with an unbounded trailing line; the original
- * parser then reparses them with exactly the same grammar and mixed parsers. */
+ * reads. Trim unusable line tails and preserve safe earlier blocks; the original
+ * parser then reparses the changed blocks with the same grammar/mixed parsers. */
 export class BoundedMarkdownParser extends Parser {
   constructor(private readonly inner: Parser) { super(); }
 
   createParse(input: Input, fragments: readonly TreeFragment[], ranges: readonly { from: number; to: number }[]): PartialParse {
     const reusable = fragments.flatMap(fragment => {
-      const end = Math.min(fragment.to, input.length);
-      if (end > fragmentLineBudget && !input.read(Math.max(0, end - 256), end).includes('\n') && !input.read(end - fragmentLineBudget, end).includes('\n')) return [];
-      // Normal lines need only a small read. No newline in the bounded tail
-      // means reuse would trigger the upstream per-character backwards scan.
       const startSafe = codeIndentationFragment(fragment);
-      const safe = startSafe && tableContextFragment(startSafe, input); return safe ? [safe] : [];
+      const contextSafe = startSafe && tableContextFragment(startSafe, input);
+      const safe = contextSafe && lineBoundaryFragment(contextSafe, input); return safe ? [safe] : [];
     });
     return this.inner.startParse(input, reusable, ranges);
   }

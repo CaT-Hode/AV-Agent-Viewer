@@ -122,14 +122,14 @@ export async function markdownResource(core: ViewerCore, documentId: string, sou
   const bytes = await readFile(target), [mime] = imageType(bytes);
   return { url: `data:${mime};base64,${bytes.toString('base64')}` };
 }
-export async function importMarkdownImage(core: ViewerCore, input: { documentId: string; name: string; mimeType: string; bytes?: number[]; dataUrl?: string }) {
+export async function importMarkdownImage(core: ViewerCore, input: { documentId: string; name: string; mimeType: string; bytes?: number[] | Uint8Array; dataUrl?: string }) {
   const document = markdownDocument(core, input.documentId);
   let bytes: Buffer;
   if (typeof input.dataUrl === 'string') {
     if (input.dataUrl.length > imageLimit * 1.4 || !/^data:image\/[a-z+.-]+;base64,[a-z\d+/=\r\n]+$/i.test(input.dataUrl)) return fail('图片数据无效或超过32MiB。');
     bytes = Buffer.from(input.dataUrl.slice(input.dataUrl.indexOf(',') + 1), 'base64');
   } else {
-    if (!Array.isArray(input.bytes) || input.bytes.length === 0 || input.bytes.length > imageLimit || input.bytes.some(value => !Number.isInteger(value) || value < 0 || value > 255)) return fail('图片内容为空、过大或格式无效。');
+    if (!(input.bytes instanceof Uint8Array) && !Array.isArray(input.bytes) || !input.bytes || input.bytes.length === 0 || input.bytes.length > imageLimit || !(input.bytes instanceof Uint8Array) && input.bytes.some(value => !Number.isInteger(value) || value < 0 || value > 255)) return fail('图片内容为空、过大或格式无效。');
     bytes = Buffer.from(input.bytes);
   }
   if (bytes.byteLength > imageLimit) return fail('图片超过32MiB。');

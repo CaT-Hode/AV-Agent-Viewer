@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx scripts/dev.ts",
     "dev:web": "tsx apps/local-service/src/dev.ts",
-    "build": "node scripts/check-docs.mjs && tsc --noEmit && node scripts/build.mjs && vite build",
+    "build": "node scripts/check-docs.mjs && npm run mcp:budget && tsc --noEmit && node scripts/build.mjs && vite build",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
     "docs:check": "node scripts/check-docs.mjs",
@@ -19,10 +19,13 @@
     "engines:prepare": "node scripts/prepare-engines.mjs",
     "engines:stage": "node scripts/stage-engines.mjs",
     "engines:bootstrap": "tsx scripts/generate-office-bootstrap-seed.ts",
-    "package:portable": "npm run build && npm run engines:prepare && npm run engines:stage && npm run engines:bootstrap && electron-builder --win --x64 --dir --publish never",
+    "package:portable": "npm run mcp:host-check && npm run build && npm run engines:prepare && npm run engines:stage && npm run engines:bootstrap && electron-builder --win --x64 --dir --publish never",
     "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1",
     "mcp": "tsx apps/local-service/src/mcp.ts",
-    "cli": "tsx packages/sdk/src/cli.ts"
+    "cli": "tsx packages/sdk/src/cli.ts",
+    "mcp:budget": "node --import tsx scripts/check-mcp-budget.mjs",
+    "mcp:host-probe": "node scripts/probe-codex-discovery.mjs --code-mode --incremental",
+    "mcp:host-check": "npm run mcp:budget && node scripts/check-mcp-host.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -50,7 +53,9 @@
     "jszip": "^3.10.1",
     "lucide-react": "*",
     "mathjax-full": "^3.2.2",
+    "mdast-util-gfm": "3.1.0",
     "mermaid": "^12.2.0",
+    "micromark-extension-gfm": "3.0.0",
     "micromark-util-chunked": "^2.0.1",
     "micromark-util-classify-character": "^2.0.1",
     "micromark-util-resolve-all": "^2.0.1",
@@ -84,6 +89,7 @@
     "electron": "44.7.0",
     "electron-builder": "^26.15.3",
     "esbuild": "*",
+    "js-tiktoken": "1.0.21",
     "mdast-util-from-markdown": "^2.1.0",
     "micromark-util-types": "^2.0.3",
     "playwright": "*",

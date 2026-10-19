@@ -7,6 +7,7 @@ import { officeKitUpdatePolicySource } from './kit-update-policy-source';
 import { officeKitDialogSource } from './kit-dialog-source';
 import { officeKitLocaleResourceSource } from './locale-resource-source';
 import { officeKitBinarySource } from './kit-binary-source';
+import { officeAuthoringSource } from './authoring-source';
 
 /** Trusted shared definitions only: never execute the HWND worker's top level. */
 export const officeKitSharedDefinitions = [
@@ -33,8 +34,8 @@ class KitRequestQueue:
     # Only disposable observations may move around input. Explicit snapshots,
     # layouts, lifecycle calls and model writes remain ordering fences. A job
     # that has started is never interrupted or restarted by this scheduler.
-    reads={'state','surfaceState','office-surface-state','observeState','inspect','commandStatus','commandStatuses','surfaceTiles','office-surface-tiles'}
-    interactions={'surfaceInput','office-surface-input','surfaceWindowInput','office-surface-window-input','surfaceWindowAction','office-surface-window-action','surfaceWindowClose','office-surface-window-close','execute','dispatch','input','navigate','navigation','undo'}
+    reads={'state','surfaceState','office-surface-state','observeState','inspect','authoringQuery','commandStatus','commandStatuses','surfaceTiles','office-surface-tiles'}
+    interactions={'surfaceInput','office-surface-input','surfaceWindowInput','office-surface-window-input','surfaceWindowAction','office-surface-window-action','surfaceWindowClose','office-surface-window-close','execute','authoringExecute','dispatch','input','navigate','navigation','undo'}
     def __init__(self,maxsize=64):self.maxsize=maxsize;self.items=[];self.pending=0;self.condition=threading.Condition();self.burst=0
     def put(self,value):
         with self.condition:
@@ -483,7 +484,7 @@ def state(session,view):
     bounds=view.get('bounds',{'x':0,'y':0,'width':0,'height':0});visibleArea=view.get('visibleTwips',{'x':0,'y':0,'width':0,'height':0});viewport=view.get('viewportCss',{'width':0,'height':0});scrollGeometry=surface_scroll_geometry(session,view);scroll=scrollGeometry['scroll'] if scrollGeometry else {axis:visibleArea[axis]*view.get('zoom',1)/15 for axis in ['x','y']}
     if selected['kind']!='none' and view.get('selectionRects'):
         rectangle=view['selectionRects'][0];factor=view.get('zoom',1)/15;origin=view.get('documentOriginCss',{'x':max(0,(viewport['width']-size['width']*factor)/2)-visibleArea['x']*factor,'y':-visibleArea['y']*factor});selected['rect']={'x':rectangle['x']*factor+origin['x'],'y':rectangle['y']*factor+origin['y'],'width':rectangle['width']*factor,'height':rectangle['height']*factor}
-    supported=['office.formatText','office.setTextStyle','word.setBlock','word.setParagraphFormat','word.insertParagraph','word.deleteParagraph','word.insertTable','word.setPageLayout'] if session['format']=='docx' else ['slides.setText','slides.setShapeBounds','slides.setShapeStyle','slides.addTextShape','slides.deleteShape','slides.addSlide','slides.deleteSlide','slides.duplicateSlide','slides.setBackground','slides.setNotes','office.formatText','office.setTextStyle'] if session['format']=='pptx' else ['sheets.setCell','sheets.setRangeValues','sheets.setCellFormat','sheets.setRangeFormat','sheets.mergeCells','sheets.unmergeCells','sheets.insertRows','sheets.deleteRows','sheets.insertColumns','sheets.deleteColumns','sheets.setColumnWidth','sheets.setRowHeight','sheets.addWorksheet','sheets.renameWorksheet','sheets.deleteWorksheet','sheets.setFreeze','sheets.setAutoFilter','sheets.sortRange']
+    supported=['office.formatText','office.setTextStyle','word.setBlock','word.setParagraphFormat','word.insertParagraph','word.deleteParagraph','word.insertTable','word.setPageLayout'] if session['format']=='docx' else ['slides.setText','slides.setShapeBounds','slides.setShapeStyle','slides.addTextShape','slides.deleteShape','slides.addSlide','slides.deleteSlide','slides.duplicateSlide','slides.moveSlide','slides.setBackground','slides.setNotes','office.formatText','office.setTextStyle'] if session['format']=='pptx' else ['sheets.setCell','sheets.setRangeValues','sheets.setCellFormat','sheets.setRangeFormat','sheets.mergeCells','sheets.unmergeCells','sheets.insertRows','sheets.deleteRows','sheets.insertColumns','sheets.deleteColumns','sheets.setColumnWidth','sheets.setRowHeight','sheets.addWorksheet','sheets.renameWorksheet','sheets.deleteWorksheet','sheets.setFreeze','sheets.setAutoFilter','sheets.sortRange']
     result=dict(sessionId=session['sessionId'],documentId=session['documentId'],viewId=view['viewId'],format=session['format'],revision=session['revision'],status='ready',surfaceKind='tiled',engineEpoch=epoch,engineRevision=session['engineRevision'],selectionEpoch=view['selectionEpoch'],dirty=native_dirty,unsavedContentChanges=bool(session['unsavedContentChanges']),supportedOperations=supported,selectionActions=selection_actions(session,view,selected),nativeHwnd='0',nativePid=os.getpid(),nativeGeometry=bool(view.get('layoutReady')),visible=bool(view.get('visible')),focused=bool(view.get('focused')),pendingInput=native_input_pending(session,view),actor=view.get('actor',session.get('actor','human')),zoom=view.get('zoom',1),viewport={'width':viewport['width'],'height':viewport['height'],'deviceScaleFactor':view_scale(view),'bounds':bounds,'screenBounds':bounds,'layoutRevision':view['layoutRevision'],'scrollX':scroll['x'],'scrollY':scroll['y']},selection=selected,visibleText=visible,visibleTextReady=ready,visibleTextSource='actual-model-projection' if ready else 'unavailable',visibleTextTruncated=truncated,undo=undo_state(session),nativeUi={'menus':False,'toolbars':False,'statusbar':False,'sidebar':False},sizeTwips=size,parts=parts_state(session),partIndex=doc_call(session,'getPart',I)(),pages=page_rectangles(session),layoutRevision=view['layoutRevision'],renderGeneration=view['renderGeneration'],eventSequence=view['eventSequence'],selectionRects=view.get('selectionRects',[]),windows=list(view['windows'].values()),warnings=['XLSX_NATIVE_COLUMN_WIDTH_METRICS'] if session['format']=='xlsx' else [])
     result['inputState']=native_input_state(session,view)
     if session['format']=='pptx' and result['inputState']['editing']=='text':result['textHistory']={'canUndo':command_status(view,'.uno:Undo')['enabled'],'canRedo':command_status(view,'.uno:Redo')['enabled']}
@@ -1128,6 +1129,8 @@ def handle_request(request):
     if method=='commandStatus':return command_status(view,args['command'])
     if method=='commandStatuses':return command_statuses(session,view,args)
     if method=='query':return query(session,view,args['target'])
+    if method=='authoringQuery':return authoring_query_request(session,view,args)
+    if method=='authoringExecute':return authoring_execute(session,view,args)
     if method=='inspect':
         # No yields between the values and their selection/version receipt.
         initial=state(session,view);lease=(initial['engineRevision'],initial['selectionEpoch'])
@@ -1237,7 +1240,11 @@ finally:
         try:close_warmup_document()
         except:emit({'type':'diagnostic','code':'OFFICE_WARMUP_CLEANUP_FAILED'})
     if rpc:
-        try:rpc.shutdown(socket.SHUT_RDWR)
+        # RpcPump has synchronously sendall'ed the shutdown acknowledgement.
+        # A normal Windows close must send its queued bytes before FIN; closing
+        # the receive half here can reset the peer before it reads that reply.
+        # Unexpected exits still abort both halves and remain transport errors.
+        try:rpc.shutdown(socket.SHUT_WR if quitting else socket.SHUT_RDWR)
         except:pass
         try:rpc.close()
         except:pass
@@ -1254,5 +1261,5 @@ finally:
 export const officeKitWorkerSource = preamble
   + '\nSHARED_SOURCE_BASE64=' + JSON.stringify(Buffer.from(nativeOfficeWorkerSource).toString('base64'))
   + '\nSHARED_DEFINITIONS=' + JSON.stringify(officeKitSharedDefinitions)
-  + '\n' + sharedLoader + '\n' + nativeOfficeStyleSource + '\n' + nativeOfficeAppearanceSource
+  + '\n' + sharedLoader + '\n' + nativeOfficeStyleSource + '\n' + nativeOfficeAppearanceSource + '\n' + officeAuthoringSource
   + '\n' + officeKitAbiSource + '\n' + surface + '\n' + inputAndModel + '\n' + officeKitDialogSource + '\n' + lifecycle;

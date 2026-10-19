@@ -21,13 +21,15 @@ import { babelDocLaunch, engineHealth } from '../../../../packages/engines/src/i
 import { recognizeImage } from '../../../../packages/ocr/src/index';
 import { ViewerError } from '../../../../packages/contracts/src/index';
 import { officeIpcError } from './office-ipc-error';
+import { PdfContentService, type PdfContentRequest } from './pdf-content-service';
+import { WebSemanticService, type WebSemanticRequest } from './web-semantic-service';
 
 import { WebToolbarHost } from './web-toolbar';
 import { ReaderPanelHost } from './reader-panels';
 import { NativeOfficeHost } from './native-office';
 import { viewZoomEvent, type CoreViewEvent } from './view-zoom-events';
 import { WorkspaceInvalidations } from './workspace-invalidations';
-import { exportMarkdown, importMarkdown, markdownExportCapabilities } from './markdown-export';
+import { exportMarkdown, exportMarkdownTo, importMarkdown, markdownExportCapabilities } from './markdown-export';
 import { MarkdownMediaHost } from './markdown-media';
 import { nativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
 let office: NativeOfficeHost | undefined;
@@ -55,6 +57,8 @@ nativeTheme.on('updated', () => { if (settings.get('appearance.theme') === 'syst
 const connections = new AIConnectionService(join(directory, 'connections.json'));
 let settingsWindow: BrowserWindow | undefined;
 let browserPoll: NodeJS.Timeout | undefined;
+let pdfContent: PdfContentService | undefined;
+let webSemantic: WebSemanticService | undefined;
 let startupComplete = false, activationPending = false;
 let activationFlight: Promise<void> | undefined;
 const supportedDocument = /\.(?:md|markdown|mdown|txt|doc|docx|ppt|pptx|xls|xlsx|pdf|html?)$/i;
@@ -198,6 +202,11 @@ void app.whenReady().then(async () => {
   core.browser = new ElectronBrowserRuntime(core, id => { const win = windows.get(id); if (!win) throw new Error('窗口不存在'); return win; }, () => [endpoint, process.env.AGENTVIEWER_VITE_URL].filter((value): value is string => !!value), () => settings.get('agent.pointer') === true, {
     preload: join(__dirname, 'browser-preload.cjs'), backgroundLoading: () => settings.get('web.backgroundLoading') === 'eager' ? 'eager' : 'lazy', onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); readerPanelHost.sourceChanged(owner, viewId); },
   });
+  pdfContent = new PdfContentService(core, root, directory);
+  webSemantic = new WebSemanticService(core);
+  core.extensions.set('agent-pdf', args => pdfContent!.request(args as unknown as PdfContentRequest));
+  core.extensions.set('agent-web', args => webSemantic!.request(args as unknown as WebSemanticRequest));
+  core.extensions.set('agent-markdown-export', args => exportMarkdownTo(core, args as unknown as Parameters<typeof exportMarkdownTo>[1]));
   ipcMain.on('agentviewer:browser-surface', (event, value: Record<string, unknown>) => {
     if (event.senderFrame !== event.sender.mainFrame || !value || typeof value !== 'object') return;
     (core.browser as ElectronBrowserRuntime).sourceChanged(event.sender.id, value);
@@ -512,7 +521,7 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (shutdown === 'saving') return;
   shutdown = 'saving';
-  void Promise.all([...windows.values()].map(win => flushReaderWindow(win))).then(async () => { await translations?.pauseAll(); await core.shutdownNativeOffice(); await office?.shutdown(); return core.persist(); }).then(() => { selectionTranslations?.dispose(); clearInterval(browserPoll); shutdown = 'ready'; app.quit(); }).catch(error => {
+  void Promise.all([...windows.values()].map(win => flushReaderWindow(win))).then(async () => { await translations?.pauseAll(); await core.shutdownNativeOffice(); await office?.shutdown(); return core.persist(); }).then(async () => { selectionTranslations?.dispose(); clearInterval(browserPoll); webSemantic?.dispose(); await pdfContent?.dispose(); shutdown = 'ready'; app.quit(); }).catch(error => {
     shutdown = 'idle';
     const message = '恢复点尚未保存完成，应用保持打开。' + String(error);
     core.event('workspace.recovery-error', { message });

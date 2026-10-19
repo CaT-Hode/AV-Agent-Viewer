@@ -1,15 +1,23 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-viewer",
-  "version": "0.1.0",
-  "description": "读取与编辑 AgentViewer 中的文档、阅读上下文和网页，支持原生鼠标键盘输入。",
-  "keywords": ["reading", "documents", "browser", "mcp"],
+  "version": "0.2.0",
+  "description": "按文档类型渐进发现工具，读取明确来源并使用短引用编辑、验证与保存。",
+  "keywords": [
+    "reading",
+    "documents",
+    "browser",
+    "mcp"
+  ],
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "AgentViewer",
         "shortDescription": "与当前阅读文档共同工作",
-        "capabilities": ["Read", "Write"]
+        "capabilities": [
+          "Read",
+          "Write"
+        ]
       }
     }
   }

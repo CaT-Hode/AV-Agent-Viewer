@@ -1,15 +1,76 @@
 {
   "modules": [
-    { "name": "项目入口", "files": ["README.md"] },
-    { "name": "核心架构与审查", "files": ["docs/architecture.md", "docs/review.md"] },
-    { "name": "文档编辑", "files": ["docs/editing/README.md", "docs/editing/refactor.md"] },
-    { "name": "Office 引擎", "files": ["docs/office/README.md", "packages/office-runtime/native/README.md"] },
-    { "name": "阅读界面", "files": ["docs/reader/README.md"] },
-    { "name": "AI 与连接", "files": ["docs/automation/README.md"] },
-    { "name": "性能", "files": ["docs/performance/README.md"] },
-    { "name": "开发与发行", "files": ["docs/development/README.md", "docs/development/dependencies.md"] },
-    { "name": "测试", "files": ["tests/README.md"] },
-    { "name": "Agent 插件", "files": ["plugins/agent-viewer/skills/reading/SKILL.md", "plugins/agent-viewer/skills/editing/SKILL.md"] },
-    { "name": "创作示例", "files": ["examples/moon-tide/01-故事大纲.md"] }
+    {
+      "name": "项目入口",
+      "files": [
+        "README.md"
+      ]
+    },
+    {
+      "name": "核心架构与审查",
+      "files": [
+        "docs/architecture.md",
+        "docs/review.md"
+      ]
+    },
+    {
+      "name": "文档编辑",
+      "files": [
+        "docs/editing/README.md",
+        "docs/editing/refactor.md"
+      ]
+    },
+    {
+      "name": "Office 引擎",
+      "files": [
+        "docs/office/README.md",
+        "packages/office-runtime/native/README.md"
+      ]
+    },
+    {
+      "name": "阅读界面",
+      "files": [
+        "docs/reader/README.md"
+      ]
+    },
+    {
+      "name": "AI 与连接",
+      "files": [
+        "docs/automation/README.md",
+        "docs/automation/mcp.md"
+      ]
+    },
+    {
+      "name": "性能",
+      "files": [
+        "docs/performance/README.md"
+      ]
+    },
+    {
+      "name": "开发与发行",
+      "files": [
+        "docs/development/README.md",
+        "docs/development/dependencies.md"
+      ]
+    },
+    {
+      "name": "测试",
+      "files": [
+        "tests/README.md"
+      ]
+    },
+    {
+      "name": "Agent 插件",
+      "files": [
+        "plugins/agent-viewer/skills/reading/SKILL.md",
+        "plugins/agent-viewer/skills/editing/SKILL.md"
+      ]
+    },
+    {
+      "name": "创作示例",
+      "files": [
+        "examples/moon-tide/01-故事大纲.md"
+      ]
+    }
   ]
 }

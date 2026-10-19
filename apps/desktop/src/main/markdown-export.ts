@@ -78,31 +78,48 @@ ipcMain.handle('agentviewer:export-resource', async (event, path: unknown, kind?
   job.imageBytes+=expected;
   return markdownResource(job.core, job.documentId, path);
 });
-async function renderInBackground(core: ViewerCore, owner: BrowserWindow, documentId: string, revision: number, source: string, media:(path:string)=>Promise<{url:string}>) {
+async function renderInBackground(core: ViewerCore, documentId: string, revision: number, source: string, media:(path:string)=>Promise<{url:string}>, owner?: BrowserWindow) {
   if(exportsInProgress.size>=2)throw new ViewerError('EXPORT_BUSY','已有两份文档正在生成，请等待后重试。');
   const worker = new BrowserWindow({show:false,webPreferences:{session:isolatedExportSession(),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,preload:join(__dirname,'markdown-export-preload.cjs')}});
   exportsInProgress.set(worker.webContents.id,{core,documentId,revision,media,imageBytes:0});
   const id = worker.webContents.id, close = () => { if(!worker.isDestroyed())worker.destroy(); };
-  owner.once('closed',close); worker.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+  owner?.once('closed',close); worker.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   const timeout = setTimeout(close,120000);
   try {
-    await worker.loadURL(owner.webContents.getURL().split('#')[0]+'#/export-worker');
+    // The export service can run without a human window. This is the same
+    // trusted renderer origin as the desktop host, in an isolated session.
+    const renderer = owner?.webContents.getURL() || process.env.AGENTVIEWER_VITE_URL || `http://127.0.0.1:${Number(process.env.AGENTVIEWER_PORT ?? 3210)}`;
+    const url = new URL(renderer); url.hash = '/export-worker';
+    await worker.loadURL(url.toString());
     await worker.webContents.executeJavaScript(`new Promise((resolve,reject)=>{let n=0;const poll=()=>{if(window.__markdownExport)resolve(true);else if(++n>600)reject(new Error('导出模块加载超时。'));else setTimeout(poll,50)};poll()})`);
     return await worker.webContents.executeJavaScript(`window.__markdownExport(${JSON.stringify(source)},${JSON.stringify(documentId)})`) as string;
-  } finally { clearTimeout(timeout); owner.removeListener('closed',close); exportsInProgress.delete(id); close(); }
+  } finally { clearTimeout(timeout); owner?.removeListener('closed',close); exportsInProgress.delete(id); close(); }
 }
 
 export async function exportMarkdown(core: ViewerCore, owner: BrowserWindow, input: { documentId: string; expectedRevision: number; format: string }) {
   const document = core.getDocument(input.documentId).info;
   if (document.format !== 'markdown' || document.revision !== input.expectedRevision) throw new ViewerError('VERSION_CONFLICT', '导出来源已变化，请重新导出。');
-  const frozenRevision = document.revision, source = document.model.text ?? '';
   const extension = extensions[input.format]; if (!extension) throw new ViewerError('INVALID_ARGUMENT', '不支持此导出格式。');
   const conversion = !['html', 'pdf', 'png', 'markdown'].includes(input.format);
   if (conversion && !(await markdownExportCapabilities()).pandoc) throw new ViewerError('ENGINE_UNAVAILABLE', '此格式需要安装 Pandoc；HTML、PDF 和图片可以直接导出。');
   const options: SaveDialogOptions = { title: '导出 Markdown', defaultPath: join(document.path ? dirname(document.path) : '.', basename(document.title, extname(document.title)) + '.' + extension), filters: [{ name: extension.toUpperCase(), extensions: [extension] }] };
   const chosen = await dialog.showSaveDialog(owner, options); if (chosen.canceled || !chosen.filePath) return null;
-  if (core.getDocument(input.documentId).info.revision !== frozenRevision) throw new ViewerError('VERSION_CONFLICT', '选择导出位置期间文档已变化，请重新导出。');
-  const path = chosen.filePath;
+  return exportMarkdownTo(core, { ...input, path: chosen.filePath });
+}
+
+/** Shared UI/Agent service. The caller authorizes the destination; publication
+ * always creates new files and never borrows a human view or dialog. */
+export async function exportMarkdownTo(core: ViewerCore, input: { documentId: string; expectedRevision: number; format: string; path: string }) {
+  const document = core.getDocument(input.documentId).info;
+  if (document.format !== 'markdown' || document.revision !== input.expectedRevision) throw new ViewerError('VERSION_CONFLICT', '导出来源已变化，请重新导出。');
+  const frozenRevision = document.revision, source = document.model.text ?? '';
+  if (!extensions[input.format]) throw new ViewerError('INVALID_ARGUMENT', '不支持此导出格式。');
+  if (!isAbsolute(input.path)) throw new ViewerError('INVALID_ARGUMENT', '导出需要明确的绝对路径。');
+  const conversion = !['html', 'pdf', 'png', 'markdown'].includes(input.format);
+  if (conversion && !(await markdownExportCapabilities()).pandoc) throw new ViewerError('ENGINE_UNAVAILABLE', '此格式需要安装 Pandoc；HTML、PDF 和图片可以直接导出。');
+  const path = resolve(input.path);
+  try { await lstat(path); throw new ViewerError('FILE_CONFLICT', '导出目标已存在，请选择新的文件名。'); }
+  catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; }
   const outputs = new AtomicExportSet(), outputPaths: string[] = [], ownedOutputFolders = new Set<string>();
   const normalizedPath = async (value: string) => { const full=resolve(value);try{return(await realpath(full)).toLowerCase();}catch(cause){if((cause as NodeJS.ErrnoException).code==='ENOENT')return full.toLowerCase();throw cause;} };
   const validate = async () => {
@@ -111,7 +128,7 @@ export async function exportMarkdown(core: ViewerCore, owner: BrowserWindow, inp
     for(const target of [path,...outputPaths])if(protectedPaths.includes(await normalizedPath(target)))throw new ViewerError('FILE_CONFLICT','导出不能覆盖当前源码或仍有未保存编辑的文档，请选择其他路径。');
   };
   await validate();
-  const singleTemporary = input.format==='png' ? undefined : await outputs.reserve(path);
+  const singleTemporary = input.format==='png' ? undefined : await outputs.reserve(path, false);
   try {
   const { preferences } = await readMarkdownPreferences(core, document.id);
   if (input.format === 'markdown') { await writeFile(singleTemporary!, source, 'utf8'); return { paths: await outputs.commit(validate), revision: frozenRevision }; }
@@ -157,7 +174,7 @@ export async function exportMarkdown(core: ViewerCore, owner: BrowserWindow, inp
     const after=await stat(origin);if(info.size!==after.size||info.mtimeMs!==after.mtimeMs)throw new ViewerError('FILE_CONFLICT','导出期间媒体源文件已变化。');
     const url=[mediaAssetsName,name].map(encodeURIComponent).join('/');mediaReferences.set(source,url);return {url};
   };
-  const prepared = await renderInBackground(core,owner,document.id,frozenRevision,source,prepareMedia);
+  const prepared = await renderInBackground(core,document.id,frozenRevision,source,prepareMedia);
   if (core.getDocument(input.documentId).info.revision !== frozenRevision) throw new ViewerError('VERSION_CONFLICT','生成导出页面期间文档已变化，请重新导出。');
   if (prepared.length > 64 * 1024 * 1024) throw new ViewerError('INVALID_ARGUMENT', '导出页面超过64MiB，请拆分文档。');
   // No preload or local-service credential enters this isolated export page.
@@ -189,7 +206,7 @@ export async function exportMarkdown(core: ViewerCore, owner: BrowserWindow, inp
       const cropTop = Math.max(0, offset - actualOffset), remaining = Math.min(1200 - cropTop, height - offset);
       const image = await window.webContents.capturePage({ x: 0, y: cropTop, width: 1100, height: remaining });
       const output = height <= 1200 ? path : path.slice(0, path.length - extname(path).length) + '-' + String(index + 1).padStart(3, '0') + '.png';
-      outputPaths.push(output);await validate();await outputs.write(output, image.toPNG(),height<=1200); paths.push(output);
+      outputPaths.push(output);await validate();await outputs.write(output, image.toPNG(),false); paths.push(output);
     }
     await outputs.commit(validate);return { paths, revision: frozenRevision };
   } finally { window.destroy(); }

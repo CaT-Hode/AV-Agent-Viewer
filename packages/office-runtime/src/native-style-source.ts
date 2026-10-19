@@ -390,7 +390,8 @@ def apply_actual_style_plans(session,view,plans,args,confirm_target,has_text=Fal
         for candidate in session['views'].values():
             if candidate.get('disposed'):continue
             cached=candidate.get('accessibilityCache',{}).get('data')
-            if own_ime_pending(candidate) or candidate.get('nativeEditing') or candidate.get('caretVisible') or cached and cached[2]:fail('NATIVE_PENDING_INPUT','原生输入尚未完成，没有隐式提交。')
+            editing=session['format'] in ['xlsx','pptx'] and (candidate.get('nativeEditing') or candidate.get('caretVisible'))
+            if own_ime_pending(candidate) or editing or cached and cached[2]:fail('NATIVE_PENDING_INPUT','原生输入尚未完成，没有隐式提交。')
             window=candidate['frame'].getContainerWindow()
             if not window.isEnabled():fail('NATIVE_PENDING_INPUT','原生对话框尚未结束。')
             windows.append(window);window.setEnable(False)

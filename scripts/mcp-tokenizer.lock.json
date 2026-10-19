@@ -1,0 +1,18 @@
+{
+  "package": "js-tiktoken",
+  "version": "1.0.21",
+  "profile": "max(o200k_base,cl100k_base)",
+  "certification": "reference-only; Codex host serialization and current model tokenizer are not certified",
+  "files": {
+    "dist/lite.js": "e7f8d0900a29c70a1155838cff633f5a66eef660bd3c4fb452882ec7cc4a316c",
+    "dist/chunk-VL2OQCWN.js": "4095335817189ee393ce99588744e53d04f1dd32b6c9a7d4a9f365d5e4569035",
+    "dist/ranks/o200k_base.js": "a9e8a0c1f332c58f1a9cef2f8d7be59b31bb4b42531a3a0a64d9ad3b3d19033b",
+    "dist/ranks/cl100k_base.js": "0e301a9c7f82e2353bc484be0149b2fb8a6db85d516620a34d06e587efe090bd"
+  },
+  "limits": {
+    "formatRaw": 4500,
+    "formatHard": 5000,
+    "sharedEntry": 1200,
+    "sharedAll": 2500
+  }
+}

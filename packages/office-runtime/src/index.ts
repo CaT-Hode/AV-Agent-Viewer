@@ -19,7 +19,9 @@ import { NativeOfficeBinaryProtocolReader } from './binary-protocol';
 import { immutableOfficeObservation } from './immutable-observation';
 import { validateNativeOfficeAppearance, type NativeOfficeAppearance } from './appearance';
 import { NativeOfficeError, type NativeOfficeState, type NativeOfficeOpen, type NativeOfficeRuntimeOptions, type NativeOfficeLayout, type NativeOfficeSnapshot, type NativeOfficeCapture, type NativeOfficeDispatch, type NativeOfficeCommandStatus } from './types';
+import { officeAuthoringOperationSchema, officeAuthoringQuerySchema, type OfficeAuthoringExecuteRequest, type OfficeAuthoringQuery, type OfficeAuthoringReadback } from './authoring';
 export * from './types';
+export * from './authoring';
 
 interface Pending { method: string; resolve: (value: any) => void; reject: (error: unknown) => void; timer: NodeJS.Timeout }
 interface OpenRecord { documentId: string; viewIds: Set<string>; promise?: Promise<NativeOfficeState> }
@@ -414,6 +416,17 @@ export class NativeOfficeRuntime extends EventEmitter {
     return commands.map(command => local.get(command)!);
   }
   query(sessionId: string, viewId: string, target: NativeOfficeQuery) { return this.request<unknown>('query', { sessionId, viewId, target }); }
+  async authoringQuery(sessionId: string, viewId: string, target: OfficeAuthoringQuery) {
+    const result = await this.request<{ state: NativeOfficeState; data: unknown }>('authoringQuery', { sessionId, viewId, target: officeAuthoringQuerySchema.parse(target) });
+    if (result.state?.sessionId !== sessionId || result.state.viewId !== viewId || result.state.engineEpoch !== this.engineEpoch || !Number.isSafeInteger(result.state.engineRevision) || result.state.engineRevision < 0) throw new NativeOfficeError('INVALID_NATIVE_OBSERVATION', '原生结构化查询回执的文档或引擎身份无效。');
+    return result;
+  }
+  async authoringExecute(value: OfficeAuthoringExecuteRequest) {
+    if (!value.requestId || value.requestId.length > 128 || !Number.isSafeInteger(value.expectedEngineRevision) || value.expectedEngineRevision < 0 || !value.expectedEngineEpoch) throw new NativeOfficeError('INVALID_NATIVE_OPERATION', '原生编辑需要有界请求身份与明确引擎版本。');
+    const result = await this.request<OfficeAuthoringReadback>('authoringExecute', { ...value, operation: officeAuthoringOperationSchema.parse(value.operation), actor: value.actor ?? 'agent' }, true);
+    if (result.state?.sessionId !== value.sessionId || result.state.viewId !== value.viewId || result.state.engineEpoch !== value.expectedEngineEpoch || !Number.isSafeInteger(result.state.engineRevision) || result.state.engineRevision < value.expectedEngineRevision || !['applied', 'no-change'].includes(result.status) || result.verified !== true || !('readback' in result)) throw new NativeOfficeError('INVALID_NATIVE_EXECUTION', '原生结构化编辑回执的版本或验证结果无效。');
+    return result;
+  }
   async inspect(sessionId: string, viewId: string, request: { target?: import('../../contracts/src/native-office').NativeOfficeQuery; commands?: string[] }): Promise<import('../../contracts/src/native-office').NativeOfficeInspection> {
     if (request.commands && (request.commands.length > 50 || request.commands.some(command => !/^\.uno:[A-Za-z][A-Za-z0-9_]{0,99}$/.test(command)))) throw new NativeOfficeError('INVALID_NATIVE_COMMAND', '原生命令名称或查询数量无效。');
     if (this.options.backend !== 'kit') {

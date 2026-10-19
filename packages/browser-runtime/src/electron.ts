@@ -4,7 +4,7 @@ import { normalizeWebAddress, NAVIGATION_EDGE_REVEAL_PX, ViewerError } from '../
 import type { ViewerCore } from '../../document-core/src/index';
 import { randomUUID } from 'node:crypto';
 
-interface BrowserEntry { view: WebContentsView; navigationId: string; layoutRevision: number; owner: BrowserWindow; visible: boolean; injecting: boolean; actor: Actor; sourceRevision: number; sourceSequence: number; sourceReady?: boolean; sourceClock?: number; deviceScaleFactor?: number; scrollAt: number; scrollX: number; scrollY: number; topHover?: boolean; sourceReading?: boolean; sourcePending?: { reason: string }; layoutBounds?: Rect }
+interface BrowserEntry { view: WebContentsView; navigationId: string; layoutRevision: number; owner: BrowserWindow; visible: boolean; injecting: boolean; semanticAgent?:boolean; actor: Actor; sourceRevision: number; sourceSequence: number; sourceReady?: boolean; sourceClock?: number; deviceScaleFactor?: number; scrollAt: number; scrollX: number; scrollY: number; topHover?: boolean; sourceReading?: boolean; sourcePending?: { reason: string }; layoutBounds?: Rect }
 type BrowserSurfaceOptions = { preload?: string; backgroundLoading?(): 'lazy' | 'eager'; onSourceChanged?(owner: BrowserWindow, viewId: string): void };
 type PendingPage = { url: string; generation: number; deferred: boolean };
 import { readContextScript } from './context-script';
@@ -135,8 +135,8 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
       alias.hostname = parsed.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
       return [parsed.origin, alias.origin];
     }));
-    wc.session.webRequest.onBeforeRequest({ urls: [...protectedOrigins].flatMap(origin => [origin + '/api/*', origin + '/v1/*']) }, (_details, callback) => callback({ cancel: true }));
-    wc.setWindowOpenHandler(({ url: target }) => { if (alive() && /^https?:/.test(target)) void this.core.openWeb(target, this.core.getView(viewId).windowId).catch(e => this.core.event('browser.error', { viewId, error: String(e) })); return { action: 'deny' }; });
+    if(protectedOrigins.size)wc.session.webRequest.onBeforeRequest({ urls: [...protectedOrigins].flatMap(origin => [origin + '/internal/*', origin + '/v2/*']) }, (_details, callback) => callback({ cancel: true }));
+    wc.setWindowOpenHandler(({ url: target }) => { if (alive() && /^https?:/.test(target)) void this.core.openWeb(target, this.core.getView(viewId).windowId,entry.visible&&!entry.injecting&&!entry.semanticAgent&&entry.actor==='human').catch(e => this.core.event('browser.error', { viewId, error: String(e) })); return { action: 'deny' }; });
     wc.on('will-navigate', (event, url) => { if (!/^https?:/.test(url)) event.preventDefault(); });
     wc.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => { if (alive() && isMainFrame) { entry.navigationId = randomUUID(); entry.layoutRevision = 0; entry.sourceReady = false; entry.sourceRevision++; if (!inPlace) { entry.sourceSequence = 0; entry.sourceClock = undefined; } this.core.event('browser.navigation', { viewId, navigationId: entry.navigationId }); this.surfaceOptions.onSourceChanged?.(entry.owner, viewId); } });
     const readySource = () => { if (!alive()) return; entry.sourceRevision++; entry.sourcePending = { reason: 'ready' }; if (!entry.sourceReading) void this.readSource(viewId, entry); };
@@ -169,7 +169,7 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     // and an agent activation concurrently reveal the pending page. Genuine
     // mouse/key input above still takes ownership while the load is pending.
     wc.on('focus', () => {
-      if (!alive() || !entry.visible || entry.injecting || this.loadingPages.has(viewId) || !entry.owner.isFocused()) return;
+      if (!alive() || !entry.visible || entry.injecting || entry.semanticAgent || this.loadingPages.has(viewId) || !entry.owner.isFocused()) return;
       const active = this.core.views.get(this.core.activeViewId ?? ''), target = this.core.views.get(viewId)!;
       // Core receives a tab intent before the renderer withdraws old native
       // bounds. A late page autofocus in that gap cannot reverse the choice.

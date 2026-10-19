@@ -17,7 +17,7 @@ export function subscribeWorkspaceEvents<T extends { seq: number }>(options: { a
   };
   void ready.then(() => {
     if (disposed) return;
-    source = new EventSource('/api/events?after=' + options.after(), { withCredentials: true });
+    source = new EventSource('/internal/events?after=' + options.after(), { withCredentials: true });
     source.onopen = () => { connected = true; };
     source.onerror = () => { connected = false; };
     source.addEventListener('resync_required', () => options.resync());

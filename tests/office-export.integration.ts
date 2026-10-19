@@ -9,6 +9,7 @@ import JSZip from 'jszip';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { ViewerCore } from '../packages/document-core/src/index';
 import { NativeOfficeRuntime } from '../packages/office-runtime/src/index';
+import type { OfficeAuthoringOperation, OfficeAuthoringQuery } from '../packages/office-runtime/src/authoring';
 import { JsonWorkspaceRepository } from '../packages/persistence/src/index';
 import type { DocumentModel, EditOperation, NativeOfficeDriver, NativeOfficeFormat, NativeOfficeSnapshotReuse, NativeOfficeState, NativeOfficeStyleInspection, ViewInfo } from '../packages/contracts/src/index';
 
@@ -36,6 +37,7 @@ const sourcePaths = [
   'packages/office-runtime/src/worker-source.ts', 'packages/office-runtime/src/kit-worker-source.ts',
   'packages/office-runtime/src/kit-update-policy-source.ts', 'packages/office-runtime/src/kit-binary-source.ts',
   'packages/office-runtime/src/binary-protocol.ts', 'packages/office-runtime/src/native-style-source.ts',
+  'packages/office-runtime/src/authoring.ts', 'packages/office-runtime/src/authoring-source.ts',
   'tests/office-export.integration.ts', 'package-lock.json',
 ].map(path => resolve(path)).concat(adapterPath, join(engineRoot, 'libreoffice/program/mergedlo.dll'), Object.values(names).map(name => join(samplesRoot, name)));
 async function identities() {
@@ -76,6 +78,7 @@ const report: Record<string, any> = {
   scope: 'Actual hidden NativeOfficeRuntime + production ViewerCore.exportNativeOffice + JsonWorkspaceRepository + independent disk files. No Electron/GUI/MCP/OS physical input, full-render, translation, memory or whole-app performance claim. Timings include the public Core mirror/version barrier, real driver RPC, output validation/publication and workspace persistence; startup is outside these timings. OS caches and background work are uncontrolled. No before/after percentage is derived from this single version.',
   formats: [], errors: [], phases: [], nativeEdits: [],
 };
+runtime.on('diagnostic', value => { (report.nativeDiagnostics ??= []).push(value); });
 console.log('Native export-copy acceptance evidence:', evidence);
 function phase(name: string, item?: Record<string, any>) {
   const value = { name, format: item?.format, atMs: performance.now() };
@@ -281,12 +284,152 @@ async function verifyModel(bytes: Uint8Array, format: NativeOfficeFormat, marker
   return model;
 }
 
+/** The same three engine flows can verify structured authoring without any
+ * physical, CDP, simulated keyboard/mouse, Electron or human-window input. */
+async function verifyStructuredAuthoring() {
+  report.scope = 'Actual hidden Kit structured authoring, native readback, idempotency, Undo/Redo, serialization and independent native re-import. No input or UI validation.';
+  for (const format of ['docx', 'xlsx', 'pptx'] as const) {
+    const sourceBytes = new Uint8Array(await readFile(join(samplesRoot, names[format]))), documentId = randomUUID(), viewId = randomUUID();
+    const item: Record<string, any> = { format, sourceSha256: sha(sourceBytes), operations: [] }; report.formats.push(item); phase('authoring-' + format, item);
+    let current: NativeOfficeState = await runtime.open({ sessionId: documentId, documentId, viewId, format, bytes: sourceBytes, revision: 0, ownerHwnd: '1', ownerViewport: { width: 1000, height: 800 }, bounds: { x: 0, y: 0, width: 1000, height: 800 }, visible: false });
+    async function query(target: OfficeAuthoringQuery): Promise<any> {
+      for (let attempt = 0; ; attempt++) {
+        try { const result = await runtime.authoringQuery(documentId, viewId, target); current = result.state; return result.data; }
+        catch (error) { if (attempt >= 3 || !(error instanceof Error) || !('code' in error) || error.code !== 'STALE_NATIVE_QUERY') throw error; }
+      }
+    }
+    async function edit(operation: OfficeAuthoringOperation) {
+      current = await runtime.state(documentId, viewId);
+      const request = { sessionId: documentId, viewId, ...versions(current), requestId: randomUUID(), actor: 'agent' as const, operation };
+      const result = await runtime.authoringExecute(request); current = result.state;
+      assert.equal(result.verified, true); assert.equal(current.pendingInput, false);
+      assert.deepEqual(await runtime.authoringExecute(request), result, 'An acknowledged logical request is replayed before checking its old engine revision');
+      await assert.rejects(runtime.authoringExecute({ ...request, operation: { kind: 'slides.moveSlide', slideIndex: 0, index: 0 } }), /请求身份/);
+      item.operations.push({ kind: operation.kind, status: result.status, verified: result.verified, warnings: result.warnings, engineRevision: current.engineRevision, undoAvailable: !!result.undoToken });
+      return result;
+    }
+    async function undoAndRedo(verifyUndo: () => Promise<void>, verifyRedo: () => Promise<void>) {
+      current = await runtime.state(documentId, viewId); assert.ok(current.undo?.token);
+      const result = await runtime.undo({ sessionId: documentId, viewId, ...versions(current), undoToken: current.undo.token, actor: 'agent' }); current = result.state;
+      await verifyUndo(); current = await runtime.state(documentId, viewId);
+      const redo = await runtime.execute({ sessionId: documentId, viewId, ...versions(current), requestId: randomUUID(), actor: 'agent', command: '.uno:Redo' }); current = redo.state;
+      await verifyRedo();
+    }
+    const marker = 'AV_STRUCTURED_' + format + '_中文😀';
+    let sheetName = '', originalPpt = '';
+    if (format === 'docx') {
+      const first = (await query({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0]; assert.equal(first.textHash, sha(first.text));
+      await edit({ kind: 'word.replaceText', paragraphIndex: 0, from: 0, to: first.utf16Length, expectedText: first.text, text: marker });
+      await runtime.snapshot(documentId, viewId);
+      const navigation = await runtime.navigate({ sessionId: documentId, viewId, ...versions(current), requestId: randomUUID(), actor: 'human', target: { kind: 'paragraph', paragraphIndex: 0, select: true } }); current = navigation.state;
+      const selectedBefore = structuredClone(current.selection), selected = await query({ kind: 'selection-target' });
+      assert.equal(selected.editable, true); assert.deepEqual(selected.target, { kind: 'word.range', paragraphIndex: 0, from: 0, to: marker.length }); assert.equal(selected.text, marker); assert.deepEqual(current.selection, selectedBefore);
+      const multiline = marker + '\nNative cross-paragraph😀';
+      const inserted = await edit({ kind: 'word.replaceText', paragraphIndex: 0, from: 0, to: marker.length, expectedText: marker, text: multiline });
+      const cross = (inserted.readback as any).target; assert.equal(cross.kind, 'word.nativeRange'); const crossText = (await query({ kind: 'word.nativeRange', anchor: cross.anchor })).text; assert.equal(crossText.replace(/\r\n/g, '\n'), multiline);
+      const formatted = await edit({ kind: 'word.formatRangeText', anchor: cross.anchor, expectedText: crossText, values: { italic: true } });
+      const fresh = (formatted.readback as any).target; assert.equal(fresh.kind, 'word.nativeRange');
+      const restored = await edit({ kind: 'word.replaceRangeText', anchor: fresh.anchor, expectedText: crossText, text: marker }); assert.equal((restored.readback as any).target.kind, 'word.range');
+      await assert.rejects(query({ kind: 'word.nativeRange', anchor: fresh.anchor }), /过期/);
+      await edit({ kind: 'word.formatText', paragraphIndex: 0, from: marker.length - 2, to: marker.length, expectedText: '😀', values: { bold: true, color: '166a71' } });
+      await edit({ kind: 'word.formatParagraph', paragraphIndex: 0, values: { alignment: 'center' } });
+      assert.equal((await query({ kind: 'word.range', paragraphIndex: 0, from: marker.length - 2, to: marker.length })).text, '😀');
+      const clamped = await query({ kind: 'word.range', paragraphIndex: 0, from: marker.length - 1, to: marker.length }); assert.equal(clamped.text, '😀'); assert.equal(clamped.from, marker.length - 2); assert.equal(clamped.to, marker.length);
+      const matches = await query({ kind: 'search', query: '😀', limit: 1 }); assert.equal(matches.units[0].from, marker.length - 2);
+      assert.equal((await query({ kind: 'search', query: '😀', ...matches.cursor, limit: 1 })).units.some((unit: any) => unit.paragraphIndex === 0), false);
+      const styles = (await query({ kind: 'word.pageStyles' })).styles; await edit({ kind: 'word.pageLayout', pageStyleName: styles[0].name, left: 22 });
+      await edit({ kind: 'word.addComment', paragraphIndex: 0, from: 0, to: marker.length, expectedText: marker, text: 'Native bounded comment' });
+      const comments = (await query({ kind: 'word.comments' })).comments; assert.equal(comments.at(-1).anchorText, marker);
+      await edit({ kind: 'word.deleteComment', commentIndex: comments.at(-1).commentIndex, expectedText: 'Native bounded comment' });
+      const table = await edit({ kind: 'word.insertTable', paragraphIndex: 0, rows: [['A', 'B'], ['C', 'D']] });
+      await edit({ kind: 'word.setTableCell', tableName: (table.readback as any).name, cellName: 'B2', expectedText: 'D', text: 'Cell😀' });
+      const tableName = (table.readback as any).name, cells = await query({ kind: 'word.table', tableName, limit: 1 }); assert.equal(cells.cells.length, 1); assert.equal(cells.next, 1); assert.equal(cells.total, 4);
+      const longCell = '表格😀'.repeat(1000); await edit({ kind: 'word.setTableCell', tableName, cellName: 'B2', expectedText: 'Cell😀', text: longCell });
+      assert.equal((await query({ kind: 'word.table', tableName })).cells.find((cell: any) => cell.name === 'B2').textTruncated, true);
+      const completeCell = (await query({ kind: 'word.table', tableName, cellName: 'B2' })).cells[0]; assert.equal(completeCell.text, longCell); assert.equal(completeCell.textTruncated, false);
+      assert.ok((await query({ kind: 'word.tables' })).tables.some((value: any) => value.name === (table.readback as any).name));
+      await edit({ kind: 'word.setTracking', enabled: true });
+      await edit({ kind: 'word.replaceText', paragraphIndex: 0, from: 0, to: 0, expectedText: '', text: 'Rejected' });
+      assert.equal((await query({ kind: 'word.revisions' })).canAcceptReject, true);
+      await edit({ kind: 'word.resolveRevision', revisionIndex: 0, action: 'reject' });
+      assert.equal((await query({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0].text, marker);
+      await edit({ kind: 'word.replaceText', paragraphIndex: 0, from: 0, to: 0, expectedText: '', text: 'Accepted' });
+      await edit({ kind: 'word.resolveRevision', revisionIndex: 0, action: 'accept' });
+      await edit({ kind: 'word.setTracking', enabled: false });
+      const before = (await query({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0].text;
+      await edit({ kind: 'word.replaceText', paragraphIndex: 0, from: 0, to: before.length, expectedText: before, text: marker });
+      await undoAndRedo(async () => assert.equal((await query({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0].text, before), async () => assert.equal((await query({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0].text, marker));
+    } else if (format === 'xlsx') {
+      const sheets = await runtime.query(documentId, viewId, { kind: 'sheets' }) as { sheets: { name: string }[] }; sheetName = sheets.sheets[0].name;
+      const selectedBefore = structuredClone(current.selection), selected = await query({ kind: 'selection-target' }); assert.equal(selected.editable, true); assert.deepEqual(selected.target, { kind: 'sheets.range', sheetName, range: selectedBefore!.range }); assert.deepEqual(current.selection, selectedBefore);
+      await edit({ kind: 'sheets.addSheet', name: 'Authoring temporary' }); await edit({ kind: 'sheets.renameSheet', sheetName: 'Authoring temporary', name: 'Authoring renamed' }); await edit({ kind: 'sheets.deleteSheet', sheetName: 'Authoring renamed' });
+      await edit({ kind: 'sheets.merge', sheetName, range: 'Q20:R20', merge: true }); await edit({ kind: 'sheets.merge', sheetName, range: 'Q20:R20', merge: false });
+      for (const action of ['insertRows', 'deleteRows', 'insertColumns', 'deleteColumns'] as const) await edit({ kind: 'sheets.grid', sheetName, action, index: 22, count: 2 });
+      await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'Q1:S4', rows: [['Category', 'Value', 'Formula'], ['B', 4, '=R2*2'], ['A', 2, 0], ['A', 3, marker]] });
+      await edit({ kind: 'sheets.formatRange', sheetName, range: 'Q1:S4', values: { bold: true, fill: 'ffeecc' } });
+      await edit({ kind: 'sheets.setValidation', sheetName, range: 'R2:R4', type: 'WHOLE', formula1: '1', formula2: '10' });
+      await edit({ kind: 'sheets.sort', sheetName, range: 'Q1:S4', column: 1, header: true });
+      await edit({ kind: 'sheets.filter', sheetName, range: 'Q1:S4', enabled: true }); await edit({ kind: 'sheets.filter', sheetName, range: 'Q1:S4', enabled: false });
+      for (const type of ['column', 'bar', 'line', 'pie', 'scatter', 'area'] as const) {
+        const name = 'Authoring_' + type; const chart = await edit({ kind: 'sheets.addChart', sheetName, name, range: 'Q1:R4', type, x: 10, y: 10, width: 120, height: 80 }); assert.equal((chart.readback as any).type, type);
+        if (type !== 'column') await edit({ kind: 'sheets.deleteChart', sheetName, name });
+      }
+      await edit({ kind: 'sheets.addPivot', sheetName, name: 'AuthoringPivot', range: 'Q1:R4', destination: 'V1', rows: ['Category'], data: [{ field: 'Value', function: 'SUM' }] });
+      assert.equal((await query({ kind: 'sheets.pivots', sheetName })).pivots[0].fields.find((field: any) => field.name === 'Value').function, 'SUM');
+      const range = await query({ kind: 'sheets.range', sheetName, range: 'Q1:S4' }); assert.ok(range.formulas.flat().some((value: string) => value.startsWith('=')));
+      await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'AA10:AB14', rows: [[true, false], ['=ISLOGICAL(AA10)', '=ISLOGICAL(AB10)'], ['=TYPE(AA10)', '=TYPE(AB10)'], ['=COUNT(AA10)', '=COUNT(AB10)'], ['=SUM(AA10)', '=SUM(AB10)']] });
+      await undoAndRedo(async () => assert.deepEqual((await query({ kind: 'sheets.range', sheetName, range: 'AA10:AB10' })).kinds[0], ['empty', 'empty']), async () => assert.deepEqual((await query({ kind: 'sheets.range', sheetName, range: 'AA10:AB10' })).values[0], [true, false]));
+      const logical = await query({ kind: 'sheets.range', sheetName, range: 'AA10:AB14' }); assert.deepEqual(logical.values[0], [true, false]); assert.deepEqual(logical.kinds[0], ['logical', 'logical']); assert.deepEqual(logical.values[1], [true, true]); assert.deepEqual(logical.values[2], [4, 4]);
+      await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'AA10', rows: [[42]] });
+      const numeric = await query({ kind: 'sheets.range', sheetName, range: 'AA10:AB14' }); assert.equal(numeric.values[0][0], 42); assert.equal(numeric.kinds[0][0], 'number'); assert.equal(numeric.values[1][0], false); assert.equal(numeric.values[2][0], 1);
+      await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'AA10', rows: [['=TRUE()']] });
+      const formula = await query({ kind: 'sheets.range', sheetName, range: 'AA10:AB14' }); assert.equal(formula.kinds[0][0], 'formula'); assert.equal(formula.logical[0][0], true); assert.equal(formula.values[0][0], true); assert.equal(formula.values[1][0], true);
+      await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'AC10:AD10', rows: [['=TRUE()', '=42']] });
+      await edit({ kind: 'sheets.formatRange', sheetName, range: 'AC10', values: { numberFormat: '0.00' } }); await edit({ kind: 'sheets.formatRange', sheetName, range: 'AD10', values: { numberFormat: 'BOOLEAN' } });
+      await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'AC11:AD11', rows: [['=ISLOGICAL(AC10)', '=ISLOGICAL(AD10)']] });
+      const controlled = await query({ kind: 'sheets.range', sheetName, range: 'AC10:AD11' }); assert.deepEqual(controlled.values, [[1, 42], [false, true]]); assert.deepEqual(controlled.logical[0], [false, true]);
+      item.logicalReadback = { literal: logical, numeric, formula };
+    } else {
+      const before = structuredClone(current), objects = await query({ kind: 'slides.objects', slideIndex: 2 }); originalPpt = (await query({ kind: 'slides.objectText', slideIndex: 2, objectPath: objects.objects[0].objectPath })).text;
+      const text = await edit({ kind: 'slides.replaceText', slideIndex: 2, objectPath: [0], expectedText: originalPpt, text: marker }); assert.ok(text.undoToken);
+      assert.deepEqual(current.selection, before.selection, 'Editing a different page leaves the human selection unchanged'); assert.equal((current as any).partIndex, (before as any).partIndex);
+      await undoAndRedo(async () => assert.equal((await query({ kind: 'slides.objectText', slideIndex: 2, objectPath: [0] })).text, originalPpt), async () => assert.equal((await query({ kind: 'slides.objectText', slideIndex: 2, objectPath: [0] })).text, marker));
+      await edit({ kind: 'slides.moveSlide', slideIndex: 2, index: 3 }); await edit({ kind: 'slides.moveSlide', slideIndex: 3, index: 2 });
+      await edit({ kind: 'slides.formatText', slideIndex: 2, objectPath: [0], values: { bold: true, color: '335577' } });
+      await edit({ kind: 'slides.formatObject', slideIndex: 2, objectPath: [0], values: { fill: 'cceeff' } });
+      await edit({ kind: 'slides.setLegacyAnimation', slideIndex: 2, objectPath: [0], effect: 'APPEAR', speed: 'FAST' });
+      const grouped = await edit({ kind: 'slides.group', slideIndex: 0, objectPaths: [[0], [1]] }); assert.ok((await query({ kind: 'slides.objects', slideIndex: 0 })).objects.some((object: any) => object.objectPath.length === 2));
+      await edit({ kind: 'slides.ungroup', slideIndex: 0, objectPath: (grouped.readback as any).objectPath });
+      await edit({ kind: 'slides.applyMaster', slideIndex: 2, masterIndex: 0 });
+      const notes = (await query({ kind: 'slides.notes', slideIndex: 2 })).text; await edit({ kind: 'slides.setNotes', slideIndex: 2, text: marker });
+      await undoAndRedo(async () => assert.equal((await query({ kind: 'slides.notes', slideIndex: 2 })).text, notes), async () => assert.equal((await query({ kind: 'slides.notes', slideIndex: 2 })).text, marker));
+      await edit({ kind: 'slides.setBackground', slideIndex: 2, color: 'cceeff' }); await edit({ kind: 'slides.add', index: 2, title: 'Temporary native page' });
+      const duplicate = await edit({ kind: 'slides.duplicate', slideIndex: 2 }); await edit({ kind: 'slides.delete', slideIndex: (duplicate.readback as any).slideIndex }); await edit({ kind: 'slides.delete', slideIndex: 2 });
+      assert.equal((await query({ kind: 'slides.objectText', slideIndex: 2, objectPath: [0] })).text, marker);
+      assert.equal((await query({ kind: 'slides.animations', slideIndex: 2 })).timingTreeCovered, false);
+      const exact = (await query({ kind: 'slides.objects', slideIndex: 2 })).objects.find((object: any) => object.objectPath.length === 1 && object.objectPath[0] === 0);
+      const navigation = await runtime.navigate({ sessionId: documentId, viewId, ...versions(current), requestId: randomUUID(), actor: 'human', target: { kind: 'shape', slideIndex: 2, name: exact.name } }); current = navigation.state;
+      const selectedBefore = structuredClone(current.selection), selected = await query({ kind: 'selection-target' }); assert.equal(selected.editable, true); assert.deepEqual(selected.target, { kind: 'slides.object', slideIndex: 2, objectPath: [0], matchFrom: 0, matchTo: marker.length }); assert.equal(selected.text, marker); assert.deepEqual(current.selection, selectedBefore);
+    }
+    current = await runtime.state(documentId, viewId); const snapshot = await runtime.snapshot(documentId, viewId); assert.equal(snapshot.engineRevisionBefore, snapshot.engineRevisionAfter);
+    assert.deepEqual(guard(await runtime.state(documentId, viewId)), guard(current), 'Serialization preserves source native history and dirtiness');
+    const path = join(directory, 'structured-' + format + '.' + format); await writeFile(path, snapshot.bytes, { flag: 'wx' });
+    const copyId = randomUUID(); await runtime.open({ sessionId: copyId, documentId: copyId, viewId: copyId, format, bytes: new Uint8Array(await readFile(path)), revision: 0, ownerHwnd: '1', ownerViewport: { width: 1000, height: 800 }, bounds: { x: 0, y: 0, width: 1000, height: 800 }, visible: false });
+    const reopened = async (target: OfficeAuthoringQuery): Promise<any> => (await runtime.authoringQuery(copyId, copyId, target)).data;
+    if (format === 'docx') { assert.equal((await reopened({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0].text, marker); assert.ok((await reopened({ kind: 'word.tables' })).tables.length); }
+    else if (format === 'xlsx') { assert.ok((await reopened({ kind: 'sheets.range', sheetName, range: 'Q1:S4' })).values.flat().includes(marker)); assert.equal((await reopened({ kind: 'sheets.charts', sheetName })).charts[0].type, 'column'); assert.ok((await reopened({ kind: 'sheets.pivots', sheetName })).pivots.length); const logical = await reopened({ kind: 'sheets.range', sheetName, range: 'AA10:AB14' }); assert.deepEqual(logical.kinds[0], ['formula', 'formula']); assert.deepEqual(logical.values[0], [true, false]); assert.equal(logical.values[1][0], true); assert.equal(logical.values[1][1], true); assert.deepEqual((await reopened({ kind: 'sheets.range', sheetName, range: 'AC10:AD11' })).values, [[1, 42], [false, true]]); }
+    else { assert.equal((await reopened({ kind: 'slides.objectText', slideIndex: 2, objectPath: [0] })).text, marker); assert.equal((await reopened({ kind: 'slides.notes', slideIndex: 2 })).text, marker); }
+    await runtime.close(copyId, { discard: true }); await runtime.close(documentId, { discard: true }); item.passed = true; item.savedCopy = { path, bytes: snapshot.bytes.length, sha256: sha(snapshot.bytes) };
+  }
+}
+
 let failure: unknown;
 try {
   assert.equal(process.platform, 'win32');
   phase('source-identities');
   report.identitiesBefore = await identities();
-  for (const format of ['docx', 'xlsx', 'pptx'] as const) {
+  if (process.env.AGENTVIEWER_AUTHORING_ONLY === '1') await verifyStructuredAuthoring();
+  else for (const format of ['docx', 'xlsx', 'pptx'] as const) {
     const sourceBytes = new Uint8Array(await readFile(join(samplesRoot, names[format]))), sourcePath = join(directory, names[format]);
     await writeFile(sourcePath, sourceBytes);
     const item: Record<string, any> = { format, sourcePath, sourceSha256: sha(sourceBytes), sourceBytes: sourceBytes.length, exports: [] };

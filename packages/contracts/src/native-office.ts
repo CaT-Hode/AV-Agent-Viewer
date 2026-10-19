@@ -73,6 +73,8 @@ export interface NativeOfficeInputRequest { sessionId: string; viewId: string; e
 export interface NativeOfficeCapture { mimeType: 'image/png'; data: string; width: number; height: number; deviceScaleFactor: number; rect: Rect; engineEpoch: string; engineRevision: number; sessionId: string; capturedAt: string; layoutRevision?: number }
 /** Trusted main-process facade; HWND/layout never originate from public MCP. */
 export interface NativeOfficeDriver {
+  authoringQuery?(sessionId: string, viewId: string, target: import('../../office-runtime/src/authoring').OfficeAuthoringQuery): Promise<{state: NativeOfficeState; data: unknown}>;
+  authoringExecute?(request: import('../../office-runtime/src/authoring').OfficeAuthoringExecuteRequest): Promise<import('../../office-runtime/src/authoring').OfficeAuthoringReadback>;
   open(request: { documentId: string; viewId: string; format: NativeOfficeFormat; bytes: Uint8Array; revision: number; sourcePath?: string }): Promise<NativeOfficeState>;
   state(sessionId: string, viewId?: string): Promise<NativeOfficeState>;
   snapshot(sessionId: string, reuse?: NativeOfficeSnapshotReuse): Promise<NativeOfficeSnapshot>;

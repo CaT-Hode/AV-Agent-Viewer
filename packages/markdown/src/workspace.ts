@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep, join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import type { ViewerCore } from '../../document-core/src/index';
+import type { Actor } from '../../contracts/src/index';
 import { ViewerError } from '../../contracts/src/index';
 import { markdownLinks, replaceMarkdownLinks } from './links';
 
@@ -107,7 +108,7 @@ export class MarkdownWorkspace {
     }
     return { results, limitReached };
   }
-  private async move(root: string, from: string, to: string) {
+  private async move(root: string, from: string, to: string, actor: Actor = 'human') {
     const source = await this.path(root, from), destination = await this.path(root, to, false);
     if (pathKey(source) === pathKey(root) || pathKey(source) === pathKey(destination)) return invalid('不能移动工作文件夹本身或使用相同路径。');
     if (inside(source, destination)) return invalid('不能把文件夹移动到自身内部。');
@@ -116,7 +117,8 @@ export class MarkdownWorkspace {
     const moved = [...this.core.documents.values()].filter(entry => entry.info.path && inside(source, entry.info.path)).sort((a,b)=>a.info.id.localeCompare(b.info.id));
     const originalPaths=new Map(moved.map(entry=>[entry.info.id,pathKey(entry.info.path!)]));
     const unchanged=()=>{const current=[...this.core.documents.values()].filter(entry=>entry.info.path&&inside(source,entry.info.path));return current.length===moved.length&&current.every(entry=>originalPaths.get(entry.info.id)===pathKey(entry.info.path!));};
-    await this.core.extensions.get('before-file-move')?.({documentIds:moved.map(entry=>entry.info.id)},'human');
+    const assertRunning=()=>{if(actor==='agent'&&moved.some(entry=>['paused','stopped'].includes(this.core.agentControl.get(entry.info.id)??'')||[...this.core.views.values()].some(view=>view.documentId===entry.info.id&&['paused','stopped'].includes(this.core.agentControl.get(view.id)??''))))throw new ViewerError('AGENT_PAUSED','目标文档的Agent已暂停。');};
+    assertRunning();await this.core.extensions.get('before-file-move')?.({documentIds:moved.map(entry=>entry.info.id)},actor);assertRunning();
     const lock = <T>(index: number, action: () => Promise<T>): Promise<T> => index < moved.length ? this.core.runDocumentOperation(moved[index].info.id, () => lock(index + 1, action)) : action();
     return lock(0, async () => {
       if (!unchanged()) return invalid('文件关联在等待期间发生变化，请重新执行移动。');
@@ -192,13 +194,17 @@ export class MarkdownWorkspace {
   change(input: { documentId: string; action: string; path?: string; destination?: string; transactionId?: string }) {
     const operation=this.operations.catch(()=>{}).then(()=>this.changeInside(input)); this.operations=operation; return operation;
   }
-  private async changeInside(input: { documentId: string; action: string; path?: string; destination?: string; transactionId?: string }) {
-    const root = await this.root(input.documentId);
-    this.roots.set(input.documentId,root);
+  /** Trusted caller has already checked an explicit workspace grant. */
+  changeAuthorized(root:string,input:{action:string;path?:string;destination?:string;transactionId?:string},actor:Actor) {
+    const operation=this.operations.catch(()=>{}).then(async()=>{await this.initialize();return this.changeInside({documentId:'',...input},{root:await realpath(root),actor});});this.operations=operation;return operation;
+  }
+  private async changeInside(input: { documentId: string; action: string; path?: string; destination?: string; transactionId?: string },scope?:{root:string;actor:Actor}) {
+    const root = scope?.root??await this.root(input.documentId),actor=scope?.actor??'human';
+    if(!scope)this.roots.set(input.documentId,root);
     if (input.action === 'undo') {
       const previous = input.transactionId ? this.undo.get(input.transactionId) : [...this.undo.values()].reverse().find(entry => entry.root === root);
       if (!previous || previous.root !== root) return invalid('没有可恢复的文件操作。');
-      const result = await this.move(root, previous.to, previous.from);
+      const result = await this.move(root, previous.to, previous.from,actor);
       for (const [id, entry] of this.undo) if (entry === previous) this.undo.delete(id);
       await this.persist(); return { uri: result.destination };
     }
@@ -215,7 +221,7 @@ export class MarkdownWorkspace {
       from = input.path;
       if (input.action === 'trash') { await mkdir(join(root, '.agentviewer-trash'), { recursive: true }); to = '.agentviewer-trash/' + randomUUID() + '-' + basename(from); }
       else to = input.destination || '';
-      await this.move(root, from, to);
+      await this.move(root, from, to,actor);
     } else return invalid('未知文件操作。');
     const transactionId = randomUUID(); this.undo.set(transactionId, { root, from, to });
     while (this.undo.size > 100) this.undo.delete(this.undo.keys().next().value!);

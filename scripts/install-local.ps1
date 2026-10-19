@@ -44,6 +44,18 @@ function Get-InstallInventory([string]$Root) {
 }
 $reuseStaging = $PSBoundParameters.ContainsKey('StagingDirectory')
 $source = [System.IO.Path]::GetFullPath($PackageDirectory)
+$projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
+$nodeCommand = (Get-Command node.exe -ErrorAction Stop).Source
+# Direct invocation must enforce the same release gate as the npm command.
+# Verify the source package's own catalog and fingerprints before any copying.
+Push-Location -LiteralPath $projectRoot
+try {
+  & $npmCommand run mcp:budget
+  if ($LASTEXITCODE -ne 0) { throw 'MCP工具上下文预算校验失败，未执行本机替换。' }
+  & $nodeCommand (Join-Path $PSScriptRoot 'check-mcp-host.mjs') '--package' $source
+  if ($LASTEXITCODE -ne 0) { throw 'MCP桌面认证或待安装包校验失败，未执行本机替换。' }
+} finally { Pop-Location }
 $programsRoot = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Programs'))
 $destination = [System.IO.Path]::GetFullPath((Join-Path $programsRoot 'AgentViewer'))
 $expected = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Programs\AgentViewer'))

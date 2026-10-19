@@ -1,18 +1,14 @@
 ---
 name: agentviewer-editing
-description: Apply authorized AgentViewer edits with explicit targets, versions, draft barriers and save checks.
+description: Edit exact AgentViewer targets, verify effects, and save explicitly.
 ---
 
-Identify document/view, read revision and document_capabilities. Retain controlId for collaboration indication. Never infer a target from later focus.
+Load the target format through av_tools. Read the exact target and submit its concrete ref with flat fields and a distinct req. Reuse req only for retrying the same logical payload; inspect uncertain outcomes before another mutation. Expired refs never authorize guessing a new target.
 
-Ordinary edits use document_plan_patch, inspect the preview, then document_apply_patch with patchId and a unique idempotency key. Retry the same logical submission with the same key; version conflicts require fresh reading. Verify content and receipt, then document_save. Preserve local drafts and external file conflicts.
+Edits normally apply and read back the affected target. av_save is explicit. Applied, verified, recoverable and saved are separate states; a returned job requires av_task. Cancellation does not undo completed effects. Frozen disk revision can coexist with newer unsaved content.
 
-reader_selection_tools may return a ReadingSnapshot or lightweight Office SelectionContext. Submit the matching source identity to reader_selection_action. Notes are separate annotations; PDF overlays are not redaction.
+Background operations must preserve human page, selection and editing state. Foreground changes require explicit av_view. Respect drafts, user pause, composition and modal barriers. If isolated Office editing is unsupported, stop that action and report the capability limitation.
 
-For native Office read office_status/office_query. Submit explicit command, cell, replacement or style through office_execute with required engine and selection versions. Distinguish object and internal text ranges. Retain mixed/unsupported fields; font/line width uses pt, style lengths mm, shape bounds 1/100mm.
+Use returned history tokens for undo. Native undo groups are not atomic rollback. Unsupported atomic batches must fail before effects; do not assume cross-file or website atomicity. Never replace a live native model with an old mirror.
 
-Dispatched proves delivery only. Applied confirms the engine change; recoverable requires a completed recovery checkpoint, and saved confirms a frozen disk version. Default SDK calls keep their durability barrier. Reconcile uncertain outcomes before another write; never blindly replay mutations or external uploads.
-
-Native undo needs its current token/version; never restore an old mirror over a live writer. Text undo stores an inverse range and remains subject to revision/draft/control checks. Evicted history does not authorize replaying an old mutation.
-
-Independent export uses a new path. Resource batches flush drafts and check revision; stale lists must refresh before retry. Release the view controlId when finished. See [editing capabilities](../../../../docs/editing/README.md).
+See [MCP protocol](../../../../docs/automation/mcp.md).

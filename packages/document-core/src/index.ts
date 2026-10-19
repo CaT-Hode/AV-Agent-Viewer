@@ -102,7 +102,7 @@ export class ViewerCore extends EventEmitter {
     for (const [id, patch] of saved.patches ?? []) this.patches.set(id, patch);
   }
   state(): WorkspaceState { return clone({ protocolVersion: PROTOCOL_VERSION, documents: [...this.documents.values()].map(d => d.info), views: [...this.views.values()], agentStates: [...this.views.values()].flatMap(view => view.agentState ? [view.agentState] : []), activeViewId: this.activeViewId, eventsSeq: this.eventLog.at(-1)?.seq ?? 0, tasks: [...this.tasks.values()] }); }
-  /** Trusted desktop display projection. Public SDK/HTTP state remains complete. */
+  /** Trusted desktop display projection. Agent metadata uses its own bounded projection. */
   stateForDisplay(knownDocuments: Record<string, number> = {}): WorkspaceState {
     const views = [...this.views.values()], documentsWithViews = new Set(views.map(view => view.documentId));
     const documents = [...this.documents.values()].map(({ info }) => {
@@ -420,6 +420,70 @@ export class ViewerCore extends EventEmitter {
     });
   }
   async nativeOfficeCommands(viewId: string) { const view = this.getView(viewId), binding = this.nativeBinding(view.documentId); return this.nativeDriver().commands(binding.state.sessionId, viewId); }
+  async queryOfficeAuthoring(viewId: string, target: import('../../office-runtime/src/authoring').OfficeAuthoringQuery) {
+    await this.ensureNativeOfficeBoundForHost(viewId);
+    const view=this.getView(viewId),binding=this.nativeBinding(view.documentId),driver=this.nativeDriver();
+    if(!driver.authoringQuery)throw new ViewerError('CAPABILITY_UNSUPPORTED','当前引擎没有明确目标领域接口。');
+    const result=await driver.authoringQuery(binding.state.sessionId,viewId,target);
+    this.acceptNativeOfficeInspection(viewId,result.state);return result;
+  }
+  /** Targeted engine transaction: no mirror export before each agent edit. */
+  async executeOfficeAuthoring(input:{viewId:string;expectedEngineEpoch:string;expectedEngineRevision:number;idempotencyKey:string;operation:import('../../office-runtime/src/authoring').OfficeAuthoringOperation}) {
+    const key='authoring:'+input.idempotencyKey,payload=fingerprint(JSON.stringify(input));
+    return this.serial(key,async()=>{
+      const prior=this.receipts.get(key);if(prior){if(prior.payload!==payload)throw new ViewerError('IDEMPOTENCY_CONFLICT','请求身份已用于其他操作。');await this.retryFailedRecovery();return clone(prior.receipt) as import('../../office-runtime/src/authoring').OfficeAuthoringReadback & {receipt:Receipt;durability:string};}
+      const view=this.getView(input.viewId);
+      await this.ensureNativeOfficeBoundForHost(view.id);
+      return this.serial(view.documentId,()=>this.withReceiptCapacity(key,view.documentId,{payload},32768+retainedValueBytes(input)*2,async()=>{
+        const driver=this.nativeDriver();if(!driver.authoringExecute)throw new ViewerError('CAPABILITY_UNSUPPORTED','引擎没有明确目标编辑接口。');
+        await this.nativeOfficeState(view.id);const {binding}=this.checkNativeExpected(view.id,input.expectedEngineEpoch,input.expectedEngineRevision);
+        const agentBinding={viewId:view.id,documentId:view.documentId,agentControlId:view.agentState?.controlId,agentStateEpoch:this.agentStateEpochs.get(view.id)??0};
+        this.assertAgentPatchBinding(agentBinding);
+        if(nativeOfficeInteractionBlocked(binding.state))throw new ViewerError('NATIVE_PENDING_INPUT','请先完成组合输入或原生对话框。');
+        await this.extensions.get('before-agent-edit')?.({documentId:view.documentId,viewId:view.id,operation:input.operation},'agent');
+        this.assertAgentPatchBinding(agentBinding);
+        await this.nativeOfficeState(view.id);this.checkNativeExpected(view.id,input.expectedEngineEpoch,input.expectedEngineRevision);
+        const requestId=randomUUID();
+        let result:import('../../office-runtime/src/authoring').OfficeAuthoringReadback;
+        try {result=await driver.authoringExecute({sessionId:binding.state.sessionId,viewId:view.id,expectedEngineEpoch:input.expectedEngineEpoch,expectedEngineRevision:input.expectedEngineRevision,requestId,actor:'agent',operation:input.operation});}
+        catch(error){try{await this.nativeOfficeState(view.id);await this.syncNativeInside(view.documentId,'engine');await this.persist();}catch(recoveryError){this.event('office.error',{documentId:view.documentId,viewId:view.id,kind:input.operation.kind,error:String(recoveryError)});}throw error;}
+        this.updateNativeOfficeState(result.state);
+        const receipt:Receipt={transactionId:requestId,documentId:view.documentId,revision:this.getDocument(view.documentId).info.revision,status:result.status,nativeSessionId:binding.state.sessionId,...(result.warnings?.length?{warnings:result.warnings}:{})};
+        const value={...result,receipt,durability:'pending'};
+        // Retain the irreversible effect before checkpointing. Retries must not reapply it.
+        this.receipts.set(key,{payload,receipt:value,documentId:view.documentId});
+        try {
+          await this.syncNativeInside(view.documentId,'agent');receipt.revision=this.getDocument(view.documentId).info.revision;
+          if(result.undoToken)this.transactions.set(requestId,{kind:'native',documentId:view.documentId,afterRevision:receipt.revision,native:{sessionId:binding.state.sessionId,writerEpoch:binding.writerEpoch,engineEpoch:binding.state.engineEpoch,engineRevision:binding.state.engineRevision,viewId:view.id,undoToken:result.undoToken}});
+          this.markAgentEdit({documentId:view.documentId,viewId:view.id,operation:input.operation},receipt);
+          await this.persist();value.durability='recoverable';
+        } catch(error) { receipt.warnings=[...(receipt.warnings??[]),'修改效果已保留，恢复记录尚未完成。',String(error)]; }
+        this.receipts.set(key,{payload,receipt:value,documentId:view.documentId});
+        this.event('office.executed',{...receipt,viewId:view.id,actor:'agent',kind:input.operation.kind});return value;
+      }));
+    });
+  }
+  /** Trusted byte-producing PDF services enter the same version/recovery/undo lane. */
+  async commitPdfBytes(documentId:string,expectedRevision:number,bytes:Uint8Array,idempotencyKey:string) {
+    const payload='sha256:'+await hashDocumentBytes(bytes),key='pdf-bytes:'+idempotencyKey;
+    return this.serial(key,async()=>{
+      const prior=this.receipts.get(key);if(prior){if(prior.payload!==payload)throw new ViewerError('IDEMPOTENCY_CONFLICT','请求已用于不同PDF内容。');return clone(prior.receipt) as Receipt;}
+      return this.serial(documentId,()=>this.withReceiptCapacity(key,documentId,{payload},16384,async()=>{
+        this.assertAgentRunning(documentId);
+        const current=this.getDocument(documentId);
+        if(current.info.format!=='pdf'||current.info.revision!==expectedRevision)throw new ViewerError('VERSION_CONFLICT','PDF来源已变化。');
+        if(bytes.byteLength>100*1024*1024)throw new ViewerError('FILE_TOO_LARGE','PDF超过100MiB。');
+        await this.extensions.get('before-agent-edit')?.({documentId,operation:{kind:'pdf.bytes'}},'agent');this.assertAgentRunning(documentId);
+        const model=await this.registry.resolve('pdf').open(bytes,'pdf');
+        if(this.getDocument(documentId).info.revision!==expectedRevision)throw new ViewerError('VERSION_CONFLICT','PDF来源已变化。');
+        const transactionId=randomUUID(),before=clone(current);
+        current.bytes=new Uint8Array(bytes);current.info={...current.info,model,revision:expectedRevision+1,dirty:payload.slice(7)!==current.sourceHash};
+        this.transactions.set(transactionId,{kind:'snapshot',documentId,before,afterRevision:current.info.revision});
+        const receipt:Receipt={transactionId,documentId,revision:current.info.revision,status:'applied'};
+        this.receipts.set(key,{payload,receipt,documentId});this.event('document.changed',{...receipt,actor:'agent',kind:'pdf.bytes'});await this.persist();return receipt;
+      }));
+    });
+  }
   async nativeOfficeQuery(viewId: string, target: NativeOfficeQuery) { const view = this.getView(viewId), binding = this.nativeBinding(view.documentId); return this.nativeDriver().query(binding.state.sessionId, viewId, target); }
   async queryNativeOffice(viewId: string, target: NativeOfficeQuery) {
     const view = this.getView(viewId), binding = this.nativeBinding(view.documentId), driver = this.nativeDriver();

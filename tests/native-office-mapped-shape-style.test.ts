@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { nativeOfficeStyleSource } from '../packages/office-runtime/src/native-style-source';
 import { nativeOfficeWorkerSource } from '../packages/office-runtime/src/worker-source';
 import { officeKitWorkerSource } from '../packages/office-runtime/src/kit-worker-source';
+import { officeAuthoringSource } from '../packages/office-runtime/src/authoring-source';
+import { officeAuthoringCapabilities, officeAuthoringFormats } from '../packages/office-runtime/src/authoring';
 
 const program = join(process.cwd(), 'release/win-unpacked/resources/engines/libreoffice/program');
 const pythonCore = existsSync(program) ? readdirSync(program).find(name => /^python-core-\d/.test(name)) : undefined;
@@ -21,7 +23,14 @@ class AnyValue:
 uno=NS(getTypeByName=lambda name:name,Any=lambda type,value:AnyValue(type,value),Enum=lambda type,value:NS(typeName=type,value=value),createUnoStruct=lambda name:NS())
 unohelper=NS(Base=type('UnoBase',(),{}));XUndoAction=type('XUndoAction',(),{})
 exec(source['style'],globals())
-for module,names in [(source['shared'],{'execute_operation','selection'}),(source['kit'],{'KitRequestQueue','execute_request','native_input_pending','native_input_state','native_history_signature','live_text_history_fingerprint','reconcile_history_revision','request_receipt','remember_request_receipt','refresh_surface_geometry','kit_callback'})]:
+exec(source['authoring'],globals())
+for doc_call_enabled in [False,True]:
+    if doc_call_enabled:globals()['doc_call']=object()
+    else:globals().pop('doc_call',None)
+    for format,expected_capability in source['capabilities'][str(doc_call_enabled).lower()].items():
+        assert authoring_query({'doc':None,'format':format},None,{'kind':'capabilities'})==expected_capability
+globals().pop('doc_call',None)
+for module,names in [(source['shared'],{'execute_operation','selection','ppt_text_parts'}),(source['kit'],{'KitRequestQueue','execute_request','native_input_pending','native_input_state','native_history_signature','live_text_history_fingerprint','reconcile_history_revision','request_receipt','remember_request_receipt','refresh_surface_geometry','kit_callback'})]:
     tree=ast.parse(module);compile(tree,'complete-worker','exec')
     selected=[node for node in tree.body if isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in names]
     assert len(selected)==len(names);exec(compile(ast.Module(body=selected,type_ignores=[]),'actual-native-style-producer','exec'))
@@ -192,7 +201,7 @@ undo_state=lambda owner:{'token':'real'}
 `;
 function check(body: string) {
   assert.equal(execFileSync(python, ['-c', fixture + body + '\nprint("PASS")'], {
-    input: JSON.stringify({ style: nativeOfficeStyleSource, shared: nativeOfficeWorkerSource, kit: officeKitWorkerSource }) + '\n', encoding: 'utf8', timeout: 15000,
+    input: JSON.stringify({ style: nativeOfficeStyleSource, authoring: officeAuthoringSource, shared: nativeOfficeWorkerSource, kit: officeKitWorkerSource, capabilities: Object.fromEntries([false,true].map(docCall=>[String(docCall),Object.fromEntries(officeAuthoringFormats.map(format=>[format,officeAuthoringCapabilities(format,docCall)]))])) }) + '\n', encoding: 'utf8', timeout: 15000,
     env: { ...process.env, PATH: pythonCore ? program + ';' + process.env.PATH : process.env.PATH, ...(pythonCore ? { PYTHONHOME: join(program, pythonCore) } : {}), PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
   }).trim(), 'PASS');
 }
@@ -251,6 +260,15 @@ assert manager.getAllUndoActionTitles()==('previous',) and not manager.redo and 
 
 test('explicit target styles preserve a different user selection and support an actual empty text cursor', () => {
   check(String.raw`
+args=setup();session['format']='docx';view['caretVisible']=True;view['nativeEditing']=True
+authoring_guard(session,view,args)
+plan=prepare_native_style(session,view,{'target':'text','values':{'bold':True}},[run1],True)
+apply_actual_style_plans(session,view,[plan],args,lambda:None,True)
+assert run1.values['CharWeight']==150. and view['caretVisible'] and window.enabled,'a normal Writer caret must not block explicit model editing or be cleared'
+args=setup();session['format']='docx';view.update(caretVisible=True,composition=True)
+try:authoring_guard(session,view,args)
+except RuntimeError as error:assert str(error).startswith('NATIVE_PENDING_INPUT|')
+else:raise AssertionError('Writer composition must remain protected')
 args=setup(empty_text=True)
 apply_mapped_shape_style(session,view,op(color='166a71',fontSize=24,alignment='right',fill='b6d8cc'),args)
 assert empty.values['CharColor']==0x166a71 and empty.values['CharHeight']==24 and text.getString()==''
@@ -274,6 +292,31 @@ assert inspect_native_style(session,view,'text')['fields']['bold']['value'] is T
 assert apply_live_native_text_style(session,view,{'target':'text','values':{'bold':True}},{**args,'expectedEngineRevision':session['engineRevision']})['status']=='no-change' and len(posted)==1
 unsupported=inspect_native_style(session,view,'paragraph')['fields']['left']
 assert not unsupported['available'] and unsupported['state']=='unsupported' and '段落' in unsupported['reason']
+args=setup()
+class SelectionShape:
+    def __init__(self,body=None,children=None):self.body=body;self.children=children
+    def getText(self):return self.body
+    def getCount(self):return len(self.children)
+    def getByIndex(self,index):return self.children[index]
+    def supportsService(self,name):return self.children is not None and name=='com.sun.star.drawing.GroupShape'
+first_text=NS(getString=lambda:'identical😀');actual_text=NS(getString=lambda:'identical😀')
+leaf=SelectionShape(actual_text);group=SelectionShape(children=[leaf]);native_page=SelectionShape(children=[SelectionShape(first_text),group])
+actual=NS(Text=actual_text,String='😀',getPropertyValue=lambda name:NS(Start=NS(Paragraph=0,PositionInParagraph=9),End=NS(Paragraph=0,PositionInParagraph=11)))
+view['controller']=NS(getCurrentPage=lambda:native_page)
+session['doc'].getDrawPages=lambda:NS(getCount=lambda:1,getByIndex=lambda index:native_page)
+selection=lambda owner,target:{'kind':'text','text':'😀'}
+selected_text_range=lambda owner,target:actual
+bound=authoring_selection_target(session,view)
+assert bound['target']=={'kind':'slides.object','slideIndex':0,'objectPath':[1,0],'matchFrom':9,'matchTo':11},'native text-container identity must bind the actual group child even when sibling text is identical'
+assert not bound['editable'] and bound['code']=='BACKGROUND_EDIT_UNSUPPORTED'
+view.update(nativeEditing=True,caretVisible=True)
+bound=authoring_selection_target(session,view)
+assert not bound['editable'] and bound['code']=='NATIVE_PENDING_INPUT','selection discovery must not end the human Outliner'
+view.update(nativeEditing=False,caretVisible=False)
+states=iter([{'engineRevision':4,'engineEpoch':'epoch','selectionEpoch':1},{'engineRevision':4,'engineEpoch':'epoch','selectionEpoch':2}]);state=lambda owner,target:next(states)
+try:authoring_query_request(session,view,{'target':{'kind':'selection-target'}})
+except RuntimeError as error:assert str(error).startswith('STALE_NATIVE_QUERY|')
+else:raise AssertionError('selection-target must be atomically tied to the returned selectionEpoch')
 `);
 });
 

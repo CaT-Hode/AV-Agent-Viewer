@@ -2,6 +2,7 @@ import { BrowserWindow, nativeImage } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { NativeOfficeRuntime } from '../../../../packages/office-runtime/src/index';
+import type { OfficeAuthoringExecuteRequest, OfficeAuthoringQuery, OfficeAuthoringReadback } from '../../../../packages/office-runtime/src/authoring';
 import type { NativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
 import type { NativeOfficeDriver, NativeOfficeState, NativeOfficeFormat, NativeOfficeNavigateTarget, NativeOfficeExportFormat, Rect, NativeOfficeQuery, NativeOfficeExecuteRequest, NativeOfficeSnapshotReuse, BrowserAction } from '../../../../packages/contracts/src/index';
 import { normalizeViewZoom, type ViewerCore } from '../../../../packages/document-core/src/index';
@@ -172,7 +173,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     const metadata = this.core.documents.get(state.documentId)?.info.nativeOffice;
     return !!entry && (!capturedEntry || entry === capturedEntry) && entry.sessionId === state.sessionId && (!entry.state || entry.state.engineEpoch === state.engineEpoch) && view?.documentId === state.documentId && metadata?.sessionId === state.sessionId && metadata.engineEpoch === state.engineEpoch;
   }
-  private accept(rawState: NativeOfficeState, capturedDisplay?: OfficeDisplayTicket<BrowserWindow>, forceWithdrawn=false, observationReceipt?: object, capturedEntry?: HostedView) {
+  private accept<T extends NativeOfficeState>(rawState: T, capturedDisplay?: OfficeDisplayTicket<BrowserWindow>, forceWithdrawn=false, observationReceipt?: object, capturedEntry?: HostedView, preserveHumanView=false): T {
     if(this.unavailableSessions.has(rawState.sessionId))throw new ViewerError('NATIVE_SESSION_UNAVAILABLE','Office 模型的清理状态未能确认，已停止访问并保留恢复内容。');
     if (!this.currentController(rawState, capturedEntry)) {
       // A completed native input still owns its real model receipt. It must
@@ -186,7 +187,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     const state = this.displayState(rawState, retiredDisplay);
     if (state.viewId && (!observationReceipt || retiredDisplay)) this.observationKeys.delete(state.viewId);
     this.core.updateNativeOfficeState(state);
-    if(!retiredDisplay&&state.viewId&&state.visible&&state.focused&&state.actor==='human'&&this.displayVisible(state.viewId)&&entry?.layout?.owner.isFocused()&&this.core.views.has(state.viewId)&&this.core.activeViewId!==state.viewId)this.core.activate(state.viewId,'human');
+    if(!preserveHumanView&&!retiredDisplay&&state.viewId&&state.visible&&state.focused&&state.actor==='human'&&this.displayVisible(state.viewId)&&entry?.layout?.owner.isFocused()&&this.core.views.has(state.viewId)&&this.core.activeViewId!==state.viewId)this.core.activate(state.viewId,'human');
     const zoom=(state as NativeOfficeState&{zoom?:number}).zoom,intent=state.viewId?this.zoomIntents.get(state.viewId):undefined;
     // A native read/layout issued before zoom() can settle after that intent.
     // Preserve its real geometry, but never publish its old scale as a new
@@ -296,6 +297,30 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   commands(sessionId:string,viewId:string) { return this.runtime.commands(sessionId,viewId); }
   commandStatus(sessionId:string,viewId:string,commands:string[]) { return this.runtime.commandStatuses(sessionId,viewId,commands); }
   query(sessionId:string,viewId:string,target:NativeOfficeQuery) { return this.runtime.query(sessionId,viewId,target); }
+  private authoringController(sessionId: string, viewId: string) {
+    const entry = this.views.get(viewId), view = this.core.views.get(viewId);
+    if (this.workerExited || this.unavailableSessions.has(sessionId)) throw new ViewerError('NATIVE_SESSION_UNAVAILABLE', 'The native authoring session is unavailable.');
+    if (!entry || entry.sessionId !== sessionId || !view || this.documents.get(view.documentId) !== sessionId || entry.layout?.owner.isDestroyed()) throw new ViewerError('NATIVE_SESSION_EXPIRED', 'The exact native authoring controller is no longer bound.');
+    return entry;
+  }
+  async authoringQuery(sessionId: string, viewId: string, target: OfficeAuthoringQuery): Promise<{ state: NativeOfficeState; data: unknown }> {
+    return this.displays.serialize(viewId, async () => {
+      const entry = this.authoringController(sessionId, viewId), ticket = this.displays.current(viewId);
+      const result = await this.runtime.authoringQuery(sessionId, viewId, target);
+      const state = this.accept(result.state, ticket, this.displays.current(viewId) !== ticket, undefined, entry, true);
+      return { ...result, state };
+    });
+  }
+  async authoringExecute(request: OfficeAuthoringExecuteRequest): Promise<OfficeAuthoringReadback> {
+    return this.displays.serialize(request.viewId, async () => {
+      const entry = this.authoringController(request.sessionId, request.viewId), ticket = this.displays.current(request.viewId);
+      const result = await this.runtime.authoringExecute(request);
+      const state = this.accept(result.state, ticket, this.displays.current(request.viewId) !== ticket, undefined, entry, true);
+      const owner = entry.layout?.owner;
+      if (this.views.get(request.viewId) === entry && owner && !owner.isDestroyed() && !owner.webContents.isDestroyed()) this.changed(owner, request.viewId);
+      return { ...result, state };
+    });
+  }
   async inspect(sessionId:string,viewId:string,request:{target?:NativeOfficeQuery;commands?:string[]}) { const result=await this.runtime.inspect(sessionId,viewId,request); return {...result,state:this.displayState(result.state)}; }
   async execute(request:NativeOfficeExecuteRequest) { const result = await this.runtime.execute(request); return { ...result, state: this.displayState(result.state) }; }
   async zoom(sessionId:string,viewId:string,factor:number) {

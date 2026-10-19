@@ -1,37 +1,36 @@
-# 架构与数据边界
+# 架构与边界
 
-桌面 renderer → preload IPC → main → `ViewerCore`；HTTP、CLI、MCP 经 SDK 分发进入同一 Core。界面负责输入与呈现，文件修改以核心及引擎回执为准。
+桌面 renderer → preload → main → ViewerCore。MCP、HTTP、CLI 和类型化 SDK 使用同一公开操作 registry；格式服务、事务与文件授权集中处理，入口不各自维护语义。
 
-| 层 | 当前责任 |
+| 层 | 责任 |
 | --- | --- |
-| desktop / local-service | 窗口、原生宿主、本地鉴权与工具入口 |
-| document-core | 文档/视图身份、版本、事务、保存屏障、任务 |
-| DocumentSessions / DocumentHistory / ReceiptLedger | 文档队列、历史与幂等回执配额 |
-| format-adapters | 非原生编辑与格式投影 |
-| office-runtime | Kit 进程、原生模型、输入、图块与检查点 |
-| markdown | 源范围命令、资源、工作区文件及偏好 |
-| persistence | 内容 blob、恢复清单、迁移与有界写队列 |
+| desktop / local-service | 窗口、宿主、本地鉴权、连接级工具目录 |
+| sdk / contracts | 扁平工具、运行时校验、类型、refs 与错误 |
+| document-core | 文档队列、来源版本、回执、历史、保存与任务 |
+| format-adapters / markdown | 文本结构、范围事务、资源与转换 |
+| office-runtime | 原生模型、controller、typed UNO 事务与检查点 |
+| persistence | 内容 blob、恢复清单、有界编码与写入队列 |
 
-## 内容与视图
+## 来源与控制
 
-一份内容对应 `documentId`，各 `viewId` 保留选区、位置、缩放和输入上下文。文本使用 UTF-16 范围及内容 revision；Office 另外核对 session、engineEpoch、engineRevision、selectionEpoch 和布局版本。
+同一 document 可有多个 view。Markdown 源文本是唯一可写正文，实时/源码/分栏共享 UTF-16 范围；HTML 的写入针对源码，不假定具备任意 DOM 富文本编辑能力。活跃 Office 由原生模型写入，辅助 OOXML 投影不能覆盖它。
 
-Markdown 源文本是唯一可写正文；表格、公式等控件产生范围事务，分栏右侧共享只读虚拟预览；预览选区须精确映射回源码。活跃 Office 由原生模型唯一写入，OOXML 镜像供读取与恢复，不能反向覆盖活跃编辑源。
+Agent 只持有短 ref。服务端绑定文档、授权、目标与版本：文本范围绑定 revision/指纹；Office 绑定 session/engine 与原生容器；PDF 绑定文件哈希、页和提取来源；网页绑定 frame、导航与 DOM 世代。读取 active/selection 可原子解析，修改必须使用具体 ref。视口移动本身不应使纯模型目标失效。
 
-完整 `ReadingSnapshot` 冻结正文和来源。界面可用 `SelectionContext` 传递已确认选区、身份和文档元数据，避免整文件跨 IPC；Office 核对原生 lease，Markdown/HTML 核对 revision 与源范围，失效写入拒绝执行。需要全文时再冻结内容，SDK 默认快照语义保留。Office 原子 `inspect` 在同一操作中取得状态、属性及能力。
+默认后台执行；激活、跳页、选择与窗口变更通过显式视图操作。不能安全隔离的原生编辑返回能力限制，禁止偷偷借用人工页面或选区。用户草稿、暂停、组合输入和模态状态始终优先。
 
-## 完成与恢复
+## 执行与完成
 
-命令“已派发”“已应用”“可恢复”和源文件“已保存”分别表达。人工格式操作可先返回 applied，后台检查点完成后才可称 recoverable；SDK 默认保留持久化屏障。
+req 是逻辑修改身份，与 ref、内容哈希、JSON-RPC id 分开。相同 req/载荷重试返回原回执，不同载荷冲突；先查已完成回执，再检查旧 ref 是否过期。
 
-恢复 v2 使用 SHA-256 blob；纯文本模型从正文重建，小改用最多32层的delta及完整检查点。加载校验长度与哈希；原子替换清单前保留 `.v2.bak`，v1迁移保留 `.v1.bak`。GC保留当前、备份及待写依赖，只删自有目录的托管blob。checkpoint可合并，barrier保序，超预算背压。
+修改默认执行并读回目标，源文件保存独立。回执分别表达 effect、verification、durability；job 表示尚未完成的生命周期，不表示成功。取消不撤销已应用的效果。冻结版本落盘后，较新的实时内容仍可能保持 dirty。
 
-`exportRecovery(path)` 排空文档队列、严格同步原生及落盘后导出旧格式恢复包；repository维护屏障保护读取的blob，目标必须新建，不切换当前存储。
+事务按文档排队。原生 UndoContext 和互斥不是原子回滚；批量操作必须明确 atomic、ordered-stop-on-error 或 best-effort，不支持的 atomic 在执行前拒绝。
 
-文本撤销保留逆操作，Office保留原生token；历史、prepared patches分别限制每文档64 MiB、合计256 MiB。提交释放patch正文，回执以指纹保留幂等语义。回执在执行前预留每文档64 MiB、总256 MiB配额；已完成和旧版回执不丢弃，超额时拒绝新键。第三方超大结果仍完整保留，并关闭后续准入。完整快照同样按64/256 MiB和100项限制，运行任务固定来源。
+## 存储与上下文
 
-后台编码lane处理大正文UTF-8、SHA-256和恢复导出JSON；Office辅助模型按压缩/展开XML规模转Worker。完整Markdown导出在独立renderer准备AST/DOM，只获得当前文档资源读取桥。主线程仍承担版本检查和有界元数据序列化。
+列表只返回元数据；范围、单元格和对象按需读取，游标绑定查询与来源版本。回执只读回受影响内容，不默认传输全文模型、任务正文或重复结果。
 
-桌面按窗口失效通知刷新，已知正文 revision 可省略重复模型；低频轮询用于补偿。外部文档内容不授予工具权限，运行凭据和密钥不得进入仓库。
+恢复保留校验过的 blob、delta 与原子清单；历史、快照、回执有准入配额，保存使用冻结版本和冲突检查。内部恢复格式不构成旧公开 API 兼容层。
 
-[编辑责任与对标](editing/refactor.md) · [审查](review.md) · [恢复与性能](performance/README.md)
+[MCP](automation/mcp.md) · [编辑](editing/README.md) · [性能](performance/README.md)
