@@ -42,6 +42,6 @@ Markdown 的 HTML/PDF/PNG 使用应用导出；DOCX、ODT、RTF、EPUB、LaTeX �
 
 每轮相关修改完成后再验证，当前实绩与覆盖边界见[测试记录](../../tests/README.md)。测试总预算 50，以[清单](../../tests/suite.json)统计为准；文档按[manifest](../manifest.json)限制每模块两篇、每篇完整 Unicode 字符≤2000。日志与轨迹留 TEMP，依赖报告放 artifacts。
 
-install:local 先复制到同级暂存目录，校验关键文件后切换安装目录，旧版本留作回退。发现已安装进程运行时拒绝替换；用户数据位于独立的 APPDATA 目录。安装和远端推送分别验证，不把工作区构建当作已安装。
+install:local先复制到同级暂存目录，用.NET流式SHA256校验后切换安装目录，旧版本留作回退，兼容Windows PowerShell 5.1与PowerShell 7。完整暂存可通过-StagingDirectory显式复用；仅接受Programs直系暂存目录，核对完整文件清单、长度和关键哈希，拒绝链接及残缺复制。发现已安装进程运行时拒绝替换；APPDATA用户数据独立保留。安装和远端推送分别验证，不把工作区构建当作已安装。
 
 [测试](../../tests/README.md) · [依赖许可](dependencies.md) · [原生适配](../../packages/office-runtime/native/README.md)

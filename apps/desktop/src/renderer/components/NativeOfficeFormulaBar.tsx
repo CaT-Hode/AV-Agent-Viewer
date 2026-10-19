@@ -6,6 +6,7 @@ import { NativeOfficeCellDraft, nativeOfficeSingleCell } from '../lib/native-off
 import { nativeOfficeOwnedState, nativeOfficeStatusKey, type NativeOfficeRequest } from '../lib/native-office-tools';
 import { call } from '../lib/transport';
 import '../native-office-tools.css';
+import { NAVIGATION_CONTENT_EVENT } from '../lib/useNavigationLayout';
 
 export const NATIVE_OFFICE_FORMULA_BAR_HEIGHT = 32;
 export type NativeOfficeFormulaBarProps = {
@@ -46,6 +47,9 @@ export function NativeOfficeFormulaBar(props: NativeOfficeFormulaBarProps) {
     return () => { disposed = true; };
   }, [key, draft, request, dirty, props.active]);
   const target = draft.target, editable = !!target && !!state && state.status === 'ready' && !state.pendingInput;
+  // React updates input.value as a property, which MutationObserver cannot
+  // observe. Notify the single navigation host without replacing this editor.
+  useLayoutEffect(() => { input.current?.dispatchEvent(new Event(NAVIGATION_CONTENT_EVENT, { bubbles: true })); }, [draft.value]);
   const stale = dirty && (!cell || cell.sheetName !== target?.sheetName || cell.address !== target?.address);
   const flush = async () => {
     if (busy) return; const origin = identity; setBusy(true); setError('');

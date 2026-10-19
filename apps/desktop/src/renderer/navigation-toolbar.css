@@ -65,12 +65,12 @@
 .navigation-capsule .view-modes { gap: 2px; }
 .navigation-capsule .view-modes button { font-size: 12px; border: 0; border-radius: 16px; padding: 6px 9px; }
 .navigation-capsule .capsule-text { font-size: 11px; padding: 5px; gap: 4px; color: var(--glass-ink); white-space: nowrap; }
-.navigation-capsule .capsule-document-title { flex:1 1 180px; font-size:13px; font-weight:600; min-width:0; max-width:220px; padding:0 4px; color:var(--glass-ink); }
+.navigation-capsule .capsule-document-title { flex:0 1 auto; font-size:13px; font-weight:600; min-width:0; max-width:220px; padding:0 4px; color:var(--glass-ink); }
 .navigation-capsule .capsule-document-title > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .navigation-capsule .capsule-document-title > svg { flex-shrink:0; width:16px; height:16px; }
-.navigation-capsule .address { flex: 1 1 240px; min-width: 0; max-width: 430px; }
-.navigation-toolbar[data-navigation-format="xlsx"] .capsule-document-title { flex:0 1 110px; max-width:110px; }
-.navigation-capsule .navigation-formula-slot { flex:1 1 360px; min-width:0; max-width:none; }
+.navigation-toolbar .navigation-capsule .address { flex:0 1 auto; width:auto; min-width:calc(20ch + 12px); max-width:430px; font-size:13px; }
+.navigation-toolbar[data-navigation-format="xlsx"] .capsule-document-title { max-width:110px; }
+.navigation-capsule .navigation-formula-slot { flex:1 1 auto; min-width:0; max-width:none; }
 .navigation-capsule .navigation-formula-slot > .native-office-formula-bar { flex:1 1 auto; width:100%; min-width:0; height:34px; min-height:0; padding:0 2px; gap:4px; border:0; background:transparent; color:var(--navigation-ink,var(--glass-ink)); overflow:hidden; }
 .navigation-capsule .navigation-formula-slot .native-office-cell-address { flex-basis:48px; max-width:64px; color:inherit; border-color:var(--glass-inset-hairline); font-size:11px; }
 .navigation-capsule .navigation-formula-slot input { min-width:0; flex:1 1 80px; width:0; height:30px; padding:0 4px; border:0; background:transparent; color:inherit; font-size:12px; font-variant-numeric:tabular-nums; }
@@ -78,7 +78,7 @@
 .navigation-formula-slot .native-office-formula-error { flex-shrink:0; color:inherit; }
 .navigation-toolbar[data-navigation-format="xlsx"]:is([data-navigation-density="minimal"],[data-navigation-density="micro"]) .navigation-formula-slot :is(.native-office-cell-address,.native-office-formula-bar > svg,.native-office-formula-error) { display:none; }
 .navigation-toolbar[data-navigation-format="xlsx"][data-navigation-density="micro"] .navigation-formula-slot .icon-button { display:none; }
-:root[data-theme] .navigation-capsule .address-input { width: 100%; min-width:0; height: 32px; padding: 0 6px; font-size: 13px; border: 0; border-radius: 18px; background: transparent; color: var(--glass-ink); box-shadow: none; }
+:root[data-theme] .navigation-capsule .address-input { field-sizing:content; width:auto; max-width:100%; min-width:calc(20ch + 12px); height:32px; padding:0 6px; font-size:13px; border:0; border-radius:18px; background:transparent; color:var(--glass-ink); box-shadow:none; }
 :root[data-theme] .workbench .reader-toolbar .navigation-capsule :is(button, .address-input, .capsule-document-title) { color: var(--navigation-ink, var(--glass-ink)); }
 
 /* A transparent source-derived optical gutter; no rectangular blur surface. */

@@ -19,7 +19,8 @@ const icons:Record<string,typeof Copy>={copy:Copy,citation:Quote,extract:FilePlu
 export function SelectionTools({native=false}:{native?:boolean}) {
   const [state,setState]=useState<State>(),[rect,setRect]=useState<Rect>(),[input,setInput]=useState<Tool>(),[value,setValue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [viewport,setViewport]=useState<Rect>(),[backdrop,setBackdrop]=useState<{image?:string;sample?:NavigationBackdropSample}>({}),[glassBounds,setGlassBounds]=useState<NavigationBounds>(),[surface,setSurface]=useState<'light'|'dark'>();
-  const [navigationBounds,setNavigationBounds]=useState<Rect>();
+  const navigationBounds=useRef<Rect|undefined>(undefined);
+  const [,refreshNavigationPlacement]=useState(0),navigationPlacement=useRef(true),canPlaceAroundNavigation=useRef<(bounds:Rect|undefined)=>boolean>(()=>true);
   const [panelBounds,setPanelBounds]=useState<Rect[]>([]);
   const motionRefresh=useRef<()=>void>(()=>{});
   const [opticsReady,setOpticsReady]=useState(false),[backdropReady,setBackdropReady]=useState(!native);
@@ -29,7 +30,23 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   const tracked=useRef<{viewId:string;revision:number;text:string;range?:Range;element?:Element}|undefined>(undefined);
   const engineSelection=useRef<{viewId:string;lease:string;state:State;rect:Rect;viewport:Rect}|undefined>(undefined);
   const inputMotion=usePresence(!!input,{duration:160}),errorMotion=usePresence(!!error&&!input,{duration:150});
-  useEffect(()=>{if(native)return;setNavigationBounds(readSelectionNavigationBounds());const update=(event:Event)=>{const detail=(event as CustomEvent<SelectionNavigationBounds>).detail,next=detail.visible?detail.bounds:undefined;setNavigationBounds(old=>JSON.stringify(old)===JSON.stringify(next)?old:next);};window.addEventListener(SELECTION_NAVIGATION_EVENT,update);return()=>window.removeEventListener(SELECTION_NAVIGATION_EVENT,update);},[native]);
+  useLayoutEffect(()=>{
+    if(native||!state||!rect){navigationBounds.current=undefined;return;}
+    let frame=0;
+    const update=(next:Rect|undefined)=>{
+      navigationBounds.current=next;
+      const possible=canPlaceAroundNavigation.current(next);
+      // The motion controller follows every actual capsule coordinate. React
+      // only needs a commit when an impossible placement appears/disappears.
+      if(possible!==navigationPlacement.current){navigationPlacement.current=possible;refreshNavigationPlacement(version=>version+1);}
+      // Navigation publishes from the shared layout write phase. Defer the
+      // motion controller's live Range/panel reads to the next frame.
+      if(!frame)frame=requestAnimationFrame(()=>{frame=0;motionRefresh.current();});
+    };
+    const receive=(event:Event)=>{const detail=(event as CustomEvent<SelectionNavigationBounds>).detail;update(detail.visible?detail.bounds:undefined);};
+    update(readSelectionNavigationBounds());
+    window.addEventListener(SELECTION_NAVIGATION_EVENT,receive);return()=>{cancelAnimationFrame(frame);window.removeEventListener(SELECTION_NAVIGATION_EVENT,receive);};
+  },[native,!!state,!!rect]);
   useLayoutEffect(()=>{
     if(native||!state)return;
     const workbench=document.querySelector('.workbench');if(!workbench)return;
@@ -114,7 +131,9 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   };
   const width=Math.min(600,((state?.actions.length??0)+1)*32+16),readingViewport=viewport??{x:0,y:64,width:innerWidth,height:innerHeight-64};
   const safeLeft=Math.max(0,readingViewport.x),safeTop=Math.max(0,readingViewport.y),safeViewport={x:safeLeft,y:safeTop,width:Math.max(0,Math.min(innerWidth,readingViewport.x+readingViewport.width)-safeLeft),height:Math.max(0,Math.min(innerHeight,readingViewport.y+readingViewport.height)-safeTop)};
-  const position=rect&&placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(navigationBounds?[navigationBounds]:[]),...panelBounds]);
+  const position=rect&&placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(navigationBounds.current?[navigationBounds.current]:[]),...panelBounds]);
+  canPlaceAroundNavigation.current=bounds=>!!rect&&!!placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(bounds?[bounds]:[]),...panelBounds]);
+  navigationPlacement.current=!!position;
   const materialWidth=useGlassSpringValue(width,KUBE_GLASS_SPRINGS.lensShape,!state);
   const show=!!state&&!!rect&&(native||!!position),left=native?8:undefined,top=native?8:undefined;
   const refreshMotion=useSelectionToolbarMotion(toolbar,!native&&show,identity.current,()=>{

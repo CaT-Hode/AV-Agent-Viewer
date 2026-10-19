@@ -4,11 +4,10 @@ import { NavigationGlass } from './NavigationGlass';
 import { NAVIGATION_METRICS, type NavigationBackdropSample, type NavigationBounds } from '../lib/navigation-optics';
 import { navigationMotionDuration, useMotionSnapshot } from '../lib/motion';
 import { LiquidGlassSurface } from './LiquidGlassSurface';
-import { useGlassSpringValue } from '../lib/glass-elasticity';
-import { KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
 import { SELECTION_NAVIGATION_EVENT, type SelectionNavigationBounds } from '../lib/selection-position';
-import { boundedNavigationPresentation, clearSidebarNavigationReservation, navigationControlMetrics, navigationDensity, navigationLane, observeNavigationLane, preferredNavigationWidth, readNavigationTargetLane, prepareSidebarNavigationReservation, type NavigationLane } from '../lib/navigation-lane';
+import { clearSidebarNavigationReservation, navigationControlMetrics, navigationDensity, navigationLane, observeNavigationLane, readNavigationTargetLane, prepareSidebarNavigationReservation, type NavigationLane } from '../lib/navigation-lane';
 import { scheduleLayoutRead } from '../lib/layout-frame';
+import { useNavigationLayout } from '../lib/useNavigationLayout';
 
 export type NavigationAction =
   | { type: 'back' | 'forward' | 'reload' | 'copy' | 'translate' | 'undo' | 'save' | 'dismiss' }
@@ -97,11 +96,9 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     },false);
     return () => { dispose(); clearSidebarNavigationReservation(reader); };
   },[availableWidth,laneBounds?.left,laneBounds?.right,laneBounds?.width,laneBounds?.center,nativeInset,hidden]);
-  const animatedWidth = useGlassSpringValue(isSheet ? Math.min(lane.width,1060) : preferredNavigationWidth(lane.width),KUBE_GLASS_SPRINGS.lensShape);
-  const animatedCenter = useGlassSpringValue(lane.center,KUBE_GLASS_SPRINGS.lensShape);
-  // The canvas boundary is stable. Sidebars yield their visible shape to the
-  // actual capsule while it springs toward their preannounced final lane.
-  const fitted = boundedNavigationPresentation(canvas,animatedWidth,animatedCenter), density = navigationDensity(fitted.width);
+  // Density follows the available lane, never the content width or a spring
+  // frame. A short title must not remove otherwise available controls.
+  const density = navigationDensity(lane.width);
   const wide = density === 'wide', tight = density === 'tight', compact = density === 'compact', minimal = density === 'minimal', micro = density === 'micro';
   const showIdentity = !minimal && !micro && (!isSheet || wide), showHistory = !minimal && !micro && (!isSheet || wide), showForward = (wide || tight || compact) && (!isSheet || wide), showReload = (wide || tight) && !isSheet, showSteps = (wide || tight || compact) && !isSheet, showUndo = (wide || tight) && !isSheet;
   const isWeb = state.format === 'web', isText = state.format === 'markdown' || state.format === 'html', hasMore = isSheet || !wide;
@@ -135,6 +132,7 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   const motion = useMotionSnapshot();
   durationMs = navigationMotionDuration(durationMs, motion);
   const immediate = instant || motion.split(':')[0] === 'off';
+  useNavigationLayout(nav, capsule, lane, canvas, [density, state.format, state.title, addressDraft, state.translated, zoomDraft].join('\0'), instant);
   const [entered, setEntered] = useState(immediate);
   // Native navigation unmounts after closing. Establish a painted collapsed
   // frame on its next mount so it opens with the same transition as documents.
@@ -153,20 +151,34 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   useLayoutEffect(() => {
     const node = capsule.current, toolbar = nav.current;
     if (!node || !toolbar) return;
-    let cancelFrame: (() => void) | undefined, movingUntil = 0, previous: NavigationBounds | undefined, previousHidden: boolean | undefined;
+    let cancelFrame: (() => void) | undefined, movingUntil = 0, previous: NavigationBounds | undefined, sampledBounds: NavigationBounds | undefined, previousHidden: boolean | undefined;
     const reader = toolbar.closest<HTMLElement>('.reader-panel');
     const measure = () => {
       const rect = node.getBoundingClientRect();
       const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      // Optical maps use local CSS dimensions; presence transforms already
+      // scale their host, so transformed bounds would scale the field twice.
+      const mapWidth = Number(node.dataset.navigationOpticsWidth), mapHeight = Number(node.dataset.navigationOpticsHeight), overscan = Number(node.dataset.navigationOpticsOverscan) || 0;
+      const localWidth = Number.parseFloat(toolbar.style.getPropertyValue('--navigation-slot-width')) || node.offsetWidth;
+      const opticalScale = mapWidth > 0 && mapHeight > 0 ? { x: (localWidth + 2 * overscan) / (mapWidth + 2 * overscan), y: (node.offsetHeight + 2 * overscan) / (mapHeight + 2 * overscan) } : { x: 1, y: 1 };
       const { hidden, sampled } = presentation.current;
       const changed = !previous || ['x', 'y', 'width', 'height'].some(key => Math.abs(previous![key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) >= .125) || hidden !== previousHidden;
       const box = reader?.getBoundingClientRect();
       const reserve = reader && box && !hidden ? prepareSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left,box) : undefined;
       return () => {
+        const setProperty = (name: string, value: string) => { if (node.style.getPropertyValue(name) !== value) node.style.setProperty(name, value); };
+        setProperty('--navigation-optics-scale-x', opticalScale.x.toFixed(6));
+        setProperty('--navigation-optics-scale-y', opticalScale.y.toFixed(6));
         if (reader) { if (hidden) clearSidebarNavigationReservation(reader); else reserve?.(); }
+        if (sampled) {
+          setProperty('--navigation-capsule-x', bounds.x.toFixed(3) + 'px');
+          setProperty('--navigation-capsule-y', bounds.y.toFixed(3) + 'px');
+          // Sample coordinates follow imperatively while the old decoded
+          // optical field scales. React receives only the settled geometry.
+          if (node.dataset.navigationResizing !== 'true' && (!sampledBounds || ['x', 'y', 'width', 'height'].some(key => Math.abs(sampledBounds![key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) >= .125))) { sampledBounds = bounds; setCapsuleBounds(bounds); }
+        }
         if (changed) {
           previous = bounds; previousHidden = hidden;
-          if (sampled) setCapsuleBounds(bounds);
           reportGeometry.current?.(bounds);
           window.dispatchEvent(new CustomEvent<SelectionNavigationBounds>(SELECTION_NAVIGATION_EVENT, {detail:{visible:!hidden,bounds}}));
         }
@@ -183,11 +195,12 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     const observer = new ResizeObserver(schedule); observer.observe(node);
     const attributes = new MutationObserver(schedule); attributes.observe(toolbar,{attributes:true,attributeFilter:['style','class']});
     for (const name of ['transitionrun','transitionend','transitioncancel']) toolbar.addEventListener(name,transition as EventListener);
+    node.addEventListener('agentviewer:glass-optics', schedule);
     window.addEventListener('resize',schedule); schedule();
-    return () => { cancelFrame?.(); observer.disconnect(); attributes.disconnect(); window.removeEventListener('resize',schedule); for (const name of ['transitionrun','transitionend','transitioncancel']) toolbar.removeEventListener(name,transition as EventListener); };
+    return () => { cancelFrame?.(); observer.disconnect(); attributes.disconnect(); node.removeEventListener('agentviewer:glass-optics',schedule); window.removeEventListener('resize',schedule); for (const name of ['transitionrun','transitionend','transitioncancel']) toolbar.removeEventListener(name,transition as EventListener); };
   }, [!!onGeometry, !!backdropImage, state.format]);
   const metrics = navigationControlMetrics(density);
-  const style = { '--navigation-slot-left': fitted.center + 'px', '--navigation-slot-width': fitted.width + 'px', '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': metrics.height + 'px', '--navigation-radius': metrics.radius + 'px', '--navigation-button-size': metrics.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
+  const style = { '--navigation-hide-progress': Math.max(0, Math.min(1, visualProgress)), '--navigation-hide-duration': (immediate ? 0 : durationMs) + 'ms', '--navigation-height': metrics.height + 'px', '--navigation-radius': metrics.radius + 'px', '--navigation-button-size': metrics.buttonSize + 'px', '--navigation-hide-shift': NAVIGATION_METRICS.hideShift + 'px' } as CSSProperties;
   return <nav ref={nav} className={'reader-toolbar navigation-toolbar' + (hidden ? ' is-hidden' : '')} aria-label="阅读导航" aria-hidden={hidden || undefined} inert={hidden || undefined} data-navigation-format={state.format} data-navigation-density={density} data-navigation-manual-hidden={manualHidden || undefined} style={style}
     data-navigation-entering={!entered && !immediate || undefined}
     onMouseEnter={onHover} onMouseLeave={onLeave} onFocusCapture={onFocus} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) onBlur?.(); }}>

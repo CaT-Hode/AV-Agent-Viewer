@@ -80,8 +80,18 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     let request: AbortController | undefined, disposed = false, measuredKey = '';
     const media = ['(prefers-reduced-transparency: reduce)', '(prefers-contrast: more)', '(forced-colors: active)'].map(query => matchMedia(query));
     const measure = () => {
+      // Navigation reports its real hit geometry independently. Reuse and
+      // scale the decoded field during its spring instead of forcing style
+      // and layout reads for every intermediate optical texture size.
+      if (navigation && host.dataset.navigationResizing === 'true') {
+        cancelMeasure?.(); cancelMeasure = undefined;
+        clearTimeout(timer); request?.abort(); request = undefined; measuredKey = '';
+        return;
+      }
       cancelMeasure?.();
       cancelMeasure = scheduleLayoutRead(() => {
+        cancelMeasure = undefined;
+        if (navigation && host.dataset.navigationResizing === 'true') return;
         const appearance = document.documentElement.dataset;
         // Desktop preferences arrive asynchronously. Do not generate default
         // optical assets for one startup frame before learning glass is off.
@@ -148,6 +158,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     const size = new ResizeObserver(measure); size.observe(host);
     let inlineGeometry = glassGeometryStyleSignature(host.style);
     const appearance = new MutationObserver(records => {
+      if (navigation && host.dataset.navigationResizing === 'true') { measure(); return; }
       let changed = false;
       for (const record of records) {
         if (record.target !== host || record.attributeName !== 'style') { changed = true; continue; }
@@ -156,7 +167,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
       }
       if (changed) measure();
     });
-    appearance.observe(host, { attributes: true, attributeFilter: ['class', 'style', 'data-state', 'aria-checked', 'data-material-fallback'] });
+    appearance.observe(host, { attributes: true, attributeFilter: ['class', 'style', 'data-state', 'aria-checked', 'data-material-fallback', 'data-navigation-resizing'] });
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-glass', 'data-contrast', 'data-reduce-transparency'] });
     const transition = (event: TransitionEvent) => { if (event.target === host && !['opacity', 'scale', 'translate', 'transform', 'background-color', 'box-shadow'].includes(event.propertyName)) measure(); };
     window.addEventListener('resize', measure); host.addEventListener('transitionend', transition); media.forEach(query => query.addEventListener('change', measure)); measure();
@@ -164,7 +175,21 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
   }, [refractive, bezelWidth, opticalBlur, strength, glassThickness, refractiveIndex, profile, concave, lensZoom, fallback, navigation, variant]);
 
   const activeOptics = refractive && !fallback && !automaticFallback && !renderingBusy ? optics : undefined;
-  useLayoutEffect(() => { root.current?.dispatchEvent(new Event('agentviewer:glass-optics', { bubbles: true })); },[activeOptics]);
+  useLayoutEffect(() => {
+    const surface = root.current, host = surface?.parentElement;
+    if (navigation && host) {
+      if (activeOptics) {
+        host.dataset.navigationOpticsWidth = String(activeOptics.width);
+        host.dataset.navigationOpticsHeight = String(activeOptics.height);
+        host.dataset.navigationOpticsOverscan = String(activeOptics.overscan);
+      } else {
+        delete host.dataset.navigationOpticsWidth;
+        delete host.dataset.navigationOpticsHeight;
+        delete host.dataset.navigationOpticsOverscan;
+      }
+    }
+    surface?.dispatchEvent(new Event('agentviewer:glass-optics', { bubbles: true }));
+  },[activeOptics,navigation]);
   useLayoutEffect(()=>{
     onReady?.(true);
   },[onReady]);
@@ -172,10 +197,12 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
   const totalWidth = activeOptics ? activeOptics.width + overscan * 2 : undefined, totalHeight = activeOptics ? activeOptics.height + overscan * 2 : undefined;
   const sourceStyle: CSSProperties = {
     width: totalWidth, height: totalHeight,
+    transform: navigation && activeOptics ? 'scale(var(--navigation-optics-scale-x, 1), var(--navigation-optics-scale-y, 1))' : undefined,
+    transformOrigin: navigation ? '0 0' : undefined,
     backgroundImage: sampled ? `url("${backdropImage}")` : undefined,
-    backgroundSize: backdropSample ? `${backdropSample.cssSize.width}px ${backdropSample.cssSize.height}px` : totalWidth ? `${totalWidth}px ${totalHeight}px` : undefined,
+    backgroundSize: backdropSample ? navigation ? `calc(${backdropSample.cssSize.width}px / var(--navigation-optics-scale-x, 1)) calc(${backdropSample.cssSize.height}px / var(--navigation-optics-scale-y, 1))` : `${backdropSample.cssSize.width}px ${backdropSample.cssSize.height}px` : totalWidth ? `${totalWidth}px ${totalHeight}px` : undefined,
     // A sample remains in source/window coordinates while its host moves.
-    backgroundPosition: backdropSample && bounds ? `${backdropSample.origin.x - bounds.x + overscan}px ${backdropSample.origin.y - bounds.y + overscan}px` : '0 0',
+    backgroundPosition: backdropSample && navigation ? `calc((${backdropSample.origin.x + overscan}px - var(--navigation-capsule-x, ${bounds?.x ?? 0}px)) / var(--navigation-optics-scale-x, 1)) calc((${backdropSample.origin.y + overscan}px - var(--navigation-capsule-y, ${bounds?.y ?? 0}px)) / var(--navigation-optics-scale-y, 1))` : backdropSample && bounds ? `${backdropSample.origin.x - bounds.x + overscan}px ${backdropSample.origin.y - bounds.y + overscan}px` : '0 0',
   };
   const style: MaterialStyle = {
     '--liquid-glass-refraction-filter': activeOptics ? `url("#${id}-edge")` : 'none',

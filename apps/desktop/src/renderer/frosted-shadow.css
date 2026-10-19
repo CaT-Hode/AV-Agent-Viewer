@@ -5,6 +5,11 @@
   background: transparent;
   box-shadow: inset calc(var(--glass-material-shadow-x,0px) / -2) calc(var(--glass-material-shadow-y,4px) / -2) 24px rgb(255 255 255 / var(--glass-material-inset-alpha,.2));
 }
+/* Dark frost has no interior white rim, including the sidebar's edge wash.
+   The blur, tint and outer cast remain independent of this decorative layer. */
+:root[data-theme="dark"] .material-host > .liquid-glass-surface[data-glass-effect="frosted"] > .liquid-glass-highlight {
+  display: none;
+}
 /* Place the cast after the background optics. Tooltip content already owns
    an external cast above its material and must not receive a second one. */
 :root[data-theme] .material-host:has(> .liquid-glass-surface[data-glass-effect="frosted"]):not(.app-tooltip) {
