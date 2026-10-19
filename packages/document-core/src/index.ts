@@ -9,7 +9,7 @@ import { AdapterRegistry, createRegistry } from '../../format-adapters/src/index
 import type { WorkspaceRepository } from '../../persistence/src/index';
 import { convertLegacy } from '../../../apps/office-gateway/src/conversion';
 import { scopedReadingSnapshot, type ScopedReadingSnapshot } from '../../ai-reading-tools/src/index';
-import type { NativeOfficeDriver, NativeOfficeState, NativeOfficeSnapshot, NativeOfficeExecuteRequest, NativeOfficeExecution, NativeOfficeQuery, NativeOfficeStylePatch } from '../../contracts/src/native-office';
+import type { NativeOfficeDriver, NativeOfficeState, NativeOfficeSnapshot, NativeOfficeExecution, NativeOfficeQuery, NativeOfficeStylePatch } from '../../contracts/src/native-office';
 import { nativeOfficeInteractionBlocked, nativeOfficeStylePatchSchema } from '../../contracts/src/native-office';
 import type { NativeOfficeNavigateTarget, NativeOfficeExportFormat, UNOProperty } from '../../contracts/src/native-office';
 import { nativeOfficeCommandPolicy } from '../../contracts/src/native-office-policy';

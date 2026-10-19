@@ -109,7 +109,7 @@ export async function markdownResourcePath(core: ViewerCore, documentId: string,
   const target = resolve(root, path.replace(/^\//, '')); return confinedPath(authorizedRoot, relative(authorizedRoot, target));
 }
 export async function markdownResource(core: ViewerCore, documentId: string, source: string) {
-  const document = markdownDocument(core, documentId);
+  markdownDocument(core, documentId);
   if (!source || source.includes('\0')) return fail('图片路径为空或无效。');
   if (/^https?:\/\//i.test(source)) return { url: source };
   if (/^data:image\/(?:png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,/i.test(source)) {

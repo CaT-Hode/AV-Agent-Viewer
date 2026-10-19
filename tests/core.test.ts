@@ -848,7 +848,7 @@ test('选区工具保留快照与幂等：Markdown/HTML 格式、批注持久化
   surface={...surface,inputState:{...surface.inputState!,composing:true}};await assert.rejects(inputController.history('undo'),/中文输入/);assert.equal(posted.length,2);
   const initialNotReady=new Error('NATIVE_NOT_READY: 尚未加载'),expired=new Error('NATIVE_SESSION_EXPIRED: 已关闭');
   let readError:Error=initialNotReady,nextPoll:(()=>void)|undefined;const observerErrors:unknown[]=[],observed:NativeOfficeState[]=[];
-  const observer=createNativeOfficeStateObserver(async<T>(method:string)=>{assert.equal(method,'office-status');throw readError;},{now:()=>0,visible:()=>true,setTimer:callback=>{nextPoll=callback;return callback;},clearTimer:timer=>{if(nextPoll===timer)nextPoll=undefined;}});
+  const observer=createNativeOfficeStateObserver(async(method:string)=>{assert.equal(method,'office-status');throw readError;},{now:()=>0,visible:()=>true,setTimer:callback=>{nextPoll=callback;return callback;},clearTimer:timer=>{if(nextPoll===timer)nextPoll=undefined;}});
   const unsubscribe=observer.subscribe(ppt.id,ppt.documentId,{state:value=>observed.push(value),error:cause=>observerErrors.push(cause)});
   const settleRead=()=>new Promise<void>(resolve=>setImmediate(resolve));await settleRead();assert.equal(observerErrors.length,0,'only an initial not-ready read stays in loading');
   readError=expired;nextPoll!();await settleRead();assert.deepEqual(observerErrors,[expired],'session expiry is visible even before a first successful read');

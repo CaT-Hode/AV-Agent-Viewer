@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import type { ViewerCore } from '../../document-core/src/index';
-import { ViewerError, type Format, type ReadingSnapshot, type EditOperation } from '../../contracts/src/index';
+import { ViewerError, type Format, type ReadingSnapshot } from '../../contracts/src/index';
 import type { NativeOfficeState } from '../../contracts/src/native-office';
 import type { OfficeAuthoringQuery, OfficeAuthoringOperation } from '../../office-runtime/src/authoring';
 import { agentTools, catalogVersion, formatInstructions, toolByName, parseAgentTool, agentRequestRequired, type AgentFormat, type AgentToolName } from './agent-tools';

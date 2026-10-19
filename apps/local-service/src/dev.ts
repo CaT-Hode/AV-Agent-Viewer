@@ -2,7 +2,7 @@ import { resolve, join } from 'node:path';
 import { createServer } from 'vite';
 import { ViewerCore } from '../../../packages/document-core/src/index';
 import { JsonWorkspaceRepository } from '../../../packages/persistence/src/index';
-import { startServer, dataDir } from './server';
+import { startServer } from './server';
 import { CodexDriver, codexExecutable } from '../../../packages/harness-adapters/src/codex';
 
 const root = resolve('.'), directory = process.env.AGENTVIEWER_DATA_DIR ?? join(root, '.agentviewer/preview');

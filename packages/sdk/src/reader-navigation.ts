@@ -42,7 +42,7 @@ export async function navigateReader(core: ViewerCore, args: Record<string, unkn
     const result = await core.navigateNativeOffice({ viewId: view.id, target: nativeTarget, expectedEngineEpoch: state.engineEpoch, expectedEngineRevision: state.engineRevision, expectedSelectionEpoch: state.selectionEpoch, idempotencyKey: 'reader-' + input.idempotencyKey }, actor) as { requestId: string; status: 'requested' | 'rendered' };
     const receipt: NavigationReceipt = { requestId: result.requestId, viewId: view.id, documentId: document.id, expectedRevision: document.revision, target: structuredClone(target), actor, status: result.status };
     cache.set(input.idempotencyKey, { payload, receipt }); if (cache.size > 256) cache.delete(cache.keys().next().value!);
-    // The legacy entry explicitly activates a view; native office-navigate itself does not.
+    // Reader navigation explicitly activates its target; the native operation does not.
     core.activate(view.id, actor); return structuredClone(receipt);
   }
   const receipt: NavigationReceipt = { requestId: randomUUID(), viewId: view.id, documentId: document.id, expectedRevision: document.revision, target: structuredClone(target), actor, status: 'requested' };

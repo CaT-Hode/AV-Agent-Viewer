@@ -1,6 +1,6 @@
 import { readdir, readFile, realpath, stat, mkdir, rename, writeFile, unlink, link } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, relative, resolve, sep, join } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep, join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import type { ViewerCore } from '../../document-core/src/index';
 import type { Actor } from '../../contracts/src/index';

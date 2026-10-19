@@ -20,7 +20,7 @@ import { subscribeNativeOfficeState } from './lib/native-office-observer';
 import { motionDuration, navigationMotionDuration, useMotionSnapshot } from './lib/motion';
 import { scrollReadingTarget } from './lib/reading-scroll';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { MessageSquare, BookOpen, Braces, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, FileCode2, FilePlus2, FileText, FolderOpen, Globe, Highlighter, Languages, ListTree, ListTodo, Minus, Pause, Pilcrow, Pin, Plus, Presentation, RotateCw, Search, Send, Settings2, Sparkles, Square, StopCircle, Table2, X } from 'lucide-react';
+import { MessageSquare, BookOpen, Braces, Check, ChevronDown, ChevronRight, CircleHelp, ExternalLink, FileCode2, FilePlus2, FileText, FolderOpen, Globe, Highlighter, Languages, ListTree, ListTodo, Minus, Pilcrow, Pin, Plus, Presentation, Search, Send, Settings2, Sparkles, Square, Table2, X } from 'lucide-react';
 import { DocumentPane, type PdfToolsState } from './components/DocumentPane';
 import { OfficeTools, type OfficeTarget, type OfficeToolboxCategory, type OfficeToolboxController } from './components/OfficeTools';
 import { OfficeToolboxRail } from './components/OfficeToolboxRail';

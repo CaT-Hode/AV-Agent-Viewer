@@ -1,13 +1,8 @@
-import { build } from 'esbuild';
+import './build.mjs';
 import { createServer } from 'vite';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { buildOfficeKitAdapter } from './build-office-kit-adapter.mjs';
 const require = createRequire(import.meta.url);
-await buildOfficeKitAdapter();
-await build({ entryPoints: ['apps/desktop/src/main/index.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: 'dist/main/index.cjs', external: ['electron'], sourcemap: true });
-await build({ entryPoints: ['apps/desktop/src/preload/index.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: 'dist/main/preload.cjs', external: ['electron'] });
-await build({ entryPoints: ['apps/local-service/src/mcp.ts'], bundle: true, platform: 'node', format: 'esm', outfile: 'dist/mcp/index.mjs', packages: 'external' });
 const vite = await createServer(); await vite.listen();
 const environment: NodeJS.ProcessEnv = { ...process.env, AGENTVIEWER_VITE_URL: 'http://127.0.0.1:5173' }; delete environment.ELECTRON_RUN_AS_NODE;
 const electronPath = require('electron') as string;

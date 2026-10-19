@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdtemp, rm, realpath, stat } from 'node:fs/promises';
-import { resolve, dirname, relative, isAbsolute, sep, join, basename } from 'node:path';
+import { writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { resolve, join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -8,9 +8,8 @@ import type { ViewerCore } from '../../document-core/src/index';
 import { ViewerError } from '../../contracts/src/index';
 import { readMarkdownPreferences } from './preferences';
 import { markdownResource, importMarkdownImage, imageDataUrl, markdownResourcePath } from './resources';
-import { markdownLinks, encodeMarkdownLink, type MarkdownLink } from './links';
+import { markdownLinks, encodeMarkdownLink } from './links';
 
-type Resource = MarkdownLink;
 const imageLimit = 32 * 1024 * 1024, execute = promisify(execFile);
 function resources(source: string) {
   return markdownLinks(source).filter(link => link.image);

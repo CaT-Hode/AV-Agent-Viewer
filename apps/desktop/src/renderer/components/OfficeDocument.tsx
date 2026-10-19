@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { Check, ChevronDown, Grip, Maximize2 } from 'lucide-react';
-import { editOperationSchema, type DocumentInfo, type EditOperation, type OfficeTextStyle, type ReadingContext, type Sheet, type SheetCell, type TextBlock, type ViewInfo } from '../../../../../packages/contracts/src/index';
+import { editOperationSchema, type DocumentInfo, type EditOperation, type OfficeTextStyle, type ReadingContext, type SheetCell, type TextBlock, type ViewInfo } from '../../../../../packages/contracts/src/index';
 import { addressPosition, columnName, normalizedRange, parseClipboardGrid, rangeContains, serializeGrid, textStyle, type OfficeTarget } from './office/OfficeShared';
 import { OfficeDraftRegistry, useOfficeDraft, type OfficeDraftController } from './office/OfficeDrafts';
 import { officeNodeVisible, scrollOfficeCell, type OfficeNavigationRequest, type OfficeNavigationResult } from '../lib/office-navigation';

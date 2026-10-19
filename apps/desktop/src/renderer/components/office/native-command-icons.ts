@@ -1,9 +1,9 @@
 import {
   AlignCenter, AlignCenterVertical, AlignEndVertical, AlignHorizontalSpaceBetween,
   AlignJustify, AlignLeft, AlignRight, AlignStartVertical, AlignVerticalSpaceBetween,
-  ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpToLine,
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUp,
   ArrowUpDown, BetweenHorizontalEnd, BetweenHorizontalStart, BetweenVerticalEnd,
-  BetweenVerticalStart, Bold, BookA, BookMarked, BookOpenText, BookmarkPlus,
+  BetweenVerticalStart, Bold, BookA, BookMarked, BookmarkPlus,
   Braces, BringToFront, Calculator, ChartColumnIncreasing, Check, Circle, CircleDollarSign,
   CirclePlay, Columns2, Columns3, Copy, Eraser, Eye, EyeOff,
   File, FileCheck, FileCog, FileDiff, FileDigit, FilePenLine, FilePlus2,
@@ -18,10 +18,10 @@ import {
   Printer, PrinterCheck, RectangleHorizontal, RefreshCw, ScanEye, ScanLine,
   ScanText, SendToBack, Sheet, Sigma, SlidersHorizontal, SpellCheck, Split,
   SquareDashed, SquareDashedMousePointer, SquareFunction, SquarePen, SquarePlay,
-  SquareX, Strikethrough, Subscript, Superscript, Table2, TableCellsMerge,
+  Strikethrough, Subscript, Superscript, Table2, TableCellsMerge,
   TableCellsSplit, TableColumnsSplit, TableOfContents, TableProperties,
-  TableRowsSplit, Tags, TextCursorInput, TextQuote, Trash2, Underline, Ungroup,
-  Variable, WandSparkles, WrapText, X, type LucideIcon,
+  TableRowsSplit, Tags, TextCursorInput, TextQuote, Underline, Ungroup,
+  WandSparkles, WrapText, X, type LucideIcon,
 } from 'lucide-react';
 import type { NativeOfficeFormat } from '../../../../../../packages/contracts/src/native-office';
 

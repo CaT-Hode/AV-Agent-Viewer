@@ -7,7 +7,7 @@ import type { NativeOfficeAppearance } from '../../../../packages/office-runtime
 import type { NativeOfficeDriver, NativeOfficeState, NativeOfficeFormat, NativeOfficeNavigateTarget, NativeOfficeExportFormat, Rect, NativeOfficeQuery, NativeOfficeExecuteRequest, NativeOfficeSnapshotReuse, BrowserAction } from '../../../../packages/contracts/src/index';
 import { normalizeViewZoom, type ViewerCore } from '../../../../packages/document-core/src/index';
 import type { NativeBackdropSource } from './web-toolbar';
-import { OFFICE_SURFACE_METHODS, isOfficeSurfaceState, type OfficeSurfaceState } from '../../../../packages/contracts/src/office-surface';
+import { OFFICE_SURFACE_METHODS, isOfficeSurfaceState } from '../../../../packages/contracts/src/office-surface';
 import { validateOfficeSurfaceRequest } from '../../../../packages/office-runtime/src/surface-protocol';
 import { ViewerError } from '../../../../packages/contracts/src/index';
 import { OfficeDisplayLeases, withdrawnOfficeDisplayState, type OfficeDisplayTicket } from './office-display-leases';

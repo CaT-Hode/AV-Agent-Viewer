@@ -1,7 +1,7 @@
 import express from 'express';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { ViewerCore } from '../../../packages/document-core/src/index';
 import { PROTOCOL_VERSION, ViewerError } from '../../../packages/contracts/src/index';
@@ -13,7 +13,6 @@ import { AgentSession } from '../../../packages/sdk/src/agent-session';
 import { toolByName, type AgentToolName } from '../../../packages/sdk/src/agent-tools';
 import { version } from '../../../package.json';
 
-export function dataDir() { return process.env.AGENTVIEWER_DATA_DIR ?? join(process.env.APPDATA ?? process.env.HOME ?? '.', 'AgentViewer'); }
 export async function startServer(core: ViewerCore, root: string, directory: string, port = 3210) {
   const markdownWorkspace = new MarkdownWorkspace(core, directory);
   core.extensions.set('markdown-workspace-root', async args => markdownWorkspace.resourceRoot(String(args.documentId)));
@@ -68,7 +67,6 @@ export async function startServer(core: ViewerCore, root: string, directory: str
     core.on('change', write); req.on('close', () => core.off('change', write));
   });
   app.post('/internal/command', async (req, res, next) => { try { const { method, args = {} } = req.body; if (typeof method !== 'string' || !args || typeof args !== 'object' || Array.isArray(args)) throw new ViewerError('INVALID_ARGUMENT', '需要 method 和对象类型 args。'); res.json(await dispatch(core, method, args, 'human')); } catch (e) { next(e); } });
-  app.use(['/api','/v1'],(_req,res)=>res.status(404).json({error:{code:'NOT_FOUND',message:'公共接口已重建，请使用 /v2 领域工具。'}}));
   app.use('/fixtures', express.static(join(root, 'tests/fixtures')));
   app.use(express.static(join(root, 'dist/renderer')));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { const code = error instanceof ViewerError ? error.code : error instanceof ZodError ? 'INVALID_ARGUMENT' : 'INTERNAL_ERROR'; const message = error instanceof Error ? error.message : String(error); res.status(code === 'INTERNAL_ERROR' ? 500 : 400).json({ error: { code, message } }); });

@@ -11,7 +11,7 @@ npm.cmd run test:desktop
 npm.cmd run test:office
 ```
 
-build 包含文档约束、MCP上下文快照/预算、TypeScript、主进程/preload/MCP 与 Vite。Windows 原生适配器需要 MSVC x64。MCP预算通过独立 catalog-only 子进程检查，不触发桌面编辑或输入。
+build 检查文档、MCP预算与TypeScript，再构建全部运行时和Vite。dev复用运行时构建并启动Vite/Electron，代理/internal与/fixtures。TypeScript拒绝未使用的声明和参数。原生适配器需要MSVC x64；预算在独立catalog-only进程测量，不触发编辑或输入。
 
 ## 公开接口维护
 
@@ -25,7 +25,7 @@ npm.cmd run mcp:host-probe
 npm.cmd run mcp:host-check
 ```
 
-只有在审查目录、说明和 token 变化后更新预算快照；更新不能绕过硬上限。tokenizer 包、离线词表与实现 SHA 均锁定，Codex实际包装未认证。
+审查目录与token变化后才更新预算快照，不得绕过硬上限。tokenizer、离线词表与实现SHA已锁定；Codex实际包装未认证。
 
 host-probe 使用自有 loopback Responses 服务及独立 MCP 文档，120秒上限，无真实模型请求。它检查 Codex 的目录刷新与实际调用；当前客户端未通过时返回非零，不进入普通构建门禁。日志仅保留工具元数据，不代表桌面验收。
 
@@ -55,7 +55,7 @@ npm.cmd run package:portable
 | AGENTVIEWER_PDF_FONT | PDF内嵌字体 |
 | AGENTVIEWER_CATALOG_ONLY=1 | 目录测量，禁止连接桌面 |
 
-发现文件含本地凭据，不提交仓库。验证使用用户数据副本，保留配置、账户、凭据和活动会话。恢复 blob/delta 及内部备份与公开 API 生命周期分开处理。
+发现文件含凭据，不提交。验证使用数据副本，保留配置、账户和活动会话。恢复blob/delta及内部备份独立于公开API生命周期。
 
 ## 验证与本机替换
 

@@ -71,7 +71,7 @@ export function stepGlassSpring(axis: SpringAxis, target: number, seconds: numbe
 
 /** Source Music controls press at .9; source search and thumb geometry remain
  * independent. Motion preference changes response time, not these targets. */
-export function glassElasticTarget(preset: GlassElasticPreset, active: boolean, velocity = { x: 0, y: 0 }, focused = false, mode: MotionMode = 'standard'): ElasticTarget {
+export function glassElasticTarget(preset: GlassElasticPreset, active: boolean, velocity = { x: 0, y: 0 }, focused = false): ElasticTarget {
   if (preset === 'panel') return glassPanelElasticTarget(active, velocity);
   let scale = preset === 'switch' ? active ? .9 : .65 : preset === 'slider' || preset === 'thumb' ? active ? 1 : .6 : preset === 'search' ? (focused ? 1 : .8) * (active ? .99 : 1) : active ? KUBE_GLASS_INTERACTION.buttonPressScale : 1;
   if (preset === 'lens') {
@@ -170,7 +170,7 @@ export function createGlassElasticController(element: HTMLElement, options: Glas
   const target = (now: number) => {
     const decay = pointer ? Math.exp(-(now - pointer.movedAt) / 85) : 0;
     const velocity = { x: (pointer?.vx ?? 0) * decay, y: (pointer?.vy ?? 0) * decay };
-    return preset === 'panel' ? glassPanelElasticTarget(!!pointer || keyboard, velocity, pointerBounds?.height) : glassElasticTarget(preset, !!pointer || keyboard, velocity, focused, mode());
+    return preset === 'panel' ? glassPanelElasticTarget(!!pointer || keyboard, velocity, pointerBounds?.height) : glassElasticTarget(preset, !!pointer || keyboard, velocity, focused);
   };
   const reset = (immediate = true) => {
     if (destroyed) return;

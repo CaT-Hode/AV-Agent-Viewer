@@ -130,7 +130,7 @@ test('formula adjustments preserve quoted strings, absolute refs, partial ranges
 });
 
 test('Unicode sheet references rename, move and protect referenced sheet deletion after save/reopen',async()=>{
-  const workbook=new ExcelJS.Workbook(),data=workbook.addWorksheet('数据'),other=workbook.addWorksheet('引用'),temporary=workbook.addWorksheet('临时');
+  const workbook=new ExcelJS.Workbook(),data=workbook.addWorksheet('数据'),other=workbook.addWorksheet('引用');workbook.addWorksheet('临时');
   data.addRows([[1,10],[2,20],[3,30]]);
   other.getCell('A1').value={formula:'数据!B2+SUM(A2:A3)+"数据!B2"+LOG10(100)',result:22};
   other.getCell('A2').value=1;other.getCell('A3').value=1;

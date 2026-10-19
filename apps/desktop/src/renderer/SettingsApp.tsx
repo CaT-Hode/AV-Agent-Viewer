@@ -1,5 +1,4 @@
 import { LiquidGlassSurface } from './components/LiquidGlassSurface';
-import { GlassSwitch } from './components/GlassControls';
 import { GlassSegmentedControl } from './components/GlassSegmentedControl';
 import { SettingsGroups } from './components/SettingsGroups';
 import { GlassMaterialPreview } from './components/GlassMaterialPreview';

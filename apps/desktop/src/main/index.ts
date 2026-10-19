@@ -1,6 +1,6 @@
 import './safe-stdio-init';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor } from 'electron';
-import { extname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { ViewerCore } from '../../../../packages/document-core/src/index';
@@ -9,7 +9,8 @@ import { JsonWorkspaceRepository } from '../../../../packages/persistence/src/in
 import { ElectronBrowserRuntime } from '../../../../packages/browser-runtime/src/electron';
 import { dispatch } from '../../../../packages/sdk/src/dispatch';
 import { readAIReadingResult } from '../../../../packages/sdk/src/ai-reading';
-import { startServer, dataDir } from '../../../local-service/src/server';
+import { startServer } from '../../../local-service/src/server';
+import { dataDir } from '../../../../packages/sdk/src/discovery';
 import { CodexDriver, codexExecutable, codexModels } from '../../../../packages/harness-adapters/src/codex';
 import { SettingsService, settingsRegistry, settingsAvailability } from '../../../../packages/settings/src/index';
 import { DocumentTranslationService } from '../../../../packages/translation/src/index';
