@@ -11,6 +11,7 @@ import { ViewerCore } from '../packages/document-core/src/index';
 import { NativeOfficeRuntime } from '../packages/office-runtime/src/index';
 import type { OfficeAuthoringOperation, OfficeAuthoringQuery } from '../packages/office-runtime/src/authoring';
 import { JsonWorkspaceRepository } from '../packages/persistence/src/index';
+import { recordCurrentBuild } from './helpers/current-build';
 import type { DocumentModel, EditOperation, NativeOfficeDriver, NativeOfficeFormat, NativeOfficeSnapshotReuse, NativeOfficeState, NativeOfficeStyleInspection, ViewInfo } from '../packages/contracts/src/index';
 
 // Actual bundled Kit + production Core export and filesystem publication. This
@@ -18,9 +19,10 @@ import type { DocumentModel, EditOperation, NativeOfficeDriver, NativeOfficeForm
 // native state, mocked mirror, cache-disable switch, or user-owned document.
 // Timings are diagnostic Core/driver wall time, not whole-app or strict A/B.
 const directory = await mkdtemp(join(tmpdir(), 'agentviewer-export-copy-'));
+await recordCurrentBuild(directory);
 const evidence = join(directory, 'result.json');
 const engineRoot = resolve(process.env.AGENTVIEWER_ENGINES_DIR ?? 'release/win-unpacked/resources/engines');
-const adapterPath = resolve(process.env.AGENTVIEWER_EXPORT_ADAPTER ?? 'dist/main/office-kit-windows.dll');
+const adapterPath = resolve('dist/main/office-kit-windows.dll');
 const samplesRoot = resolve(process.env.AGENTVIEWER_EXPORT_SAMPLES ?? 'examples/moon-tide');
 const iterations = Number(process.env.AGENTVIEWER_EXPORT_ITERATIONS ?? 2);
 assert.ok(Number.isInteger(iterations) && iterations >= 2 && iterations <= 20, 'Use 2–20 explicit native-copy paths');

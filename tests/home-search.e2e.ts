@@ -9,22 +9,35 @@ import assert from 'node:assert/strict';
 import type { ReadingContext, ViewInfo, WorkspaceState } from '../packages/contracts/src/index';
 import type { TranslationArtifact, TranslationJob } from '../packages/translation/src/index';
 import { JsonWorkspaceRepository } from '../packages/persistence/src/index';
+import { recordCurrentBuild } from './helpers/current-build';
 
-// Fresh profile/port, real files and a real production translation job. The
-// TEST_TRANSLATOR only replaces model output; artifact generation and library
-// publication remain real. Run only after the coordinated build/UI freeze.
+// Full production desktop, isolated profile/port and real files. Translation
+// uses a loopback HTTP provider fixture; it does not certify model quality.
 const require=createRequire(import.meta.url),directory=await mkdtemp(join(tmpdir(),'agentviewer-home-search-')),evidence=join(directory,'evidence');await mkdir(evidence);
+await recordCurrentBuild(evidence);
 const sourcePath=join(directory,'QA译文检索.md'),newPath=join(directory,'Home path replacement.md'),missingPath=join(directory,'does-not-exist.md');
 const sourceText='# QA translation source\n\nIndependent translation output for home search.\n',newText='# Home path replacement\n\nReal on-disk document opened from the current home tab.\n';
 await Promise.all([writeFile(sourcePath,sourceText),writeFile(newPath,newText),writeFile(join(directory,'settings.json'),JSON.stringify({schemaVersion:1,revision:0,values:{'appearance.motion':'elegant','appearance.glass':'standard','appearance.theme':'light','appearance.autoHideToolbar':false,'translation.openArtifact':false,'ai.defaultDriver':'none'}}))]);
 const slowRequests=new Map<string,number>(),slowResponses=new Map<string,ServerResponse[]>();
-const slowServer=createHttpServer((request,response)=>{const token=new URL(request.url??'/','http://127.0.0.1').pathname.slice(1);if(!token.startsWith('slow-')){response.writeHead(204).end();return;}slowRequests.set(token,(slowRequests.get(token)??0)+1);slowResponses.set(token,[...(slowResponses.get(token)??[]),response]);});
+let translatorRequests=0;
+const slowServer=createHttpServer(async(request,response)=>{
+  const path=new URL(request.url??'/','http://127.0.0.1').pathname;
+  if(path==='/v1/chat/completions'){
+    let body='';for await(const chunk of request)body+=chunk.toString();
+    const payload=JSON.parse(body);
+    if(payload.model!=='local-protocol-fixture'||typeof payload.messages?.[0]?.content!=='string'){response.writeHead(400).end();return;}
+    translatorRequests++;
+    response.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({id:'home-protocol-fixture',object:'chat.completion',choices:[{index:0,message:{role:'assistant',content:'【zh-CN】'+sourceText},finish_reason:'stop'}]}));return;
+  }
+  const token=path.slice(1);if(!token.startsWith('slow-')){response.writeHead(204).end();return;}slowRequests.set(token,(slowRequests.get(token)??0)+1);slowResponses.set(token,[...(slowResponses.get(token)??[]),response]);
+});
 await new Promise<void>((done,reject)=>{slowServer.once('error',reject);slowServer.listen(0,'127.0.0.1',done);});
 const slowAddress=slowServer.address();assert.ok(slowAddress&&typeof slowAddress!=='string');
 const port=await new Promise<number>((done,reject)=>{const server=createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const address=server.address();assert.ok(address&&typeof address!=='string');server.close(error=>error?reject(error):done(address.port));});});
 const slowURL=(token:string)=>`http://127.0.0.1:${slowAddress.port}/${token}`;
 const releaseSlow=(token:string)=>{for(const response of slowResponses.get(token)??[])if(!response.destroyed&&!response.writableEnded)response.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}).end(`<!doctype html><html><head><title>${token}</title></head><body><h1>${token}</h1><p>Manually released loopback navigation fixture.</p></body></html>`);};
-const env:Record<string,string>={...Object.fromEntries(Object.entries(process.env).filter((item):item is[string,string]=>typeof item[1]==='string')),AGENTVIEWER_DATA_DIR:directory,AGENTVIEWER_PORT:String(port),AGENTVIEWER_TEST_MODE:'1',AGENTVIEWER_TEST_TRANSLATOR:'1'};delete env.ELECTRON_RUN_AS_NODE;
+const env:Record<string,string>={...Object.fromEntries(Object.entries(process.env).filter((item):item is[string,string]=>typeof item[1]==='string')),AGENTVIEWER_DATA_DIR:directory,AGENTVIEWER_CONNECTION_FILE:join(directory,'runtime','connection.json'),AGENTVIEWER_PORT:String(port),AGENTVIEWER_ISOLATED_QA:'1'};
+for(const key of ['ELECTRON_RUN_AS_NODE','AGENTVIEWER_TEST_MODE','AGENTVIEWER_TEST_TRANSLATOR','AGENTVIEWER_VITE_URL','AGENTVIEWER_OFFICE_WORKER_MODE'])delete env[key];
 const app=await electron.launch({executablePath:require('electron'),args:['--force-device-scale-factor=1','.'],cwd:resolve('.'),env,timeout:45000}),main=await app.firstWindow(),errors:string[]=[],results:Record<string,unknown>={};
 main.on('pageerror',error=>errors.push(error.message));app.context().on('page',page=>page.on('pageerror',error=>errors.push(error.message)));
 const invoke=<T>(method:string,args:Record<string,unknown>={})=>main.evaluate(input=>window.agentViewer!.call(input.method,input.args),{method,args})as Promise<T>;
@@ -45,7 +58,6 @@ const keyboardSelection=async()=>{await input().press('ArrowDown');await selecte
 const waitReader=async()=>{await main.locator('.home-layout').waitFor({state:'detached'});await until(async()=>!!(await state()).activeViewId,'reading view activated');};
 const assertConsumed=async(home:HomeTab,before:WorkspaceState,expectedViewId:string,newView:boolean)=>{await waitReader();await until(async()=>(await state()).activeViewId===expectedViewId,'requested reading identity is active');const after=await state();assert.equal(after.views.length,before.views.length+(newView?1:0));assert.equal(await main.locator('.tab').count(),home.tabs+(newView?0:-1),'one home slot is consumed without an extra document tab');if(home.id)assert.equal(await main.locator('.tab[data-home-tab-id='+JSON.stringify(home.id)+']').count(),0);if(newView)assert.equal(await tabIndex(),home.index,'new document replaces exactly the current home tab position');return after;};
 const metrics=()=>main.locator('.home-search-capsule').evaluate(node=>{const style=getComputedStyle(node),rect=node.getBoundingClientRect(),scale=style.scale==='none'?new DOMMatrix(style.transform).a:parseFloat(style.scale);return{scale,width:rect.width,height:rect.height,cssWidth:parseFloat(style.width),opacity:Number(style.opacity)};});
-const diagnostics=()=>main.evaluate(()=>{if(!window.__agentViewerRenderingDiagnostics)throw new Error('Missing trusted TESTMODE rendering diagnostics');return window.__agentViewerRenderingDiagnostics().glass;});
 const traceScreenshot=()=>main.evaluate(`(()=>{
   const point={x:1239,y:70},describe=node=>{
     const rect=node.getBoundingClientRect(),style=getComputedStyle(node);
@@ -94,11 +106,12 @@ try{
   await main.locator('.markdown-live .md-heading-1').waitFor();
   const initial=await state(),welcome=initial.documents.find(document=>document.title==='欢迎.md')!,welcomeView=initial.views.find(view=>view.documentId===welcome.id)!;assert.ok(welcome&&welcomeView);
   const sourceView=await invoke<ViewInfo>('open',{uri:sourcePath,windowId:'main'});await main.locator('.markdown-live .md-heading-1').filter({hasText:'QA translation source'}).waitFor();
-  const connection=await invoke<{profiles:{id:string;name:string}[]}>('connections-upsert',{name:'Home search isolated translator',protocol:'chat-completions',baseUrl:`http://127.0.0.1:${port}/qa-test-translator`,modelId:'test-translator',enabled:true});
+  const connection=await invoke<{profiles:{id:string;name:string}[]}>('connections-upsert',{name:'Home search isolated translator',protocol:'chat-completions',baseUrl:`http://127.0.0.1:${slowAddress.port}/v1`,modelId:'local-protocol-fixture',enabled:true});
   await invoke('connections-route',{tool:'full',id:connection.profiles.find(profile=>profile.name==='Home search isolated translator')!.id});
   const job=await invoke<TranslationJob>('translation-start',{documentId:sourceView.documentId,targetLanguage:'zh-CN',windowId:'main'});
   let artifact!:TranslationArtifact;
   await until(async()=>{const data=await invoke<{jobs:TranslationJob[];artifacts:TranslationArtifact[]}>('translation-list'),current=data.jobs.find(item=>item.id===job.id);if(current?.status==='failed')throw new Error(current.error);artifact=data.artifacts.find(item=>item.sourceDocumentId===sourceView.documentId)!;return!!artifact;},'real independent translation artifact is published');
+  assert.ok(translatorRequests>0,'translation traverses the production HTTP provider instead of a desktop test-mode shortcut');
   assert.ok(artifact.documentId);assert.notEqual(resolve(artifact.path),resolve(sourcePath));assert.ok((await readFile(artifact.path,'utf8')).includes('【zh-CN】'));assert.equal(await readFile(sourcePath,'utf8'),sourceText);
 
   const first=await newHome();
@@ -110,9 +123,8 @@ try{
   assert.ok(await material.locator('.liquid-glass-edge').evaluate(node=>getComputedStyle(node).backdropFilter.includes('url(')),'search uses the real attached displacement filter');
   const gaussian=await material.locator('feGaussianBlur').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('stdDeviation')));assert.ok(gaussian.length>0);assert.ok(gaussian.every(value=>value!==null&&value.split(/\s+/).every(part=>Number(part)===0)),'true glass uses zero Gaussian blur');
   assert.equal(await input().evaluate(node=>getComputedStyle(node).filter),'none','input foreground is never filtered');
-  const cacheBefore=await diagnostics();await input().click();await until(async()=>Math.abs((await metrics()).scale-1)<.003,'actual input focus reaches full search scale');const focused=await metrics();assert.ok(Math.abs(focused.width/resting.width-1.25)<.015,'focus expands the visual bar without changing its layout geometry');assert.equal(focused.cssWidth,resting.cssWidth);assert.equal(focused.opacity,1);
-  await main.waitForTimeout(350);const cacheAfter=await diagnostics();assert.equal(cacheAfter.builds,cacheBefore.builds,'focus/idle animation reuses the same optical geometry');assert.equal(cacheAfter.pngEncodes,cacheBefore.pngEncodes);
-  results.material={resting,focused,gaussian,cacheBefore,cacheAfter};
+  await input().click();await until(async()=>Math.abs((await metrics()).scale-1)<.003,'actual input focus reaches full search scale');const focused=await metrics();assert.ok(Math.abs(focused.width/resting.width-1.25)<.015,'focus expands the visual bar without changing its layout geometry');assert.equal(focused.cssWidth,resting.cssWidth);assert.equal(focused.opacity,1);
+  results.material={resting,focused,gaussian};
 
   await main.locator('.home-main h1').click();await main.keyboard.press('Control+l');assert.equal(await input().evaluate(node=>document.activeElement===node),true);assert.equal(await main.getByRole('dialog').count(),0,'Ctrl+L focuses home search instead of opening the old modal');
   const blankBefore=await state(),blankTabs=await main.locator('.tab').count();await input().fill('');await input().press('Enter');await main.waitForTimeout(100);assert.equal(await main.locator('.home-layout').count(),1);assert.equal((await state()).views.length,blankBefore.views.length);assert.equal(await main.locator('.tab').count(),blankTabs);

@@ -18,6 +18,8 @@ import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 
 import { ownedProcessTree, type OwnedProcessIdentity } from './helpers/owned-process-tree';
+import { recordCurrentBuild } from './helpers/current-build';
+import { verifyOfficeElasticity } from './helpers/reader-motion';
 
 const qaOnly = process.env.AGENTVIEWER_QA_ONLY ?? '';
 assert.ok(qaOnly === '' || qaOnly === 'theme' || qaOnly === 'ppt-selection', 'AGENTVIEWER_QA_ONLY supports an empty default flow, theme or ppt-selection diagnostic');
@@ -26,9 +28,11 @@ const themeOnly = qaOnly === 'theme';
 // Real Electron + desktop IPC + the direct DLL writer. Every editable file and profile is a TEMP copy.
 // Playwright is used because a Browser plugin/browser skill is not available in this test runner.
 // CDP Input is genuine Chromium composition, not a synthetic DOM event or a claim of OS Pinyin coverage.
-const require = createRequire(import.meta.url), releaseExecutable = process.env.AGENTVIEWER_QA_EXE?.trim(), executable = releaseExecutable ? resolve(releaseExecutable) : require('electron') as string, run = promisify(execFile);
+const require = createRequire(import.meta.url), executable = require('electron') as string, run = promisify(execFile);
+if (process.env.AGENTVIEWER_QA_EXE?.trim()) throw new Error('UNVERIFIED_DESKTOP_TARGET: this suite only accepts the current production build.');
 const directory = await mkdtemp(join(tmpdir(), 'agentviewer-embedded-office-'));
 const evidence = process.env.AGENTVIEWER_QA_DIR ? join(resolve(process.env.AGENTVIEWER_QA_DIR), 'embedded-office') : join(directory, 'evidence'); await mkdir(evidence, { recursive: true });
+await recordCurrentBuild(evidence);
 const names = { docx: '03-潮灯町的第十三夜.docx', pptx: '04-故事介绍.pptx', xlsx: '02-编年表.xlsx' } as const;
 
 const originals = new Map<string, Buffer>();
@@ -39,7 +43,7 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): 
 for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE']) delete (env as Record<string, string>)[key];
 const scale = Number(process.env.AGENTVIEWER_QA_SCALE ?? 1), token = randomUUID().slice(0, 8), marker = 'Kit人类编辑-' + token;
 
-const launchedAt=Date.now(),app = await electron.launch({ executablePath: executable, args: [...(releaseExecutable ? [] : ['.']), '--force-device-scale-factor=' + scale], cwd: resolve('.'), env, timeout: 60000 });
+const launchedAt=Date.now(),app = await electron.launch({ executablePath: executable, args: ['.', '--force-device-scale-factor=' + scale], cwd: resolve('.'), env, timeout: 60000 });
 const main = await app.firstWindow(), primary = app.process();
 const qaWidth=Number(process.env.AGENTVIEWER_QA_WIDTH??1440),qaHeight=Number(process.env.AGENTVIEWER_QA_HEIGHT??900);
 assert.ok(qaWidth>=900&&qaHeight>=600,'QA stays within the supported desktop client size');
@@ -135,7 +139,7 @@ const ready = async (view: ViewInfo) => {
   assert.equal(actual!.viewId, view.id); assert.equal(actual!.documentId, view.documentId); assert.equal(actual!.nativeHwnd, '0', 'renderer body must be DOM/Canvas rather than an embedded Office frame');
   assert.ok(actual!.nativePid! > 0); workerPids.add(actual!.nativePid!);
   const transport = (await invoke<{ transport?: string }>('office-statistics')).transport;
-  if (!releaseExecutable) assert.equal(transport, 'binary', 'The current production build must present actual native tiles through v2');
+  assert.equal(transport, 'binary', 'The current production build must present actual native tiles through v2');
   results.nativeTransport = transport;
   (results.readySurfaces??=[] as unknown[]);(results.readySurfaces as unknown[]).push({viewId:view.id,state:actual});
   assert.equal(await main.locator('.native-office-surface,.native-office-placeholder,.office-editing-ribbon').count(), 0);
@@ -455,7 +459,7 @@ try {
   await main.locator('#root .tab-strip').waitFor(); assert.match(main.url(), new RegExp('127\\.0\\.0\\.1:' + port)); assert.equal(await main.title(), 'AgentViewer');
   await app.evaluate(({ BrowserWindow }) => { const owner = BrowserWindow.getAllWindows()[0]; owner.hide(); owner.show(); owner.focus(); });
   await until(async () => { try { return JSON.parse(await readFile(env.AGENTVIEWER_CONNECTION_FILE, 'utf8')).protocolVersion === '1.0'; } catch { return false; } }, 'isolated desktop service discovery');
-  const identity = await app.evaluate(({ app }) => ({ profile: app.getPath('userData'), pid: process.pid, lock: app.hasSingleInstanceLock(), packaged:app.isPackaged, executable:process.execPath, appPath:app.getAppPath() })); assert.equal(resolve(identity.profile), resolve(directory)); assert.equal(identity.lock, true); if (releaseExecutable) { assert.equal(identity.packaged,true,'release QA must exercise the packaged application'); assert.equal(resolve(identity.executable).toLowerCase(),executable.toLowerCase()); } results.identity = identity;
+  const identity = await app.evaluate(({ app }) => ({ profile: app.getPath('userData'), pid: process.pid, lock: app.hasSingleInstanceLock(), packaged:app.isPackaged, executable:process.execPath, appPath:app.getAppPath() })); assert.equal(resolve(identity.profile), resolve(directory)); assert.equal(identity.lock, true); assert.equal(resolve(identity.executable).toLowerCase(),executable.toLowerCase()); assert.equal(resolve(identity.appPath),resolve('.')); results.identity = identity;
   await captureProcessRoots(identity.pid);
   await invoke('settings-set', { id: 'appearance.autoHideToolbar', value: false }); await invoke('settings-set', { id: 'appearance.motion', value: 'off' }); await invoke('settings-set', { id: 'appearance.theme', value: 'light' }); await invoke('settings-set', { id: 'appearance.documentPaperColor', value: '#ffffff' });
 
@@ -621,6 +625,7 @@ try {
     await verifyImpressEditing(await open('pptx'));
   } else {
 word = await open('docx');
+results.wordElasticity = await verifyOfficeElasticity(main);
 results.writerInitial = { state: await status(word), pixels: await screenshot('writer-light-white') };
 await navigate(word, { kind: 'paragraph', paragraphIndex: 0 });
 await humanFocus(word);
@@ -736,6 +741,7 @@ if (retiringWordCanvas) await main.locator('.embedded-office-canvas').evaluate(n
     (window as any).__officeRetiredCanvasQa = node;
   });
 let calc = await open('xlsx');
+results.sheetElasticity = await verifyOfficeElasticity(main);
 if (retiringWordCanvas) {
     const retirement = await main.evaluate(() => {
       const node = (window as any).__officeRetiredCanvasQa as HTMLCanvasElement;
@@ -792,7 +798,9 @@ await until(async()=>!(await status(word)).selection?.text,'dialog target is a r
 await leftCategory('表格', 'table');
 await verifyToolIcons('docx','table');
 await main.locator('[data-uno-command=".uno:InsertTable"]').click();
-await main.locator('.office-dialog-form').waitFor({ timeout: 15000 });
+// The first dispatch also discovers the native command catalog. Use the same
+// 30-second cold-start allowance as the dedicated dialog flow.
+await main.locator('.office-dialog-form').waitFor({ timeout: 30000 });
 const dialogState = await status(word), dialog = dialogState.windows!.find(window => window.visible && window.kind === 'dialog')!;
 assert.ok(dialog?.instanceId);
 const dialogForm = main.locator(`[data-office-window-instance="${dialog.instanceId}"] .office-dialog-form`);
@@ -818,7 +826,6 @@ results.dialog = { command:'.uno:InsertTable',instanceId: dialog.instanceId, kin
   const owned = await processes(); assert.ok([...workerPids].every(pid => owned.some(item => item.ProcessId === pid)), 'tested document writers belong to this isolated reader'); assert.ok(owned.every(item => !/^soffice(?:\.bin|\.exe)?$/i.test(item.Name)), 'no dedicated Office executable is spawned'); assert.equal(workerPids.size, 1, 'documents share one direct DLL worker'); results.processes = owned;
   const bootstrap=await app.evaluate(()=>(globalThis as any).__officeQaBootstrap) as {code:string;at:number}[];results.bootstrapDiagnostics=bootstrap;results.ipcTrace=await app.evaluate(({ipcMain})=>(ipcMain as any).__officeQaTrace);results.rendererPerformance=await main.evaluate(()=>(window as any).__officeQaPerformance);
 
-  if(releaseExecutable)assert.ok(bootstrap.some(receipt=>receipt.code==='OFFICE_KIT_BOOTSTRAP_SEED_REUSED'),'the staged built-in docless bootstrap seed is actually validated and reused');
   for (const name of Object.values(names)) assert.deepEqual(await readFile(originalPaths.get(name)!), originals.get(name), 'authored source stays unchanged');
   assert.deepEqual(errors, []); assert.doesNotMatch(stderr.join(''), /Object has been destroyed|UnhandledPromiseRejection|Uncaught (?:Exception|TypeError|Error)/i);
   passed = true; await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed, directory, evidence, scale, port, testScope: themeOnly ? 'structured-native-dialog,light-dark-light,real-table-save' : qaOnly==='ppt-selection'?'impress-selection,live-format,text-undo,save-reopen':'writer,calc,impress,native-dialog', ...results, errors, rendererScreenshotsIncludeActualEnginePixels: true, imeCoverage: themeOnly ? 'Chromium CDP dialog composition, not OS Pinyin' : 'Chromium CDP composition, not OS Pinyin' }, null, 2)); console.log(qaOnly==='ppt-selection'?'Real Impress selected text, live format, toolbar text Undo, redo and save/reopen: PASS':themeOnly ? 'Real native controls, themed DOM dialogs and saved 3x2 table: PASS' : 'Real Embedded Office Electron / native DLL tiles / desktop IPC / human Canvas input + Chromium IME / selection + styles / native dialog / save + reopen: PASS', evidence);

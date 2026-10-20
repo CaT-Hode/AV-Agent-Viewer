@@ -46,10 +46,24 @@ function selected(state: EditorState, from: number, to: number) {
   if (state.facet(EditorState.readOnly)) return false;
   return state.selection.ranges.some(range => range.empty ? range.head >= from && range.head <= to : range.from < to && range.to > from);
 }
+function selectedLine(state: EditorState, from: number, to: number) {
+  if (state.facet(EditorState.readOnly)) return false;
+  return state.selection.ranges.some(range => {
+    // Keep syntax stable while the caret moves within a line. Revealing just
+    // the marker under the caret changes glyph positions after hit testing.
+    return state.doc.lineAt(range.from).from <= to && state.doc.lineAt(range.to).to >= from;
+  });
+}
 function editBlock(view: EditorView, position: number) {
   view.dispatch({ selection: { anchor: position }, scrollIntoView: true }); view.focus();
 }
 function preventWidgetSelection(event: MouseEvent) { event.preventDefault(); }
+
+/** CodeMirror measures each block's border box. Keep vertical margins inside
+ * a formatting context so its height map matches the pixels used by the mouse. */
+function measuredBlock(content: HTMLElement) {
+  const block = document.createElement('div'); block.className = 'md-measured-block'; block.append(content); return block;
+}
 
 class PrefixWidget extends WidgetType {
   constructor(readonly text: string, readonly checked?: boolean, readonly position = 0) { super(); }
@@ -162,10 +176,10 @@ class RenderWidget extends WidgetType {
       for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (this.kind !== 'toc') button.remove();
     }
     if (!readOnly && this.kind !== 'toc') host.addEventListener(['html', 'metadata', 'footnote'].includes(this.kind) ? 'dblclick' : 'click', event => { if (this.kind === 'html' && (event.target as HTMLElement).closest('video,audio,iframe,a,input,button,textarea')) return; event.preventDefault(); const from = view.posAtDOM(host); if (['metadata', 'html', 'footnote'].includes(this.kind)) view.dispatch({ effects: revealMarkdownBlock.of({ from, to: from + this.source.length }) }); editBlock(view, from + (this.kind === 'math' ? this.block ? 3 : 1 : 0)); });
-    return host;
+    return this.block ? measuredBlock(host) : host;
   }
   ignoreEvent() { return true; }
-  destroy(dom: HTMLElement) { (dom as HTMLElement & { markdownDispose?: () => void }).markdownDispose?.(); }
+  destroy(dom: HTMLElement) { const content = dom.matches('.md-measured-block') ? dom.firstElementChild : dom; (content as HTMLElement & { markdownDispose?: () => void })?.markdownDispose?.(); }
 }
 
 class TableWidget extends WidgetType {
@@ -173,7 +187,7 @@ class TableWidget extends WidgetType {
   eq(other: TableWidget) { return this.source === other.source && this.from === other.from; }
   toDOM(view: EditorView) {
     const parsed = parseMarkdownTable(this.source); const host = document.createElement('div'); host.className = 'md-table-widget'; host.dataset.markdownWidget = 'true';
-    if (!parsed) { host.textContent = this.source; return host; }
+    if (!parsed) { host.textContent = this.source; return measuredBlock(host); }
     const tools = document.createElement('div'); tools.className = 'md-table-toolbar';
     const button = (label: string, text: string, action: () => void) => { const node = document.createElement('button'); node.type = 'button'; node.title = label; node.setAttribute('aria-label', label); node.textContent = text; node.addEventListener('mousedown', preventWidgetSelection); node.addEventListener('click', action); tools.append(node); };
     let activeRow = 0, activeColumn = 0;
@@ -223,14 +237,14 @@ class TableWidget extends WidgetType {
         });
         td.append(input); tr.append(td);
       }); table.append(tr);
-    }); host.append(table); return host;
+    }); host.append(table); return measuredBlock(host);
   }
   ignoreEvent() { return true; }
 }
 
 class TableSourceNoticeWidget extends WidgetType {
   eq(other: WidgetType) { return other instanceof TableSourceNoticeWidget; }
-  toDOM() { const hint = document.createElement('div'); hint.className = 'md-table-source-notice'; hint.textContent = '大型表格使用源码编辑；左栏仍可增删、移动行列与设置对齐。'; return hint; }
+  toDOM() { const hint = document.createElement('div'); hint.className = 'md-table-source-notice'; hint.textContent = '大型表格使用源码编辑；左栏仍可增删、移动行列与设置对齐。'; return measuredBlock(hint); }
 }
 
 /** Source remains the only document. Decorations never become a serializer. */
@@ -265,14 +279,14 @@ export function markdownLivePreview(documentId: string) {
       if (hidden.some(range => node.from >= range.from && node.to <= range.to)) return false;
       const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(name);
       if (heading) { addLine(node.from, 'md-heading md-heading-' + heading[1]); if (name.startsWith('Setext')) { const last = state.doc.lineAt(node.to).from; if (!selected(state, last - 1, node.to + 1)) hide(last > 0 ? last - 1 : last, node.to); } }
-      if (name === 'HeaderMark') { if (!selected(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(state.doc.lineAt(node.to).to, node.to + 1)); }
+      if (name === 'HeaderMark') { if (!selectedLine(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(state.doc.lineAt(node.to).to, node.to + 1)); }
       if (['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Highlight', 'Subscript', 'Superscript', 'InlineCode'].includes(name)) {
         decorations.push(Decoration.mark({ class: ({ StrongEmphasis: 'md-strong', Emphasis: 'md-emphasis', Strikethrough: 'md-strike', Highlight: 'md-highlight', Subscript: 'md-sub', Superscript: 'md-super', InlineCode: 'md-inline-code' } as Record<string, string>)[name] }).range(node.from, node.to));
-        if (!active) for (let child = node.firstChild; child; child = child.nextSibling) if (/Mark$/.test(child.name)) hide(child.from, child.to);
+        if (!selectedLine(state, node.from, node.to)) for (let child = node.firstChild; child; child = child.nextSibling) if (/Mark$/.test(child.name)) hide(child.from, child.to);
       }
       if (name === 'Blockquote') for (let p = state.doc.lineAt(Math.max(span.from, node.from)).number; p <= state.doc.lineAt(Math.min(span.to, node.to)).number; p++) addLine(state.doc.line(p).from, 'md-quote');
-      if (name === 'QuoteMark' && !selected(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(node.to + 1, state.doc.lineAt(node.to).to));
-      if (name === 'ListMark' && !selected(state, node.from - 1, node.to + 1)) hide(node.from, node.to, new PrefixWidget(/^\d/.test(text()) ? text() : '•'));
+      if (name === 'QuoteMark' && !selectedLine(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(node.to + 1, state.doc.lineAt(node.to).to));
+      if (name === 'ListMark' && !selectedLine(state, node.from - 1, node.to + 1)) hide(node.from, node.to, new PrefixWidget(/^\d/.test(text()) ? text() : '•'));
       if (name === 'TaskMarker') hide(node.from, node.to, new PrefixWidget('', /[xX]/.test(text()), node.from));
       if (name === 'HorizontalRule' && !active) { hide(node.from, node.to, new RenderWidget('rule', '', node.from, true, documentId), true); return false; }
       if (name === 'Table' && node.to - node.from <= 24000 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { hide(node.from, node.to, new TableWidget(text(), node.from), true); return false; }

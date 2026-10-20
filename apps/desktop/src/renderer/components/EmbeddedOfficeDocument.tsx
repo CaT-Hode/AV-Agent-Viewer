@@ -18,7 +18,7 @@ import { OfficePointerClickTracker, type OfficePointerCapture } from '../lib/off
 import { officeSurfaceStaleRead } from '../lib/office-surface-errors';
 import { useEmbeddedOfficeSelectionTools } from '../lib/useEmbeddedOfficeSelectionTools';
 import { OfficePendingScroll } from '../lib/office-pending-scroll';
-import { observeNavigationLane, readNavigationLane } from '../lib/navigation-lane';
+import { observeNavigationLane, readNavigationLane, readNavigationTargetLane } from '../lib/navigation-lane';
 import { officePresentationFitForView, officePresentationManualLayout } from '../lib/office-presentation-fit';
 import {OfficeFramePresenter,drawOfficeFrameTile} from '../lib/office-frame-presenter';
 import { OfficeStartupPreview, type OfficeStartupPreviewLocation } from './OfficeStartupPreview';
@@ -85,7 +85,11 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     // navigation lane. A first paragraph must remain reachable after reopen.
     const write=(name:string,value:number)=>{const next=value+'px';if(host.style.getPropertyValue(name)!==next)host.style.setProperty(name,next);};
     const update=()=>{
-      const lane=readNavigationLane(reader);
+      const lane=readNavigationLane(reader),target=readNavigationTargetLane(reader);
+      // Reserve entering panes before their spring advances past this frame's
+      // measured bounds, and retain that space until exiting panes unmount.
+      lane.left=Math.max(lane.left,target.left);
+      lane.right=Math.min(lane.right,target.right);
       const right=Math.max(0,reader.getBoundingClientRect().width-lane.right);
       write('--office-controls-left-inset',lane.left);write('--office-controls-right-inset',right);
       const nav=reader.querySelector<HTMLElement>('.navigation-toolbar'),height=nav&&!nav.classList.contains('is-hidden')?Number.parseFloat(getComputedStyle(nav).getPropertyValue('--navigation-height'))||60:0;

@@ -13,6 +13,7 @@ import type { ReadingSnapshot, ReadingContext, SelectionContext, Rect } from '..
 import type { SettingsSnapshot } from '../../../../../packages/settings/src/index';
 import { OFFICE_SELECTION_EVENTS, type OfficeSelectionToolsEvent } from '../lib/office-surface-selection';
 import { SELECTION_POPOVER_MOTION_BASE_MS } from '../lib/motion-policy';
+import { READING_MOTION_EVENT } from '../lib/smooth-scroll';
 type Tool = { id: string; label: string; input: boolean };
 type State = { snapshot: ReadingSnapshot | SelectionContext; actions: Tool[] };
 const icons:Record<string,typeof Copy>={copy:Copy,citation:Quote,extract:FilePlus2,note:MessageSquare,highlight:Highlighter,underline:Underline,strike:Strikethrough,bold:Bold,italic:Italic,code:Code,replace:Pencil,heading:Heading2,'align-left':AlignLeft,'align-center':AlignCenter,'center-object':MoveHorizontal,translate:Languages,ask:Sparkles};
@@ -126,8 +127,18 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     // by this pointerdown. Bubbling here would cancel a cell's new request.
     const size=new ResizeObserver(follow),watchReader=()=>{const reader=document.querySelector('.document-content');size.disconnect();if(reader)size.observe(reader);};
     const clearEvent=()=>clear();
+    const elasticFollow=(event:Event)=>{
+      const {element,offset}=(event as CustomEvent<{element:HTMLElement;offset:number}>).detail,engine=engineSelection.current;
+      if(engine&&element.dataset.officeSurface===engine.viewId)setRect({...engine.rect,y:engine.rect.y+offset});
+      else follow();
+    };
+    window.addEventListener(READING_MOTION_EVENT,elasticFollow);
+    // Kept separate from the other listeners so the elastic animation never
+    // outlives this surface's selection lease.
+    const disposeElastic=()=>window.removeEventListener(READING_MOTION_EVENT,elasticFollow);
+
     window.addEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.addEventListener('agentviewer:selection-tools',selected);window.addEventListener('agentviewer:selection-tools',watchReader);window.addEventListener('agentviewer:selection-open',open);window.addEventListener('agentviewer:selection-clear',clearEvent);document.addEventListener('pointerdown',dismiss,true);document.addEventListener('mousedown',preserveChromeSelection,true);document.addEventListener('scroll',follow,true);document.addEventListener('selectionchange',changed);window.addEventListener('resize',follow);
-    return()=>{size.disconnect();cancelAnimationFrame(frame);window.removeEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-tools',watchReader);window.removeEventListener('agentviewer:selection-open',open);window.removeEventListener('agentviewer:selection-clear',clearEvent);document.removeEventListener('pointerdown',dismiss,true);document.removeEventListener('mousedown',preserveChromeSelection,true);document.removeEventListener('scroll',follow,true);document.removeEventListener('selectionchange',changed);window.removeEventListener('resize',follow);};
+    return()=>{disposeElastic();size.disconnect();cancelAnimationFrame(frame);window.removeEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-tools',watchReader);window.removeEventListener('agentviewer:selection-open',open);window.removeEventListener('agentviewer:selection-clear',clearEvent);document.removeEventListener('pointerdown',dismiss,true);document.removeEventListener('mousedown',preserveChromeSelection,true);document.removeEventListener('scroll',follow,true);document.removeEventListener('selectionchange',changed);window.removeEventListener('resize',follow);};
   },[native]);
   useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape')clear();};document.addEventListener('keydown',escape);return()=>document.removeEventListener('keydown',escape);},[]);
   useEffect(()=>{if(native)void call('toolbar-panel',{expanded:inputMotion.present||errorMotion.present});},[native,inputMotion.present,errorMotion.present]);
@@ -168,10 +179,9 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     return {target:target||undefined,scene:{viewport:actualViewport,height:46,obstacles,selection:currentRect,gap:10}};
   },pose=>window.dispatchEvent(new CustomEvent('agentviewer:selection-material-position',{detail:{...pose,height:46}})));
   motionRefresh.current=()=>refreshMotion.current();
-  // A now-impossible placement must disappear immediately, rather than leave
-  // MotionPresence's old retained hit target underneath an expanding sidebar.
-  if(!native&&state&&rect&&!position)return null;
-  return <MotionPresence show={show} surface="selection" duration={SELECTION_POPOVER_MOTION_BASE_MS} identity={presentation.current} keyboardImmediate>{state&&rect&&<div ref={toolbar} className="selection-tools" data-selection-snapshot={state.snapshot.id} data-selection-material-ready={opticsReady&&backdropReady} data-paper={!native&&['pdf','docx','pptx','html'].includes(state.snapshot.document.format)||undefined} role="toolbar" aria-label="选区工具" style={{left,top,width:nativePanelWidth,maxWidth:nativePanelWidth?'none':native?'calc(100vw - 16px)':position?.width ?? width}}>
+  // Retain the last painted pose for exit. MotionPresence makes it inert as
+  // soon as placement fails, so the fading toolbar cannot intercept input.
+  return <MotionPresence show={show} surface="selection" duration={SELECTION_POPOVER_MOTION_BASE_MS} identity={presentation.current} keyboardImmediate={false}>{state&&rect&&<div ref={toolbar} className="selection-tools" data-selection-snapshot={state.snapshot.id} data-selection-material-ready={opticsReady&&backdropReady} data-paper={!native&&['pdf','docx','pptx','html'].includes(state.snapshot.document.format)||undefined} role="toolbar" aria-label="选区工具" style={{left,top,width:nativePanelWidth,maxWidth:nativePanelWidth?'none':native?'calc(100vw - 16px)':position?.width ?? width}}>
     <div ref={glass} data-navigation-surface={surface} className="selection-tool-icons material-host floating-capsule navigation-capsule" onMouseDown={event=>event.preventDefault()} style={{width,maxWidth:'100%'} as CSSProperties}><NavigationGlass softness="selection" onReady={setOpticsReady} backdropImage={backdrop.image} backdropSample={backdrop.sample} capsuleBounds={glassBounds} onSurface={setSurface} /><div className="selection-tool-row">{state.actions.map(tool=>{const Icon=icons[tool.id]??Pencil;return <button key={tool.id} className={'icon-button '+(input?.id===tool.id?'selected':'')} aria-label={tool.label} aria-expanded={tool.input?input?.id===tool.id:undefined} aria-controls={tool.input?'selection-editor':undefined} title={tool.label} disabled={busy} onMouseDown={e=>e.preventDefault()} onClick={()=>void run(tool)}><Icon size={16}/></button>;})}<button className="icon-button" title="关闭选区工具" aria-label="关闭选区工具" onMouseDown={e=>e.preventDefault()} onClick={()=>clear()}><X size={14}/></button></div></div>
     <MotionPresence show={!!input} duration={110}>{input&&<form id="selection-editor" className="selection-input material-host" onSubmit={e=>{e.preventDefault();void run(input,true);}}><SelectionPanelGlass native={native} backdrop={backdrop}/><label>{input.label}<textarea autoFocus aria-label={input.label} value={value} onChange={e=>setValue(e.target.value)}/></label><button className="button primary" disabled={busy||!value.trim()}><Send size={14}/>{busy?'处理中…':'应用'}</button>{error&&<p role="alert" className="selection-inline-error">{error}</p>}</form>}</MotionPresence>
     <MotionPresence show={!!error&&!input} duration={110}>{error&&!input&&<p className="selection-error material-host" role="alert"><SelectionPanelGlass native={native} backdrop={backdrop}/>{error}</p>}</MotionPresence>

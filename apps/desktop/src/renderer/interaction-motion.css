@@ -1,5 +1,7 @@
 /* Only panes scroll. Prevent directory jumps from moving window chrome. */
 html,body,#root{height:100%;overflow:clip}
+/* The viewport and scrollbar stay fixed while the page resists an edge pull. */
+.reading-content-body,.embedded-office-stage{translate:var(--scroll-elastic-translate,none)}
 .app-shell,.settings-shell{height:100dvh;min-height:0;overflow:clip}
 .app-shell>.tab-strip{flex:0 0 49px}
 .app-shell>.status-bar{flex:0 0 27px}

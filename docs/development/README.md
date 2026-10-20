@@ -9,6 +9,7 @@ npm.cmd run build
 npm.cmd test
 npm.cmd run test:desktop
 npm.cmd run test:office
+npm.cmd run test:full
 ```
 
 build 检查文档、MCP预算与TypeScript，再构建全部运行时和Vite。dev复用运行时构建并启动Vite/Electron，代理/internal与/fixtures。TypeScript拒绝未使用的声明和参数。原生适配器需要MSVC x64；预算在独立catalog-only进程测量，不触发编辑或输入。
@@ -59,7 +60,7 @@ npm.cmd run package:portable
 
 ## 验证与本机替换
 
-常驻测试预算50，扩展既有职责，不堆积永久探针。按用户要求不开展输入验收。每篇文档完整 Unicode 字符≤2000，每模块最多两篇，统一注册于[manifest](../manifest.json)。
+测试≤50项，单元/模拟不作桌面验收。桌面及原生入口重建、核对源码/产物SHA，通过后保留证据、清理临时数据。文档≤2000字符，每模块≤2篇，见[manifest](../manifest.json)。
 
 认证通过后，install:local 暂存并核对完整文件、长度与SHA，再切换目录并保留回退。运行中的安装版阻止替换，不强关用户进程；APPDATA数据独立保留。构建、安装和远端push分别验证，不能互相代替。
 

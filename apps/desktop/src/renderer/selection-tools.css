@@ -7,9 +7,13 @@
 }
 :root .selection-tools[data-motion-surface="selection"][data-motion-phase] {
   --selection-hidden:0; --liquid-glass-opacity:calc(1 - var(--selection-hidden));
-  opacity:1; scale:1; translate:none; transition:none;
+  opacity:1; scale:calc(1 - var(--selection-hidden) * .015); translate:0 calc(var(--selection-hidden) * 4px);
+  transition:scale var(--motion-duration,143ms) cubic-bezier(.23,1,.32,1),translate var(--motion-duration,143ms) cubic-bezier(.23,1,.32,1);
 }
 :root .selection-tools[data-motion-surface="selection"]:is([data-motion-phase="enter"],[data-motion-phase="exit"],[data-selection-material-ready="false"]) { --selection-hidden:1; }
+:root .selection-tools[data-motion-surface="selection"][data-selection-occluded="true"] { --selection-hidden:1; pointer-events:none; }
+:root[data-motion="reduced"] .selection-tools[data-motion-surface="selection"][data-motion-phase]{translate:none;scale:1}
+@media(prefers-reduced-motion:reduce){:root .selection-tools[data-motion-surface="selection"][data-motion-phase]{translate:none;scale:1}}
 .selection-tools[data-selection-material-ready="false"] { pointer-events:none; }
 :root[data-theme] .selection-tool-icons.navigation-capsule {
   --navigation-hide-progress:var(--selection-hidden,0);

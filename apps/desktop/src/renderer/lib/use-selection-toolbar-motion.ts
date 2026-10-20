@@ -20,8 +20,11 @@ export function useSelectionToolbarMotion(node: RefObject<HTMLDivElement | null>
     let frame = 0, lastAt = owner.performance.now(), live = true, previous = '';
     const spring = glassSpringParameters(KUBE_GLASS_SPRINGS.lensShape, mode);
     const apply = (position: SelectionToolbarPosition | undefined) => {
-      if (!position) { element.style.visibility = 'hidden'; return; }
-      element.style.removeProperty('visibility');
+      // Geometry can disappear a frame before React observes the scroll.
+      // Fade the retained pose instead of making it instantly invisible.
+      if (!position) { element.dataset.selectionOccluded = 'true'; element.inert = true; return; }
+      delete element.dataset.selectionOccluded;
+      element.inert = false;
       element.style.left = position.x + 'px'; element.style.top = position.y + 'px'; element.style.maxWidth = position.width + 'px';
       element.dataset.selectionMoving = String(controller.current.moving);
       const signature = `${position.x}:${position.y}:${position.width}`;

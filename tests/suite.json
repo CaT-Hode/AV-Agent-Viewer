@@ -1,8 +1,8 @@
 {
   "unit": [
     "core.test.ts",
-    "office-editing.test.ts",
-    "native-office-mapped-shape-style.test.ts",
+    "office-model.test.ts",
+    "office-style-simulation.test.ts",
     "translation-selection.test.ts"
   ],
   "integration": [

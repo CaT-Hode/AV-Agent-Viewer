@@ -1,15 +1,17 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { assertCurrentBuild } from './build-identity.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const testRoot = join(root, 'tests');
 const suite = JSON.parse(await readFile(join(testRoot, 'suite.json'), 'utf8'));
 const mode = process.argv[2] ?? 'unit';
-if (process.argv.length > 3 || !['unit', 'desktop', 'office', 'list'].includes(mode)) {
-  throw new Error('Usage: node scripts/test.mjs [unit|desktop|office|list]');
+if (process.argv.length > 3 || !['unit', 'desktop', 'office', 'full', 'list'].includes(mode)) {
+  throw new Error('Usage: node scripts/test.mjs [unit|desktop|office|full|list]');
 }
 
 function testPath(file) {
@@ -52,27 +54,68 @@ for (const entry of await readdir(testRoot, { recursive: true, withFileTypes: tr
   const file = relative(testRoot, join(entry.parentPath, entry.name)).replaceAll('\\', '/');
   if (!registered.has(file)) throw new Error('Unregistered test outside the 50-case budget: ' + file);
 }
-console.log(`Test budget: ${unitCount} regular tests + ${desktopCount} Electron flows + ${engineCount} engine flows = ${total}/50`);
+console.log(`Test budget: ${unitCount} unit tests (includes simulations) + ${desktopCount} production Electron flows + ${engineCount} engine flows = ${total}/50`);
 if (mode === 'list') {
   for (const entry of units) for (const title of entry.titles) console.log('  [unit] ' + title);
   for (const entry of suite.integration) for (const title of entry.cases) console.log(`  [${entry.runtime}:${entry.id}] ${title}`);
   process.exit(0);
 }
 
+const identity = mode === 'unit' ? undefined : await assertCurrentBuild();
+const temporary = await mkdtemp(join(tmpdir(), 'agentviewer-suite-'));
+const artifact = join(root, 'artifacts', 'verification', mode);
+const baseEnv = { ...process.env, TEMP: temporary, TMP: temporary };
+for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE', 'AGENTVIEWER_QA_ONLY', 'AGENTVIEWER_QA_EXE', 'AGENTVIEWER_QA_DIR', 'AGENTVIEWER_QA_WIDTH', 'AGENTVIEWER_QA_HEIGHT', 'AGENTVIEWER_AUTHORING_ONLY', 'AGENTVIEWER_EXPORT_ADAPTER']) delete baseEnv[key];
+try {
+  const local = JSON.parse(await readFile(join(root, '.agentviewer/test-runtime.json'), 'utf8'));
+  if (!baseEnv.AGENTVIEWER_ENGINES_DIR && typeof local.enginesDir === 'string') baseEnv.AGENTVIEWER_ENGINES_DIR = local.enginesDir;
+} catch (error) { if (error.code !== 'ENOENT') throw error; }
+const report = { mode, passed: false, build: identity, unitTests: mode === 'unit' || mode === 'full' ? unitCount : 0, flows: [], temporary };
+await mkdir(artifact, { recursive: true });
+
 function run(args, env = {}) {
   return new Promise((done, reject) => {
-    const child = spawn(process.execPath, args, { cwd: root, env: { ...process.env, ...env }, stdio: 'inherit', windowsHide: true });
+    const child = spawn(process.execPath, args, { cwd: root, env: { ...baseEnv, ...env }, stdio: 'inherit', windowsHide: true });
     child.once('error', reject);
     child.once('exit', (code, signal) => code === 0 && signal === null ? done() : reject(new Error(`Test process failed: exit=${code}, signal=${signal}`)));
   });
 }
-if (mode === 'unit' || mode === 'office') {
-  const selected = mode === 'office' ? units.filter(entry => /^(office-editing|native-office-mapped-shape-style)\./.test(entry.file)) : units;
-  await run(['--import', 'tsx', '--test', ...selected.map(entry => testPath(entry.file))]);
-}
-if (mode === 'desktop' || mode === 'office') {
-  for (const entry of suite.integration.filter(entry => mode === 'office' ? entry.id.startsWith('office') : entry.runtime === 'electron')) {
-    console.log('\nIntegration flow: ' + entry.id + ' (' + entry.runtime + ')');
+try {
+  if (mode === 'unit' || mode === 'full') await run(['--import', 'tsx', '--test', ...units.map(entry => testPath(entry.file))]);
+  const selected = mode === 'unit' ? [] : suite.integration.filter(entry => mode === 'full' || (mode === 'office' ? entry.id.startsWith('office') : entry.runtime === 'electron'));
+  for (const entry of selected) {
+    const before = new Set(await readdir(temporary)), began = Date.now();
+    console.log('\nCurrent production flow: ' + entry.id + ' (' + entry.runtime + ')');
     await run(['--import', 'tsx', testPath(entry.file)], entry.env);
+    const destination = join(artifact, entry.id);
+    await rm(destination, { recursive: true, force: true });
+    let captured = false;
+    for (const name of await readdir(temporary)) {
+      if (before.has(name)) continue;
+      const candidate = join(temporary, name);
+      if ((await readdir(candidate, { withFileTypes: true }).catch(() => [])).some(item => item.name === 'evidence' && item.isDirectory())) {
+        await cp(join(candidate, 'evidence'), destination, { recursive: true }); captured = true;
+      } else if ((await readdir(candidate).catch(() => [])).includes('result.json')) {
+        await mkdir(destination, { recursive: true });
+        for (const file of ['result.json', 'build-identity.json']) await cp(join(candidate, file), join(destination, file));
+        captured = true;
+      }
+    }
+    if (!captured) throw new Error('CURRENT_EVIDENCE_MISSING: ' + entry.id);
+    report.flows.push({ id: entry.id, runtime: entry.runtime, cases: entry.cases, passed: true, elapsedMs: Date.now() - began, evidence: relative(root, destination).replaceAll('\\', '/') });
   }
+  if (identity) await assertCurrentBuild();
+  report.passed = true;
+} catch (error) {
+  report.error = String(error);
+  throw error;
+} finally {
+  report.completedAt = new Date().toISOString();
+  if (report.passed) {
+    if (dirname(temporary) !== resolve(tmpdir()) || !temporary.startsWith(join(resolve(tmpdir()), 'agentviewer-suite-'))) throw new Error('Unexpected owned suite directory');
+    await rm(temporary, { recursive: true, force: true });
+    report.temporaryRemoved = true;
+  }
+  await writeFile(join(artifact, 'report.json'), JSON.stringify(report, null, 2) + '\n');
+  console.log('Verification report: ' + join(artifact, 'report.json'));
 }

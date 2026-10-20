@@ -11,6 +11,8 @@ import { editOperationSchema, type DocumentModel, type EditOperation, type Forma
 import { shiftSheetFormula } from '../packages/format-adapters/src/sheet-editing';
 import { OfficeModelBackground, backgroundOfficeAdapter } from '../packages/format-adapters/src/office-model-background';
 
+// OOXML model/codec unit tests. No native Office runtime or desktop UI is loaded.
+
 const repository = () => ({ load: async <T>() => undefined as T | undefined, save: async (_value: unknown) => {} });
 const customPart = 'customXml/agentviewer-proof.xml', customContent = '<proof>unrelated package payload</proof>';
 async function withProof(bytes: Uint8Array) { const zip=await JSZip.loadAsync(bytes);zip.file(customPart,customContent);return zip.generateAsync({type:'uint8array'}); }
@@ -31,7 +33,7 @@ async function setup(format: Format, bytes?: Uint8Array) {
   return {core,view,model,edit,reject,directory};
 }
 
-test('Word rich text, paragraphs, tables and page settings save/reopen and undo',async()=>{
+test('[OOXML model] Word rich text, paragraphs, tables and page settings save/reopen and undo',async()=>{
   const t=await setup('docx'),id=t.model().blocks![0].id,source=t.model().blocks![0].text;
   const { build }=await import('esbuild'),workerPath=join(t.directory,'office-model-worker.cjs');
   await build({entryPoints:[join(process.cwd(),'packages/format-adapters/src/office-model-worker.ts')],bundle:true,platform:'node',format:'cjs',target:'node22',outfile:workerPath,logLevel:'silent'});
@@ -62,7 +64,7 @@ test('Word rich text, paragraphs, tables and page settings save/reopen and undo'
   for(const kind of ['word.deleteParagraph','word.insertTable','word.setPageLayout','office.setTextStyle'])assert.ok(t.core.getDocument(t.view.documentId).info.capabilities.editKinds.includes(kind));
 });
 
-test('PowerPoint slides, shapes, style, background and notes save/reopen independently',async()=>{
+test('[OOXML model] PowerPoint slides, shapes, style, background and notes save/reopen independently',async()=>{
   const t=await setup('pptx'),original=t.model().slides![0].id,shape=t.model().slides![0].blocks[0].id;
   await t.reject({kind:'slides.deleteSlide',slideId:original},/最后一张/);
   await t.edit({kind:'slides.setShapeStyle',slideId:original,shapeId:shape,fontName:'Arial',fontSize:27,color:'113355',fill:'EEF3FA',lineColor:'557799',lineWidth:1.5,rotation:12,alignment:'center',underline:true},model=>{const block=model.slides![0].blocks.find(b=>b.id===shape)!;assert.equal(block.fontSize,27);assert.equal(block.color,'113355');assert.equal(block.fill,'EEF3FA');assert.equal(block.lineColor,'557799');assert.equal(block.lineWidth,1.5);assert.equal(block.rotation,12);assert.equal(block.alignment,'center');});
@@ -84,7 +86,7 @@ test('PowerPoint slides, shapes, style, background and notes save/reopen indepen
 });
 
 async function workbookBytes(){const workbook=new ExcelJS.Workbook(),data=workbook.addWorksheet('Data');data.addRows([['name','score','check'],['b',20,{formula:'SUM(B2:B3)',result:30}],['a',10,null],['c',30,null]]);const ref=workbook.addWorksheet('References');ref.getCell('A1').value={formula:'\'Data\'!B2+"B2"',result:20};return new Uint8Array(await workbook.xlsx.writeBuffer());}
-test('Excel styles, merges, dimensions, structure, filter and data tools retain formulas/types',async()=>{
+test('[OOXML model] Excel styles, merges, dimensions, structure, filter and data tools retain formulas/types',async()=>{
   const t=await setup('xlsx',await workbookBytes()),sheet=t.model().sheets![0].id,other=t.model().sheets![1].id;
   await t.edit({kind:'sheets.setRangeFormat',sheetId:sheet,range:'A1:B2',fontName:'Arial',fontSize:15,color:'334455',underline:true,strike:true,wrap:true,vertical:'middle',borders:'all',borderColor:'AABBCC',fill:'EDF5FA'},model=>{const cell=model.sheets![0].rows[1][1];assert.equal(cell.fontSize,15);assert.equal(cell.color,'334455');assert.equal(cell.underline,true);assert.equal(cell.strike,true);assert.equal(cell.wrap,true);assert.equal(cell.border!.left,'thin');assert.equal(cell.valueType,'number');assert.equal(cell.value,'20');});
   await t.edit({kind:'sheets.mergeCells',sheetId:sheet,range:'D1:E1'},model=>assert.deepEqual(model.sheets![0].mergedRanges,['D1:E1']));
@@ -112,7 +114,7 @@ test('Excel styles, merges, dimensions, structure, filter and data tools retain 
   const single=await setup('xlsx');await single.reject({kind:'sheets.deleteWorksheet',sheetId:single.model().sheets![0].id},/最后一个/);
 });
 
-test('formula adjustments preserve quoted strings, absolute refs, partial ranges and other sheets',()=>{
+test('[OOXML model] formula adjustments preserve quoted strings, absolute refs, partial ranges and other sheets',()=>{
   assert.equal(shiftSheetFormula('SUM($B$2:B5)+"B2"+Other!B2','Data','Data','row',2,1,false),'SUM($B$3:B6)+"B2"+Other!B2');
   assert.equal(shiftSheetFormula('SUM(A2:A8)+A4','Data','Data','row',3,3,true),'SUM(A2:A5)+#REF!');
   assert.equal(shiftSheetFormula('SUM(A3:A5)','Data','Data','row',3,3,true),'SUM(#REF!)');
@@ -129,7 +131,7 @@ test('formula adjustments preserve quoted strings, absolute refs, partial ranges
   assert.throws(()=>shiftSheetFormula("'数据:归档'!B2",'Other','归档','row',2,1,false),/三维/);
 });
 
-test('Unicode sheet references rename, move and protect referenced sheet deletion after save/reopen',async()=>{
+test('[OOXML model] Unicode sheet references rename, move and protect referenced sheet deletion after save/reopen',async()=>{
   const workbook=new ExcelJS.Workbook(),data=workbook.addWorksheet('数据'),other=workbook.addWorksheet('引用');workbook.addWorksheet('临时');
   data.addRows([[1,10],[2,20],[3,30]]);
   other.getCell('A1').value={formula:'数据!B2+SUM(A2:A3)+"数据!B2"+LOG10(100)',result:22};
@@ -146,7 +148,7 @@ test('Unicode sheet references rename, move and protect referenced sheet deletio
   await t.edit({kind:'sheets.deleteWorksheet',sheetId:temp},model=>{assert.equal(model.sheets!.length,2);assert.equal(model.sheets!.find(s=>s.id===ref)!.rows[0][2].formula,'"临时!A1"');});
 });
 
-test('sheet changes refuse external and 3D qualifiers without rewriting their ASCII or Unicode tails',async()=>{
+test('[OOXML model] sheet changes refuse external and 3D qualifiers without rewriting their ASCII or Unicode tails',async()=>{
   for(const formula of ['[book.xlsx]数据!B2',"'[book.xlsx]数据'!B2",'数据:归档!B2',"'数据:归档'!B2"]){
     const workbook=new ExcelJS.Workbook(),data=workbook.addWorksheet('数据'),other=workbook.addWorksheet('归档');data.addRows([[1,2],[3,4]]);other.getCell('A1').value={formula};
     const t=await setup('xlsx',new Uint8Array(await workbook.xlsx.writeBuffer())),sheet=t.model().sheets![0].id;
@@ -156,7 +158,7 @@ test('sheet changes refuse external and 3D qualifiers without rewriting their AS
   }
 });
 
-test('unsupported package/formula operations reject without changing source bytes',async()=>{
+test('[OOXML model] unsupported package/formula operations reject without changing source bytes',async()=>{
   const original=await workbookBytes(),zip=await JSZip.loadAsync(original);zip.file('xl/charts/chart1.xml','<chart/>');const complex=await setup('xlsx',await zip.generateAsync({type:'uint8array'}));assert.ok(complex.model().unsupportedFeatures!.length);await complex.reject({kind:'sheets.setCell',sheetId:complex.model().sheets![0].id,address:'A1',value:'changed'},/复杂|图表/);
   const t=await setup('xlsx',original),sheet=t.model().sheets![0].id;await t.edit({kind:'sheets.setCell',sheetId:sheet,address:'D2',value:'',formula:'SUM(B:B)'},model=>assert.equal(model.sheets![0].rows[1][3].formula,'SUM(B:B)'));await t.reject({kind:'sheets.insertRows',sheetId:sheet,index:2,count:1},/结构化公式|三维|整行/);
   const operation:EditOperation={kind:'sheets.setCell',sheetId:sheet,address:'A2',value:'first'},patch=t.core.prepare(t.view.documentId,t.core.getDocument(t.view.documentId).info.revision,operation),receipt=await t.core.commit(patch.id,'first');const next=t.core.prepare(t.view.documentId,t.core.getDocument(t.view.documentId).info.revision,{...operation,value:'second'});await t.core.commit(next.id,'second');await assert.rejects(t.core.undo(receipt.transactionId),/其他编辑/);

@@ -1,4 +1,4 @@
-import { _electron as electron, type Page } from 'playwright';
+import { _electron as electron, type Locator, type Page } from 'playwright';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -7,11 +7,14 @@ import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import type { ReadingContext, ViewInfo, WorkspaceState } from '../packages/contracts/src/index';
 import type { SettingsSnapshot } from '../packages/settings/src/index';
+import { recordCurrentBuild } from './helpers/current-build';
+import { verifyReaderMotion } from './helpers/reader-motion';
 
 // Every process, file and profile belongs to this run. Never attaches to or
 // closes the user's installed application. Run after other focus-sensitive UI QA.
 const require = createRequire(import.meta.url), directory = await mkdtemp(join(tmpdir(), 'agentviewer-reader-interaction-'));
 const evidence = join(directory, 'evidence'); await mkdir(evidence);
+await recordCurrentBuild(evidence);
 const files = { markdown: join(directory, 'dropped-reading.md'), html: join(directory, 'dropped-reading.html'), unsupported: join(directory, 'keep-existing.unsupported') };
 const sourceMarkdown = '# Backed file drop\n\nReader interaction fixture, loaded from its real on-disk path.\n';
 await Promise.all([
@@ -23,8 +26,8 @@ const port = await new Promise<number>((done, reject) => {
   const server = createServer(); server.once('error', reject);
   server.listen(0, '127.0.0.1', () => { const address = server.address(); assert.ok(address && typeof address !== 'string'); server.close(error => error ? reject(error) : done(address.port)); });
 });
-const env: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), AGENTVIEWER_DATA_DIR: directory, AGENTVIEWER_PORT: String(port), AGENTVIEWER_TEST_MODE: '1' };
-delete env.ELECTRON_RUN_AS_NODE;
+const env: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), AGENTVIEWER_DATA_DIR: directory, AGENTVIEWER_CONNECTION_FILE: join(directory, 'runtime', 'connection.json'), AGENTVIEWER_PORT: String(port), AGENTVIEWER_ISOLATED_QA: '1' };
+for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE']) delete env[key];
 const app = await electron.launch({ executablePath: require('electron'), args: ['--force-device-scale-factor=1', '.'], cwd: resolve('.'), env, timeout: 45000 });
 const main = await app.firstWindow(), errors: string[] = [], consoleErrors: { url: string; text: string; location: { url: string; lineNumber: number; columnNumber: number } }[] = [], results: Record<string, unknown> = {};
 const watch = (target: Page) => {
@@ -40,6 +43,30 @@ const until = async (check: () => Promise<boolean>, label: string) => {
   throw new Error(`等待失败：${label}`);
 };
 const currentZoom = async (viewId: string) => (await state()).views.find(view => view.id === viewId)?.zoom ?? 1;
+const selectTextWithMouse = async (target: Locator, needle: string) => {
+  await target.evaluate((node, text) => {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let leaf: Node | null;
+    while ((leaf = walker.nextNode())) if (leaf.textContent!.includes(text)) { leaf.parentElement!.scrollIntoView({ block: 'nearest' }); return; }
+    throw new Error('Missing visible selection text: ' + text);
+  }, needle);
+  await main.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+  const points = await target.evaluate((node, text) => {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let leaf: Node | null;
+    while ((leaf = walker.nextNode())) {
+      const from = leaf.textContent!.indexOf(text); if (from < 0) continue;
+      // Ranges measure glyphs only. The browser selection comes from pointer input.
+      const range = document.createRange(); range.setStart(leaf, from); range.setEnd(leaf, from + 1);
+      const first = range.getBoundingClientRect(); range.setStart(leaf, from + text.length - 1); range.setEnd(leaf, from + text.length);
+      const last = range.getBoundingClientRect();
+      return { start: { x: first.left + .2, y: first.top + first.height / 2 }, end: { x: last.right - .2, y: last.top + last.height / 2 } };
+    }
+    throw new Error('Selection text disappeared after layout: ' + text);
+  }, needle);
+  await main.mouse.move(points.start.x, points.start.y); await main.mouse.down();
+  try { await main.mouse.move(points.end.x, points.end.y, { steps: 4 }); } finally { await main.mouse.up(); }
+};
 const commitZoom = async (target: Page, percent: number) => { const input = target.getByRole('spinbutton', { name: '正文缩放比例', exact: true }); await input.fill(String(percent)); await input.press('Enter'); };
 const toolbarState = (target: Page) => invoke<{ viewId: string; zoom?: number; backdropSample?: { sourceContentsId: number; layoutRevision: number } }>(target, 'toolbar-state');
 const activate = async (viewId: string) => { await invoke(main, 'activate', { viewId }); await until(async () => (await state()).activeViewId === viewId, 'active reading view'); };
@@ -110,6 +137,8 @@ try {
   await main.keyboard.press('Control+s');
   await until(async () => await readFile(markdownFile.path!, 'utf8') === sourceBefore + appended, 'keyboard save writes the edited Markdown');
   results.markdownEditing = { input: true, undo: true, redo: true, diskSave: true };
+  results.readerMotion = await verifyReaderMotion(main, directory, evidence);
+  await activate(markdown.id);
 
   // One end-to-end authoring flow covers the shared source/history, table form,
   // delayed renderer and sidebar command paths rather than many isolated tests.
@@ -132,6 +161,7 @@ try {
   await until(async () => (await authoredText()).endsWith('Selected') && !(await authoredText()).endsWith('**Selected**'), 'live/source modes keep one undo history');
   await tools.getByRole('button', { name: '重做', exact: true }).click(); await until(async () => (await authoredText()).endsWith('**Selected**'), 'source mode redo restores formatting');
   await changeMode('阅读'); await main.locator('.markdown-live').waitFor();
+  await main.evaluate(input => window.dispatchEvent(new CustomEvent('agentviewer:markdown-navigate', { detail: { ...input, select: false } })), { viewId: authoring.id, from: (await authoredText()).indexOf('| Name |') });
   const tableCell = sourceEditor.getByRole('textbox', { name: '表格第 2 行第 1 列', exact: true }); await tableCell.fill('Changed|cell'); await tableCell.press('Tab');
   await until(async () => (await authoredText()).includes('Changed\\|cell'), 'visual table edit preserves literal pipes');
   await sourceEditor.getByRole('button', { name: '增加一行', exact: true }).click();
@@ -222,7 +252,7 @@ try {
   assert.ok(codeMirrorChunk);
   const codeMirrorUrl = new URL('assets/' + codeMirrorChunk, main.url()).href;
   // The virtual mirror cannot scroll a DOM node that is not mounted yet.
-  // Navigate by source position first; the selections below still use real Ranges.
+  // Navigate by source position first; actual mouse input makes each selection.
   const revealSplitPreview = async (from: number) => {
     assert.ok(from >= 0, 'preview navigation has a source position');
     await splitPreview.evaluate(async (node, input) => {
@@ -240,7 +270,7 @@ try {
   assert.equal(blockedWrite.after, blockedWrite.before, 'preview transaction filter blocks programmatic widget writes as well as keyboard input');
   const previewFrom = (await authoredText()).indexOf('Plain text.'); await revealSplitPreview(previewFrom);
   await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().scrollIntoViewIfNeeded();
-  await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().evaluate(node => { const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const offset = text.textContent!.indexOf('Plain text.'); if (offset < 0) continue; const range = document.createRange(); range.setStart(text, offset); range.setEnd(text, offset + 'Plain text.'.length); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); return; } throw new Error('Missing preview text'); });
+  await selectTextWithMouse(splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first(), 'Plain text.');
   await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === 'Plain text.' && context.selection.locator?.from === previewFrom && context.selection.locator?.to === previewFrom + 'Plain text.'.length; }, 'preview reports the true UTF16 source range without stale source selection overwriting it');
   const floatingSelection = main.getByRole('toolbar', { name: '选区工具', exact: true });
   console.log('Markdown full exports and split source mapping: PASS; checking floating toolbar history');
@@ -254,14 +284,14 @@ try {
   for (let turn = 0; turn < 3; turn++) {
     await revealSplitPreview((await authoredText()).indexOf('Plain text.'));
     await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().waitFor();
-    await splitPreview.evaluate(node => { node.querySelector<HTMLElement>('.cm-content')!.focus({ preventScroll: true }); const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const at = text.textContent!.indexOf('Plain text.'); if (at < 0) continue; const range = document.createRange(); range.setStart(text, at); range.setEnd(text, at + 'Plain text.'.length); window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); return; } throw new Error('Missing fast-undo preview selection'); });
+    await selectTextWithMouse(splitPreview, 'Plain text.');
     await until(async () => (await invoke<ReadingContext>(main, 'context', { viewId: authoring.id })).selection.text === 'Plain text.', 'fast sequence starts with the intended preview selection');
     await floatingSelection.getByRole('button', { name: '加粗选区', exact: true }).click();
     await until(async () => (await authoredText()).includes('**Plain text.**'), 'format acknowledged before immediate undo and reselection');
     await sourceEditor.locator('.cm-content').focus(); await main.keyboard.press('Control+z');
-    // Deliberately do not wait for the draft timer, Core revision or preview
-    // props. A new real DOM Range must survive all of those late arrivals.
-    await splitPreview.evaluate(node => { node.querySelector<HTMLElement>('.cm-content')!.focus({ preventScroll: true }); const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text: Node | null; while ((text = walker.nextNode())) { const at = text.textContent!.indexOf('Footnote'); if (at < 0) continue; const range = document.createRange(); range.setStart(text, at); range.setEnd(text, at + 'Footnote'.length); window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); return; } throw new Error('Missing immediate reselection text'); });
+    // No draft/revision barrier: real pointer reselection must survive undo.
+    await revealSplitPreview((await authoredText()).indexOf('Footnote'));
+    await selectTextWithMouse(splitPreview, 'Footnote');
     await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return !(await authoredText()).includes('**Plain text.**') && context.quality === 'confirmed' && context.selection.text === 'Footnote'; }, 'late undo acknowledgement preserves the newer preview range');
     assert.equal(await main.evaluate(() => window.getSelection()?.toString()), 'Footnote', 'native Range survives Core/preview synchronization');
   }
@@ -269,7 +299,7 @@ try {
   for (const [selector, visibleText, sourceText] of [['.md-table-widget td', 'Changed|cell', 'Changed\\|cell'], ['.md-render-metadata dd span', '"Updated"', '"Updated"'], ['.md-render-footnote span', 'Colon footnote.', 'Colon footnote.']]) {
     const from = (await authoredText()).indexOf(sourceText); assert.ok(from >= 0); await revealSplitPreview(from);
     const field = splitPreview.locator(selector).filter({ hasText: visibleText }).first(); await field.scrollIntoViewIfNeeded();
-    await field.evaluate(node => { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
+    await selectTextWithMouse(field, visibleText);
     await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === sourceText && context.selection.locator?.from === from && context.selection.locator?.to === from + sourceText.length; }, 'readonly widget maps its exact source range: ' + visibleText);
   }
   await changeMode('阅读');

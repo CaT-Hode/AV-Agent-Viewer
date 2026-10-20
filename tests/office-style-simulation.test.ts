@@ -1,17 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { nativeOfficeStyleSource } from '../packages/office-runtime/src/native-style-source';
 import { nativeOfficeWorkerSource } from '../packages/office-runtime/src/worker-source';
 import { officeKitWorkerSource } from '../packages/office-runtime/src/kit-worker-source';
 import { officeAuthoringSource } from '../packages/office-runtime/src/authoring-source';
 import { officeAuthoringCapabilities, officeAuthoringFormats } from '../packages/office-runtime/src/authoring';
 
-const program = join(process.cwd(), 'release/win-unpacked/resources/engines/libreoffice/program');
-const pythonCore = existsSync(program) ? readdirSync(program).find(name => /^python-core-\d/.test(name)) : undefined;
-const python = pythonCore ? join(program, pythonCore, 'bin/python.exe') : 'python';
+// Python simulations exercise current producer functions, not UNO or the app.
+// Do not discover an unrelated old release merely to select an interpreter.
+const python = process.env.AGENTVIEWER_TEST_PYTHON ?? 'python';
 const fixture = String.raw`
 import ast,copy,hashlib,json,math,re,uuid,queue,threading
 from types import SimpleNamespace as NS
@@ -202,11 +200,11 @@ undo_state=lambda owner:{'token':'real'}
 function check(body: string) {
   assert.equal(execFileSync(python, ['-c', fixture + body + '\nprint("PASS")'], {
     input: JSON.stringify({ style: nativeOfficeStyleSource, authoring: officeAuthoringSource, shared: nativeOfficeWorkerSource, kit: officeKitWorkerSource, capabilities: Object.fromEntries([false,true].map(docCall=>[String(docCall),Object.fromEntries(officeAuthoringFormats.map(format=>[format,officeAuthoringCapabilities(format,docCall)]))])) }) + '\n', encoding: 'utf8', timeout: 15000,
-    env: { ...process.env, PATH: pythonCore ? program + ';' + process.env.PATH : process.env.PATH, ...(pythonCore ? { PYTHONHOME: join(program, pythonCore) } : {}), PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
   }).trim(), 'PASS');
 }
 
-test('mapped shape style changes real run colors, clears theme/interop dependencies and has one complete mixed native Undo/Redo', () => {
+test('[Python simulation] mapped shape style changes real run colors, clears theme/interop dependencies and has one complete mixed native Undo/Redo', () => {
   check(String.raw`
 args=setup();before=snapshot();original1=run1.values['CharComplexColor'];original2=run2.values['CharComplexColor']
 apply_mapped_shape_style(session,view,op(color='166a71',fill='b6d8cc',lineColor='893b58',lineWidth=1.5,fontName='New',fontSize=20,bold=True,italic=True,underline=True,strike=True,alignment='center',rotation=25),args)
@@ -230,7 +228,7 @@ assert text.getString()=='中文😀 second' and len(manager.history)==2
 `);
 });
 
-test('all requested shape and run fields are preflighted before any write and mixed unsupported fields are not flattened', () => {
+test('[Python simulation] all requested shape and run fields are preflighted before any write and mixed unsupported fields are not flattened', () => {
   check(String.raw`
 for issue in ['readonly','mixed','field']:
     args=setup()
@@ -247,7 +245,7 @@ assert shape.values['FillColor']==0xb6d8cc and paragraph.values['ParaAdjust']==3
 `);
 });
 
-test('a later run setter failure rolls back shape plus every run/default/theme without deleting earlier native history', () => {
+test('[Python simulation] a later run setter failure rolls back shape plus every run/default/theme without deleting earlier native history', () => {
   check(String.raw`
 args=setup();before=snapshot();run2.failOnce='CharColor'
 try:apply_mapped_shape_style(session,view,op(fill='b6d8cc',lineColor='893b58',color='166a71'),args)
@@ -258,7 +256,7 @@ assert manager.getAllUndoActionTitles()==('previous',) and not manager.redo and 
 `);
 });
 
-test('explicit target styles preserve a different user selection and support an actual empty text cursor', () => {
+test('[Python simulation] explicit target styles preserve a different user selection and support an actual empty text cursor', () => {
   check(String.raw`
 args=setup();session['format']='docx';view['caretVisible']=True;view['nativeEditing']=True
 authoring_guard(session,view,args)
@@ -320,7 +318,7 @@ else:raise AssertionError('selection-target must be atomically tied to the retur
 `);
 });
 
-test('typed shape-style dispatch owns its sole context and retries return the existing receipt', () => {
+test('[Python simulation] typed shape-style dispatch owns its sole context and retries return the existing receipt', () => {
   check(String.raw`
 args=setup();first=execute(args);second=execute(args)
 assert first==second and first['status']=='applied' and manager.contextCount==1 and len(manager.history)==2 and session['operationActor'] is None
