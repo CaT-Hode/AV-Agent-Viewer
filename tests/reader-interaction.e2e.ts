@@ -65,7 +65,10 @@ const selectTextWithMouse = async (target: Locator, needle: string) => {
     throw new Error('Selection text disappeared after layout: ' + text);
   }, needle);
   await main.mouse.move(points.start.x, points.start.y); await main.mouse.down();
-  try { await main.mouse.move(points.end.x, points.end.y, { steps: 4 }); } finally { await main.mouse.up(); }
+  try {
+    await main.mouse.move(points.end.x, points.end.y, { steps: 4 });
+    assert.equal(await main.locator('.selection-tools:not([inert])').count(), 0, 'selection tools never intercept an unfinished mouse drag');
+  } finally { await main.mouse.up(); }
 };
 const commitZoom = async (target: Page, percent: number) => { const input = target.getByRole('spinbutton', { name: '正文缩放比例', exact: true }); await input.fill(String(percent)); await input.press('Enter'); };
 const toolbarState = (target: Page) => invoke<{ viewId: string; zoom?: number; backdropSample?: { sourceContentsId: number; layoutRevision: number } }>(target, 'toolbar-state');

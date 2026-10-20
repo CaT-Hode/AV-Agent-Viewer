@@ -31,7 +31,7 @@ function SelectionPanelGlass({ native, backdrop }: { native: boolean; backdrop: 
   return <LiquidGlassSurface surfaceRef={node} variant="panel" effect="refractive" strength={.55} specularOpacity={.16} backdropImage={native?backdrop.image:undefined} backdropSample={native?backdrop.sample:undefined} bounds={bounds} />;
 }
 export function SelectionTools({native=false}:{native?:boolean}) {
-  const [state,setState]=useState<State>(),[rect,setRect]=useState<Rect>(),[input,setInput]=useState<Tool>(),[value,setValue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const [state,setState]=useState<State>(),[rect,setRect]=useState<Rect>(),[input,setInput]=useState<Tool>(),[value,setValue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[selecting,setSelecting]=useState(false);
   const [viewport,setViewport]=useState<Rect>(),[backdrop,setBackdrop]=useState<{image?:string;sample?:NavigationBackdropSample}>({}),[glassBounds,setGlassBounds]=useState<NavigationBounds>(),[surface,setSurface]=useState<'light'|'dark'>();
   const navigationBounds=useRef<Rect|undefined>(undefined);
   const [,refreshNavigationPlacement]=useState(0),navigationPlacement=useRef(true),canPlaceAroundNavigation=useRef<(bounds:Rect|undefined)=>boolean>(()=>true);
@@ -118,7 +118,11 @@ export function SelectionTools({native=false}:{native?:boolean}) {
       }catch(cause){if(seq===sequence.current)setError(String(cause));}
     };
     const engineReady=(event:Event)=>{const data=(event as CustomEvent<OfficeSelectionToolsEvent>).detail;if(!data)return;if(!data.visible){if(engineSelection.current?.viewId===data.viewId)clear(false);return;}if(!data.state||!data.rect||!data.viewport)return;const same=engineSelection.current?.viewId===data.viewId&&engineSelection.current.lease===data.lease;engineSelection.current={viewId:data.viewId,lease:data.lease,state:data.state,rect:data.rect,viewport:data.viewport};tracked.current=undefined;setRect(data.rect);setViewport(data.viewport);setState(data.state);if(!same){sequence.current++;identity.current=data.lease;setInput(undefined);setError('');}};
-    const dismiss=(event:Event)=>{if(toolbar.current?.contains(event.target as Node)||(event.target instanceof Element&&event.target.closest('.reader-panel-resize,.activity-rail,.ai-rail,.selection-translation-bubble')))return;clear();};
+    const dismiss=(event:Event)=>{if(toolbar.current?.contains(event.target as Node)||(event.target instanceof Element&&event.target.closest('.reader-panel-resize,.activity-rail,.ai-rail,.selection-translation-bubble')))return;setSelecting(event instanceof PointerEvent&&event.button===0&&event.target instanceof Element&&!!event.target.closest('.document-content'));clear();};
+    // Native selections publish intermediate ranges during a drag. A toolbar
+    // appearing over that range can intercept the remaining mouse movement.
+    const finishSelection=()=>setSelecting(false);
+    document.addEventListener('pointerup',finishSelection,true);document.addEventListener('pointercancel',finishSelection,true);window.addEventListener('blur',finishSelection);
     const preserveChromeSelection=(event:MouseEvent)=>{if((tracked.current||engineSelection.current)&&event.target instanceof Element&&event.target.closest('.activity-rail,.ai-rail'))event.preventDefault();};
     let frame=0;
     const follow=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;const target=tracked.current;if(!target||!target.range&&!target.element)return;const node=target.range?.startContainer??target.element;if(!node?.isConnected){clear();return;}const b=target.range?.getBoundingClientRect()??target.element?.getBoundingClientRect();if(!b)return;const next={x:b.x,y:b.y,width:b.width,height:b.height};setRect(next);if(target.element){const clip=clippedReaderViewport(target.element);if(clip)setViewport(clip);}window.dispatchEvent(new CustomEvent('agentviewer:selection-position',{detail:{viewId:target.viewId,revision:target.revision,text:target.text,rect:next}}));});};
@@ -135,7 +139,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     window.addEventListener(READING_MOTION_EVENT,elasticFollow);
     // Kept separate from the other listeners so the elastic animation never
     // outlives this surface's selection lease.
-    const disposeElastic=()=>window.removeEventListener(READING_MOTION_EVENT,elasticFollow);
+    const disposeElastic=()=>{window.removeEventListener(READING_MOTION_EVENT,elasticFollow);document.removeEventListener('pointerup',finishSelection,true);document.removeEventListener('pointercancel',finishSelection,true);window.removeEventListener('blur',finishSelection);};
 
     window.addEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.addEventListener('agentviewer:selection-tools',selected);window.addEventListener('agentviewer:selection-tools',watchReader);window.addEventListener('agentviewer:selection-open',open);window.addEventListener('agentviewer:selection-clear',clearEvent);document.addEventListener('pointerdown',dismiss,true);document.addEventListener('mousedown',preserveChromeSelection,true);document.addEventListener('scroll',follow,true);document.addEventListener('selectionchange',changed);window.addEventListener('resize',follow);
     return()=>{disposeElastic();size.disconnect();cancelAnimationFrame(frame);window.removeEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-tools',watchReader);window.removeEventListener('agentviewer:selection-open',open);window.removeEventListener('agentviewer:selection-clear',clearEvent);document.removeEventListener('pointerdown',dismiss,true);document.removeEventListener('mousedown',preserveChromeSelection,true);document.removeEventListener('scroll',follow,true);document.removeEventListener('selectionchange',changed);window.removeEventListener('resize',follow);};
@@ -165,7 +169,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   canPlaceAroundNavigation.current=bounds=>!!rect&&!!placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(bounds?[bounds]:[]),...panelBounds]);
   navigationPlacement.current=!!position;
   if(state)presentation.current=state.snapshot.id;
-  const show=!!state&&!!rect&&(native||!!position),left=native?8:undefined,top=native?8:undefined;
+  const show=!!state&&!!rect&&!selecting&&(native||!!position),left=native?8:undefined,top=native?8:undefined;
   const nativePanelWidth=native&&(inputMotion.present||errorMotion.present)?Math.max(320,width):undefined;
   const refreshMotion=useSelectionToolbarMotion(toolbar,!native&&show,identity.current,()=>{
     const element=tracked.current?.element,liveClip=element?.isConnected?clippedReaderViewport(element):undefined,clip=liveClip??safeViewport;
