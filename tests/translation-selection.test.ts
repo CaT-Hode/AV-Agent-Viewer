@@ -1,10 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ReadingContext } from '../packages/contracts/src/index';
 import { SelectionTranslationService } from '../packages/translation/src/selection';
-import { fitTranslationCapsule, placeTranslationPopover, shouldCollapseTranslation, translationCapsulePadding, translationDragShape, translationTextHeight } from '../apps/desktop/src/renderer/lib/translation-popover';
+import { fitTranslationCapsule, placeTranslationPopover, shouldCollapseTranslation, translationDragShape, translationTextHeight } from '../apps/desktop/src/renderer/lib/translation-popover';
 import { readerPanelDestination } from '../apps/desktop/src/main/reader-panel-policy';
 import { floatingOverlap, planFloatingRoom } from '../apps/desktop/src/renderer/lib/floating-hitboxes';
+import { TranslationProviderService, providerTargetLanguage, splitTranslationSource } from '../packages/translation/src/providers';
+
+async function providerFixture(request?:typeof fetch,timeoutMs=1000){
+  const directory=await mkdtemp(join(tmpdir(),'agentviewer-translation-provider-')),path=join(directory,'providers.json');
+  const vault={available:()=>true,encrypt:(value:string)=>Buffer.from('test-vault:'+value).toString('base64'),decrypt:(value:string)=>Buffer.from(value,'base64').toString().slice('test-vault:'.length)};
+  const service=new TranslationProviderService(path,vault,{fetch:request,baiduIntervalMs:0,timeoutMs});
+  return {service,path,vault};
+}
+async function verifyProviderProtocols(){
+  const calls:{url:string;headers:Headers;body:string}[]=[];
+  const request:typeof fetch=async(url,init)=>{
+    const call={url:String(url),headers:new Headers(init?.headers),body:String(init?.body)};calls.push(call);
+    assert.equal(init?.method,'POST');assert.equal(init?.redirect,'error');assert(!call.url.includes('fixture-'));
+    if(call.url.includes('googleapis.com')){const data=JSON.parse(call.body);assert.equal(data.format,'text');return Response.json({data:{translations:[{translatedText:data.q.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;')}]}});}
+    if(call.url.includes('baidu.com')){const data=new URLSearchParams(call.body);assert.equal(data.get('appid'),'20261020123456');assert.equal(data.get('from'),'auto');assert.equal(data.get('sign'),createHash('md5').update(data.get('appid')!+data.get('q')!+data.get('salt')!+'fixture-baidu').digest('hex'));return Response.json({trans_result:[{src:data.get('q'),dst:data.get('q')}]});}
+    assert.equal(call.headers.get('Ocp-Apim-Subscription-Region'),'eastasia');assert.equal(call.headers.get('Ocp-Apim-Subscription-Key'),'fixture-azure');return Response.json([{translations:[{text:JSON.parse(call.body)[0].Text,to:new URL(call.url).searchParams.get('to')}]}]);
+  };
+  const f=await providerFixture(request),signal=new AbortController().signal;
+  await f.service.save({provider:'google',apiKey:'fixture-google-old'});const frozen=f.service.capture('google');
+  await f.service.save({provider:'google',apiKey:'fixture-google-new'});assert.notEqual(frozen.fingerprint,f.service.capture('google').fingerprint);
+  assert.equal(await frozen.translate("A <tag> & 'quote'",'zh-CN',signal),"A <tag> & 'quote'");assert.equal(calls.at(-1)!.headers.get('X-Goog-Api-Key'),'fixture-google-old');
+  assert.equal(JSON.parse(calls.at(-1)!.body).target,'zh-CN');
+  const long='  Text 😀 汉字 with word boundaries.\n'.repeat(280),parts=splitTranslationSource(long);
+  assert(parts.length>1);assert.equal(parts.join(''),long);assert(parts.every(part=>Buffer.byteLength(part)<=4500&&[...part].length<=3000));
+  assert.equal(await f.service.capture('google').translate(long,'en',signal),long);assert.equal(calls.at(-1)!.headers.get('X-Goog-Api-Key'),'fixture-google-new');
+  await f.service.save({provider:'baidu',appId:'20261020123456',apiKey:'fixture-baidu'});assert.equal(await f.service.capture('baidu').translate('你好 😀','ja',signal),'你好 😀');assert.equal(new URLSearchParams(calls.at(-1)!.body).get('to'),'jp');
+  await f.service.save({provider:'microsoft',apiKey:'fixture-azure',region:'eastasia'});assert.equal(await f.service.capture('microsoft').translate('Traditional Chinese','zh-TW',signal),'Traditional Chinese');assert.equal(new URL(calls.at(-1)!.url).searchParams.get('to'),'zh-Hant');
+  assert.equal(providerTargetLanguage('baidu','ko'),'kor');assert.equal(providerTargetLanguage('google','zh-Hant'),'zh-TW');
+  const metadata=JSON.stringify(f.service.snapshot()),disk=await readFile(f.path,'utf8');for(const value of ['fixture-google-old','fixture-google-new','fixture-baidu','fixture-azure']){assert(!metadata.includes(value));assert(!disk.includes(value));}
+  const loaded=new TranslationProviderService(f.path,f.vault,{fetch:request});await loaded.load();assert.deepEqual(loaded.snapshot(),f.service.snapshot());
+  await loaded.save({provider:'google',apiKey:''});await loaded.capture('google').translate('retained key','en',signal);assert.equal(calls.at(-1)!.headers.get('X-Goog-Api-Key'),'fixture-google-new');
+  await loaded.remove('google');assert.throws(()=>loaded.capture('google'),{code:'TRANSLATION_CREDENTIAL_REQUIRED'});assert.equal(await frozen.translate('frozen','en',signal),'frozen');
+  await assert.rejects(f.service.save({provider:'baidu',appId:'invalid',apiKey:'fixture-baidu'}),{code:'INVALID_ARGUMENT'});
+  await assert.rejects(f.service.capture('baidu').translate('hello','xx-ZZ',signal),{code:'TRANSLATION_LANGUAGE_UNSUPPORTED'});
+}
+async function verifyProviderFailures(){
+  const f=await providerFixture(async()=>Response.json({error_code:'54001',error_msg:'fixture-secret-must-not-leak'}));await f.service.save({provider:'baidu',appId:'20261020123456',apiKey:'fixture-baidu'});
+  await assert.rejects(f.service.capture('baidu').translate('source','en',new AbortController().signal),(error:Error)=>{assert(!error.message.includes('fixture-secret'));return (error as Error&{code:string}).code==='TRANSLATION_CREDENTIAL_INVALID';});
+  const forbidden=await providerFixture(async()=>new Response('secret',{status:403}));await forbidden.service.save({provider:'google',apiKey:'fixture-google'});await assert.rejects(forbidden.service.capture('google').translate('x','en',new AbortController().signal),{code:'TRANSLATION_CREDENTIAL_INVALID'});
+  const response=gate<Response>(),pending=await providerFixture(()=>response.promise),controller=new AbortController();await pending.service.save({provider:'google',apiKey:'fixture-google'});
+  const flight=pending.service.capture('google').translate('cancel','en',controller.signal),rejected=assert.rejects(flight,{code:'CANCELLED'});controller.abort();await rejected;response.resolve(Response.json({data:{translations:[{translatedText:'late'}]}}));
+  const timeout=await providerFixture(()=>new Promise(resolve=>setTimeout(()=>resolve(Response.json({data:{translations:[{translatedText:'late'}]}})),60)),15);await timeout.service.save({provider:'google',apiKey:'fixture-google'});await assert.rejects(timeout.service.capture('google').translate('timeout','en',new AbortController().signal),{code:'REQUEST_TIMEOUT'});
+  const huge=await providerFixture(async()=>Response.json({data:{translations:[{translatedText:'x'.repeat(1024*1024)}]}}));await huge.service.save({provider:'google',apiKey:'fixture-google'});await assert.rejects(huge.service.capture('google').translate('x','en',new AbortController().signal),{code:'TRANSLATION_RESPONSE_LIMIT'});
+}
 
 function gate<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 function fixture(retainedSources = 128, timeoutMs = 1000) {
@@ -22,6 +70,7 @@ function fixture(retainedSources = 128, timeoutMs = 1000) {
 }
 
 test('selection requests freeze source/locator/model/language, and pinned retry uses saved source after an edit', async () => {
+  await verifyProviderProtocols();
   const viewport={x:44,y:60,width:1000,height:700};
   const short=placeTranslationPopover(viewport,{width:314,height:118})!;
   assert.equal(short.edge,'bottom');assert.equal(short.y,624);assert.equal(short.x,387);assert.equal(short.width,314);
@@ -35,7 +84,6 @@ test('selection requests freeze source/locator/model/language, and pinned retry 
   const adjusted=fit('A longer translated passage. '.repeat(6),.6);assert.equal(adjusted.growthRatio,.6);assert.notDeepEqual(adjusted,medium,'the configured coefficient changes the width/height balance');
   assert.equal(medium.growthRatio,1);assert.equal(fit('Hello',2).growthRatio,1);
   const huge=fit('x'.repeat(100000));assert.equal(huge.width,560);assert.equal(huge.height,huge.maxHeight);
-  for(const size of [tiny,medium,long,huge,{width:560,height:420}]){const radius=Math.min(size.width,size.height)/2,padding=translationCapsulePadding(size);assert(Math.hypot(Math.max(0,radius-74),Math.max(0,radius-padding))<=radius,'text corners stay within the circular end caps');}
   assert.equal(placeTranslationPopover({...viewport,width:80},{width:314,height:118}),undefined);
   const field={x:0,y:0,width:400,height:200},toolbar={x:0,y:0,width:400,height:160},popup={id:'popup',group:'floating',bounds:{x:150,y:80,width:100,height:20},canMove:true};
   const pushed=planFloatingRoom(toolbar,field,[popup])!;
@@ -116,6 +164,7 @@ test('bounded saved sources expire explicitly, while a validated manual snapshot
 });
 
 test('timeout, empty output and unsafe language tags fail explicitly, and owner cleanup cancels work', async () => {
+  await verifyProviderFailures();
   const f = fixture(128, 10), answer = gate<string>(); f.setGenerate(() => answer.promise);
   await assert.rejects(f.service.translate('owner', f.request('timeout')), { code: 'REQUEST_TIMEOUT' });
   answer.resolve('late'); f.setGenerate(async () => '  '); await assert.rejects(f.service.translate('owner', f.request('empty')), { code: 'TRANSLATION_EMPTY' });

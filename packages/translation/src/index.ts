@@ -90,6 +90,7 @@ export class DocumentTranslationService {
   private running = new Map<string, Promise<void>>();
   private preparing = new Map<string, Promise<void>>();
   private starting = new Set<Promise<TranslationJob>>();
+  private profileFingerprints = new Map<string,string>();
   private pauseEpoch = 0;
   private pauseFlight?: Promise<void>;
   private pausing = new Set<string>();
@@ -115,7 +116,7 @@ export class DocumentTranslationService {
       if (!file.endsWith('.json')) continue;
       try {
         const checkpoint = JSON.parse(await readFile(join(checkpointDir, file), 'utf8')) as TranslationCheckpoint; this.validCheckpoint(checkpoint, file.slice(0, -5));
-        if (checkpoint.job.status !== 'completed') this.jobs.set(checkpoint.job.id, { ...checkpoint.job, status: 'paused', stage: '可恢复' });
+        if (checkpoint.job.status !== 'completed') { this.jobs.set(checkpoint.job.id, { ...checkpoint.job, status: 'paused', stage: '可恢复' });this.profileFingerprints.set(checkpoint.job.id,checkpoint.modelFingerprint); }
       } catch { this.core.event('translation.recovery-error', { file, error: '恢复点损坏，未自动加载；原恢复点文件已保留。' }); }
     }
   }
@@ -137,11 +138,11 @@ export class DocumentTranslationService {
     // including already committed edits not yet checkpointed by the idle poll.
     const source = await this.core.freezeDocumentSource(documentId), format = source.document.format;
     const bytes = source.bytes, sourceRevision = source.document.revision, sourceHash = source.sha256, sourceTitle = source.document.title, sourcePath = source.document.path;
-    const duplicate = [...this.jobs.values()].find(j => j.sourceDocumentId === documentId && j.sourceRevision === sourceRevision && j.targetLanguage === targetLanguage && ['running','paused'].includes(j.status));
+    const duplicate = [...this.jobs.values()].find(j => j.sourceDocumentId === documentId && j.sourceRevision === sourceRevision && j.targetLanguage === targetLanguage && this.profileFingerprints.get(j.id)===profile.fingerprint && ['running','paused'].includes(j.status));
     if (duplicate) return duplicate;
     const job: TranslationJob = { id: randomUUID(), sourceDocumentId: documentId, sourceRevision, targetLanguage, status: 'running', stage: '翻译文本', completed: 0, total: 0 };
     const checkpoint: TranslationCheckpoint = { job, sourceHash, sourceTitle, sourcePath, format, windowId, outputMode, segments: [], modelFingerprint: profile.fingerprint, modelName: profile.model };
-    this.jobs.set(job.id, job); const controller = new AbortController(); this.controllers.set(job.id, controller);
+    this.jobs.set(job.id, job); this.profileFingerprints.set(job.id,profile.fingerprint);const controller = new AbortController(); this.controllers.set(job.id, controller);
     const pauseRequested = () => pausedAtEntry || epoch !== this.pauseEpoch || this.pausing.has(job.id);
     const markPaused = () => { job.status = 'paused'; job.stage = '可恢复'; job.error = undefined; };
     const preparation = (async () => {

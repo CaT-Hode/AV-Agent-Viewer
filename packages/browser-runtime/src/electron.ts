@@ -330,13 +330,15 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
         if (!text.trim() || node.parentElement?.closest('input,textarea,[contenteditable],script,style,code,pre,math,svg')) return [];
         return [{ id: register(node), text, start: range.startOffset, end: range.endOffset, whole: node.data }];
       }
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), result = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), result = []; let characters = 0;
       while (walker.nextNode() && result.length < 80) {
         const node = walker.currentNode, parent = node.parentElement, text = node.data;
-        if (!parent || !text.trim() || text.length > 4000 || parent.closest('script,style,code,pre,textarea,input,[contenteditable],math,svg,noscript')) continue;
+        if (!parent || !text.trim() || text.length > 100000 || parent.closest('script,style,code,pre,textarea,input,[contenteditable],math,svg,noscript')) continue;
         const style = getComputedStyle(parent), rect = parent.getBoundingClientRect();
         if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue;
         const id = register(node); const previous = state.originals.get(id); if (previous && node.data === previous.translated) continue; if (previous) state.originals.delete(id);
+        if (characters + text.length > 128000) break;
+        characters += text.length;
         result.push({ id, text, start: 0, end: text.length, whole: text });
       }
       result.sort((a,b) => { const na = state.nodes.get(a.id), nb = state.nodes.get(b.id); const ra = na.parentElement.getBoundingClientRect(), rb = nb.parentElement.getBoundingClientRect(); return (ra.top >= 0 && ra.top < innerHeight ? 0 : 1) - (rb.top >= 0 && rb.top < innerHeight ? 0 : 1); });

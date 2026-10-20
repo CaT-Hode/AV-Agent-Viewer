@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { ViewerError, type Locator, type ReadingContext } from '../../contracts/src/index';
+import type { TranslationEngine } from '../../contracts/src/translation-engine';
 import { abortable, assertTranslationActive, translationLanguage } from './request';
 
-export type SelectionTranslationProfile = { fingerprint: string; model: string; translate(source: string, language: string, signal: AbortSignal): Promise<string> };
-export type SelectionTranslationRequest = { requestId?: string; retryOf?: string; viewId: string; text?: string; sourceRevision?: number; targetLanguage: string; connectionId?: string };
-export type SelectionTranslationResult = { requestId: string; viewId: string; sourceRevision: number; source: string; locator?: Locator; text: string; targetLanguage: string; model: string; sourceUpdated: boolean };
+export type SelectionTranslationProfile = { fingerprint: string; model: string; engine?: TranslationEngine; translate(source: string, language: string, signal: AbortSignal): Promise<string> };
+export type SelectionTranslationRequest = { requestId?: string; retryOf?: string; viewId: string; text?: string; sourceRevision?: number; targetLanguage: string; connectionId?: string; engine?: TranslationEngine };
+export type SelectionTranslationResult = { requestId: string; viewId: string; sourceRevision: number; source: string; locator?: Locator; text: string; targetLanguage: string; model: string; engine: TranslationEngine; sourceUpdated: boolean };
 type FrozenSource = { documentId: string; sourceRevision: number; source: string; locator?: Locator };
 type RequestRecord = { ownerId: string; viewId: string; controller?: AbortController; source?: FrozenSource };
 type SelectionTranslationOptions = {
   context(viewId: string): Promise<ReadingContext>;
   revision(documentId: string): number | undefined;
-  capture(connectionId?: string): SelectionTranslationProfile;
+  capture(connectionId?: string, engine?: TranslationEngine): SelectionTranslationProfile;
   timeoutMs?: number;
   retainedSources?: number;
 };
@@ -56,11 +57,11 @@ export class SelectionTranslationService {
         record.source = structuredClone({ documentId: context.documentId, sourceRevision: context.contentRevision, source: context.selection.text, locator: context.selection.locator ?? context.locator });
       }
       assertTranslationActive(controller.signal);
-      const profile = this.options.capture(input.connectionId), source = record.source;
+      const profile = this.options.capture(input.connectionId,input.engine), source = record.source;
       const text = await abortable(profile.translate(source.source, language, controller.signal), controller.signal);
       assertTranslationActive(controller.signal);
       if (!text.trim()) throw new ViewerError('TRANSLATION_EMPTY', '模型没有返回译文，请重试或检查连接。');
-      return { requestId, viewId: input.viewId, sourceRevision: source.sourceRevision, source: source.source, locator: structuredClone(source.locator), text: text.trim(), targetLanguage: language, model: profile.model, sourceUpdated: this.options.revision(source.documentId) !== source.sourceRevision };
+      return { requestId, viewId: input.viewId, sourceRevision: source.sourceRevision, source: source.source, locator: structuredClone(source.locator), text: text.trim(), targetLanguage: language, model: profile.model, engine:profile.engine??'ai', sourceUpdated: this.options.revision(source.documentId) !== source.sourceRevision };
     } finally {
       clearTimeout(timer); record.controller = undefined;
       if (!record.source) this.records.delete(requestId);

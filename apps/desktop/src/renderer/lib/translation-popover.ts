@@ -1,11 +1,5 @@
 import type { Rect } from '../../../../../packages/contracts/src/index';
-export const TRANSLATION_CAPSULE_METRICS = { width:340,height:118,maxWidth:560,maxHeight:420,horizontalInset:148,verticalInset:66,growthRatio:1 } as const;
-
-/** Keep the text rectangle inside the pill's circular end caps at any height. */
-export function translationCapsulePadding(size:{width:number;height:number}){
-  const radius=Math.min(size.width,size.height)/2,side=TRANSLATION_CAPSULE_METRICS.horizontalInset/2;
-  return Math.max(22,Math.ceil(radius-Math.sqrt(Math.max(0,radius*radius-Math.max(0,radius-side)**2)))+4);
-}
+export const TRANSLATION_CAPSULE_METRICS = { width:340,height:118,maxWidth:560,maxHeight:420,horizontalInset:112,verticalInset:66,growthRatio:1 } as const;
 
 /** Cache font measurements once per result. Fitting reuses widths and never
  * copies/parses the document or measures the DOM at intermediate spring sizes. */
@@ -30,14 +24,14 @@ export function translationTextHeight(text:string,measure:(text:string)=>number,
 export function fitTranslationCapsule(viewport:Rect,textHeight:(width:number)=>number,ratio:number=TRANSLATION_CAPSULE_METRICS.growthRatio){
   const m=TRANSLATION_CAPSULE_METRICS,maxWidth=Math.max(1,Math.min(m.maxWidth,viewport.width-24)),maxHeight=Math.max(50,Math.min(m.maxHeight,viewport.height*.52));
   const baseWidth=Math.min(m.width,maxWidth),baseHeight=Math.min(m.height,maxHeight),growth=Math.max(.15,Math.min(1,Number.isFinite(ratio)?ratio:m.growthRatio));
-  const required=(width:number,height:number)=>Math.max(baseHeight,textHeight(Math.max(1,width-m.horizontalInset))+m.verticalInset+2*(translationCapsulePadding({width,height})-22));
-  if(required(baseWidth,baseHeight)<=baseHeight)return {width:baseWidth,height:baseHeight,maxWidth,maxHeight,growthRatio:growth};
+  const required=(width:number)=>Math.max(baseHeight,textHeight(Math.max(1,width-m.horizontalInset))+m.verticalInset);
+  if(required(baseWidth)<=baseHeight)return {width:baseWidth,height:baseHeight,maxWidth,maxHeight,growthRatio:growth};
   let low=0,high=maxHeight-baseHeight;
-  for(let index=0;index<10;index++){const delta=(low+high)/2,width=Math.min(maxWidth,baseWidth+growth*delta);if(required(width,baseHeight+delta)<=baseHeight+delta)high=delta;else low=delta;}
+  for(let index=0;index<10;index++){const delta=(low+high)/2,width=Math.min(maxWidth,baseWidth+growth*delta);if(required(width)<=baseHeight+delta)high=delta;else low=delta;}
   let height=Math.min(maxHeight,Math.ceil(baseHeight+high)),width=Math.min(maxWidth,Math.ceil(baseWidth+growth*high));
-  if(required(width,height)>height+1){
+  if(required(width)>height+1){
     height=maxHeight;low=width;high=maxWidth;
-    for(let index=0;index<10;index++){const middle=(low+high)/2;if(required(middle,maxHeight)<=maxHeight)high=middle;else low=middle;}
+    for(let index=0;index<10;index++){const middle=(low+high)/2;if(required(middle)<=maxHeight)high=middle;else low=middle;}
     width=Math.ceil(high);
   }
   return {width,height,maxWidth,maxHeight,growthRatio:growth};

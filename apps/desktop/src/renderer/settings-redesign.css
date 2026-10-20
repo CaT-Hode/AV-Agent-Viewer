@@ -90,6 +90,9 @@
 .settings-shell .connection-card small { font-size: 10px; color: var(--muted); margin-top: 4px; }
 .settings-shell .connection-form { display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; padding: 20px 0 26px; }
 .settings-shell .connection-form input[aria-label="服务地址"] { grid-column: auto; }
+.translation-provider-form label { display: grid; gap: 7px; font-size: 12px; }
+.translation-provider-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.translation-provider-form :is(p,small) { margin: 0; font-size: 11px; line-height: 1.65; color: var(--muted); }
 .settings-shell .connection-form input { min-width: 0; height: 40px; border: 1px solid var(--line); border-radius: 12px; background: #849aaf08; padding: 0 12px; color: var(--text); }
 .settings-shell .connection-section .setting-row { display: flex; flex-direction: column; align-items: stretch; padding: 16px 0; }
 .settings-shell .settings-error, .settings-shell .settings-notice { border-radius: 14px; font-size: 12px; padding: 14px 18px; }

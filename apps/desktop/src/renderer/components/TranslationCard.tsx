@@ -1,13 +1,14 @@
 import { Check, Copy, FilePlus2, Languages, MoreHorizontal, Pin, RotateCw, StopCircle, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { Locator } from '../../../../../packages/contracts/src/index';
+import { translationEngineLabel, type TranslationEngine } from '../../../../../packages/contracts/src/translation-engine';
 import { AnimatedDisclosure } from './MotionPresence';
 import '../translation-card.css';
 
 export type TranslationCardState = {
   id: string; requestId?: string; viewId: string; source: string; result: string; sourceRevision: number;
   locator?: Locator; pinned: boolean; status: 'loading' | 'ready' | 'error' | 'cancelled'; error?: string;
-  targetLanguage?: string; model?: string; connectionId?: string;
+  targetLanguage?: string; model?: string; connectionId?: string; engine: TranslationEngine;
 };
 export const translationLanguages = [ ['zh-CN', '简体中文'], ['en', '英语'], ['ja', '日语'], ['fr', '法语'], ['de', '德语'], ['es', '西班牙语'], ['ko', '韩语'] ] as const;
 function sourceName(card: TranslationCardState) {
@@ -27,20 +28,20 @@ export function TranslationCard({ card, sourceUpdated, models, onModel, onPin, o
   const copy = async (bilingual: boolean) => { try { await navigator.clipboard.writeText(bilingual ? card.source + '\n\n' + card.result : card.result); setCopied(bilingual ? '双语已复制' : '译文已复制'); setCopyError(''); } catch { setCopyError('复制失败，请选中文字手动复制。'); } };
   const result = card.status === 'loading' ? <p className="translation-loading" role="status">正在翻译选中内容…</p> : card.status === 'error' ? <p className="translation-error" role="alert">{card.error}</p> : card.status === 'cancelled' ? <p className="translation-loading">已停止，可使用同一片段重试。</p> : <div className="translation-result">{card.result}</div>;
   if (capsule) return <section className="translation-card translation-card-capsule" data-translation-request={card.requestId} aria-label="选区译文">
-    <div className="translation-arc translation-arc-left" aria-label="译文操作">
-      <button className="icon-button arc-middle" aria-label={card.pinned ? '取消固定译文' : '固定译文'} title={card.pinned ? '取消固定译文' : '固定译文'} aria-pressed={card.pinned} onClick={onPin}><Pin size={15} fill={card.pinned ? 'currentColor' : 'none'} /></button>
-      <button className="icon-button arc-top" aria-label={card.status === 'loading' ? '停止选区翻译' : '重新翻译此片段'} title={card.status === 'loading' ? '停止选区翻译' : '重新翻译此片段'} onClick={card.status === 'loading' ? onCancel : () => onRetry(card.targetLanguage ?? 'zh-CN')}>{card.status === 'loading' ? <StopCircle size={16} /> : <RotateCw size={16} />}</button>
-      <button className="icon-button arc-bottom" aria-label="保存译文为独立文档" title="保存译文为独立文档" disabled={card.status !== 'ready'} onClick={onSave}><FilePlus2 size={16} /></button>
+    <div className="translation-controls translation-controls-left" aria-label="译文操作">
+      <button className="icon-button" aria-label={card.pinned ? '取消固定译文' : '固定译文'} title={card.pinned ? '取消固定译文' : '固定译文'} aria-pressed={card.pinned} onClick={onPin}><Pin size={15} fill={card.pinned ? 'currentColor' : 'none'} /></button>
+      <button className="icon-button" aria-label={card.status === 'loading' ? '停止选区翻译' : '重新翻译此片段'} title={card.status === 'loading' ? '停止选区翻译' : '重新翻译此片段'} onClick={card.status === 'loading' ? onCancel : () => onRetry(card.targetLanguage ?? 'zh-CN')}>{card.status === 'loading' ? <StopCircle size={16} /> : <RotateCw size={16} />}</button>
+      <button className="icon-button" aria-label="保存译文为独立文档" title="保存译文为独立文档" disabled={card.status !== 'ready'} onClick={onSave}><FilePlus2 size={16} /></button>
     </div>
-    <div className="translation-capsule-text"><div className="translation-capsule-caption"><Languages size={12} /><span>{translationLanguages.find(([value]) => value === card.targetLanguage)?.[1] ?? card.targetLanguage ?? '译文'}{sourceUpdated ? ' · 来源已更新' : ''}</span></div>{result}{copyError && <p className="translation-error" role="alert">{copyError}</p>}<span className="translation-copy-status" role="status">{copied}</span></div>
-    <div className="translation-arc translation-arc-right" aria-label="复制与更多">
-      <button className="icon-button arc-middle" aria-label="复制译文" title="复制译文" disabled={card.status !== 'ready'} onClick={() => void copy(false)}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
-      <button className="icon-button arc-top" aria-label="展开译文和翻译设置" title="原文、双语复制、语言和模型" onClick={onExpand}><MoreHorizontal size={17} /></button>
-      <button className="icon-button arc-bottom" aria-label="收起译文" title="收起译文，也可向下拖动" onClick={onCollapse}><X size={15} /></button>
+    <div className="translation-capsule-text"><div className="translation-capsule-caption"><Languages size={12} /><span>{translationLanguages.find(([value]) => value === card.targetLanguage)?.[1] ?? card.targetLanguage ?? '译文'} · {translationEngineLabel(card.engine)}{sourceUpdated ? ' · 来源已更新' : ''}</span></div>{result}{copyError && <p className="translation-error" role="alert">{copyError}</p>}<span className="translation-copy-status" role="status">{copied}</span></div>
+    <div className="translation-controls translation-controls-right" aria-label="复制与更多">
+      <button className="icon-button" aria-label="复制译文" title="复制译文" disabled={card.status !== 'ready'} onClick={() => void copy(false)}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+      <button className="icon-button" aria-label="展开译文和翻译设置" title="原文、双语复制、语言和模型" onClick={onExpand}><MoreHorizontal size={17} /></button>
+      <button className="icon-button" aria-label="收起译文" title="收起译文，也可向下拖动" onClick={onCollapse}><X size={15} /></button>
     </div>
   </section>;
   return <section className="translation-card" data-translation-request={card.requestId} aria-label="选区译文" onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault(); }}>
-    <div className="translation-card-top"><span><Languages size={15} />翻译 · {sourceName(card)}</span><div className="translation-card-controls">
+    <div className="translation-card-top"><span><Languages size={15} />{translationEngineLabel(card.engine)} · {sourceName(card)}</span><div className="translation-card-controls">
       <button className="icon-button" aria-label={card.pinned ? '取消固定译文' : '固定译文'} title={card.pinned ? '取消固定译文' : '固定译文'} aria-pressed={card.pinned} onClick={onPin}><Pin size={15} fill={card.pinned ? 'currentColor' : 'none'} /></button>
       <button className="icon-button" aria-label="关闭此译文" title="关闭此译文" onClick={onClose}><X size={15} /></button>
     </div></div>

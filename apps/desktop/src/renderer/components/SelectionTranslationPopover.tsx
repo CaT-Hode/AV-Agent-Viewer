@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { Languages } from 'lucide-react';
 import type { ReadingContext, Rect } from '../../../../../packages/contracts/src/index';
 import { call, desktop } from '../lib/transport';
-import { fitTranslationCapsule, placeTranslationPopover, shouldCollapseTranslation, translationCapsulePadding, translationDragShape, translationTextHeight, TRANSLATION_CAPSULE_METRICS } from '../lib/translation-popover';
+import { fitTranslationCapsule, placeTranslationPopover, shouldCollapseTranslation, translationDragShape, translationTextHeight, TRANSLATION_CAPSULE_METRICS } from '../lib/translation-popover';
 import { stepGlassSpring, type SpringAxis } from '../lib/glass-elasticity';
 import { animatedMotion, useMotionSnapshot } from '../lib/motion';
 import { updateFloatingHitbox } from '../lib/floating-hitboxes';
@@ -71,7 +71,7 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
           // Canvas wrapping is an estimate. Correct actual font/scrollbar
           // differences only for a new fit, never during gesture/spring frames.
           for(let attempt=0;attempt<4;attempt++){
-            node.style.width=next.width+'px';node.style.height=next.height+'px';node.style.setProperty('--translation-padding-y',translationCapsulePadding(next)+'px');
+            node.style.width=next.width+'px';node.style.height=next.height+'px';
             const result=node.querySelector<HTMLElement>('.translation-result');if(!result)break;
             const overflow=result.scrollHeight-result.clientHeight;if(overflow<=1)break;
             if(next.height<next.maxHeight){const delta=Math.min(next.maxHeight-next.height,overflow+2);next.height+=delta;next.width=Math.min(next.maxWidth,Math.ceil(next.width+next.growthRatio*delta));}
@@ -81,7 +81,7 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
           fitted.current={key:fitKey,size:next};
         }
         size=fitted.current.size;
-        if(node.style.width!==size.width+'px')node.style.width=size.width+'px';if(node.style.height!==size.height+'px')node.style.height=size.height+'px';const padding=translationCapsulePadding(size)+'px';if(node.style.getPropertyValue('--translation-padding-y')!==padding)node.style.setProperty('--translation-padding-y',padding);
+        if(node.style.width!==size.width+'px')node.style.width=size.width+'px';if(node.style.height!==size.height+'px')node.style.height=size.height+'px';
       }else{node.style.width='max-content';node.style.height='auto';size={width:node.offsetWidth,height:body.scrollHeight};}
       const position = placeTranslationPopover(viewport,size);
       if (!position) { node.style.visibility = 'hidden'; desired = undefined; publish(); send(); return; }
@@ -139,7 +139,7 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
   const rect = backdrop.rect, sampled = native && !!backdrop.image && !!rect;
   const preferences = document.documentElement.dataset, requiresSource = native && preferences.glass !== 'off' && preferences.contrast !== 'high' && preferences.reduceTransparency !== 'true';
   return <div {...presence} ref={host} className={'selection-translation-bubble material-host' + (!card ? ' translation-shortcut-bubble' : '')} data-floating-hitbox-managed="true" data-material-ready={placed && opticsReady && (!requiresSource || sampled)} data-glass-control-owner="translation" role={card ? 'region' : 'status'} aria-label={card ? '选区翻译浮窗' : '选区翻译快捷键提示'} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault(); }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onCollapse(); } }}>
-    <LiquidGlassSurface variant="panel" effect="refractive" blur={6} blurLimit={6} strength={.65} specularOpacity={.13} interaction="none" onReady={setOpticsReady} backdropImage={sampled ? backdrop.image : undefined} backdropSample={sampled ? { origin: { x: 12 + rect.x, y: 12 + rect.y }, cssSize: { width: rect.width, height: rect.height } } : undefined} bounds={localBounds} />
+    <LiquidGlassSurface variant="panel" effect="refractive" bezelWidth={36} blur={1} blurLimit={1} strength={.65} specularOpacity={.13} interaction="none" onReady={setOpticsReady} backdropImage={sampled ? backdrop.image : undefined} backdropSample={sampled ? { origin: { x: 12 + rect.x, y: 12 + rect.y }, cssSize: { width: rect.width, height: rect.height } } : undefined} bounds={localBounds} />
     <div className="selection-translation-content" ref={content}>
       {card ? <><button className="translation-drag-handle" aria-label="拖动译文，向下拖动收起" title="拖动可拉伸玻璃，向下拖动收起；也可按 Esc" onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onCollapse(); } }} onPointerDown={event => {
         if (event.button !== 0 || gesture.current) return;

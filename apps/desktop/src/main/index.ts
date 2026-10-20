@@ -1,5 +1,5 @@
 import './safe-stdio-init';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage } from 'electron';
 import { isAbsolute, join, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +15,8 @@ import { CodexDriver, codexExecutable, codexModels } from '../../../../packages/
 import { SettingsService, settingsRegistry, settingsAvailability } from '../../../../packages/settings/src/index';
 import { DocumentTranslationService } from '../../../../packages/translation/src/index';
 import { SelectionTranslationService } from '../../../../packages/translation/src/selection';
+import { TranslationProviderService } from '../../../../packages/translation/src/providers';
+import { isTranslationProvider, type TranslationEngine } from '../../../../packages/contracts/src/translation-engine';
 import type { HarnessDriver, ReadingSnapshot } from '../../../../packages/contracts/src/index';
 import { AIConnectionService, type ToolRoute } from '../../../../packages/ai-providers/src/index';
 import { BabelDocAdapter } from '../../../../packages/translation/src/babeldoc';
@@ -56,6 +58,7 @@ const syncOfficeAppearance = async () => {
 };
 nativeTheme.on('updated', () => { if (settings.get('appearance.theme') === 'system') void syncOfficeAppearance().catch(() => {}); });
 const connections = new AIConnectionService(join(directory, 'connections.json'));
+const ordinaryTranslations = new TranslationProviderService(join(directory,'translation-providers.json'), { available:()=>safeStorage.isEncryptionAvailable(),encrypt:value=>safeStorage.encryptString(value).toString('base64'),decrypt:value=>safeStorage.decryptString(Buffer.from(value,'base64')) });
 let settingsWindow: BrowserWindow | undefined;
 let browserPoll: NodeJS.Timeout | undefined;
 let pdfContent: PdfContentService | undefined;
@@ -189,6 +192,7 @@ void app.whenReady().then(async () => {
   await mkdir(directory, { recursive: true });
   await settings.load();
   await connections.load();
+  await ordinaryTranslations.load();
   core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json')), createRegistry({officeModelWorkerPath:join(root,'dist/main/office-model-worker.cjs')})); await core.initialize();
   const media = new MarkdownMediaHost(core);
   core.extensions.set('markdown-media', async args => media.resolve(String(args.documentId), String(args.path)));
@@ -236,10 +240,6 @@ void app.whenReady().then(async () => {
     return runHarnessPrompt(driver, prompt, signal);
   };
   const translationPrompt = (source: string, language: string) => `把以下内容翻译为 ${language}。只输出译文，不加解释、标题或引号。保留专名、数字、链接和代码：\n\n${source}`;
-  const translate = async (source: string, language: string, signal: AbortSignal, tool: ToolRoute = 'selection') => {
-    if (process.env.AGENTVIEWER_TEST_MODE === '1' && process.env.AGENTVIEWER_TEST_TRANSLATOR === '1') return '【' + language + '】' + source;
-    return generatePrompt(translationPrompt(source, language), signal, tool);
-  };
   const babeldoc = new BabelDocAdapter(join(directory, 'translations', 'babeldoc-jobs'), (prompt, signal) => generatePrompt(prompt, signal, 'full'), babelDocLaunch(root));
   const captureGeneration = (tool: ToolRoute, connectionId?: string) => {
     const provider = connections.capture(tool, connectionId);
@@ -248,7 +248,19 @@ void app.whenReady().then(async () => {
     if (!provider && !driver) throw new Error('请先在设置中选择可用的翻译模型 / Harness。');
     return { generate: provider ? provider.generate : (prompt: string, signal: AbortSignal) => runHarnessPrompt(driver!, prompt, signal), fingerprint: provider?.fingerprint ?? 'harness:' + driverId, model: provider?.model ?? 'harness:' + driverId };
   };
+  const captureTranslation = (tool:ToolRoute, connectionId?:string, engine:TranslationEngine=String(settings.get('translation.engine')) as TranslationEngine) => {
+    if(engine!=='ai'){
+      if(!isTranslationProvider(engine))throw new ViewerError('INVALID_ARGUMENT','未知的翻译引擎。');
+      if(connectionId)throw new ViewerError('INVALID_ARGUMENT','普通翻译不使用 AI 模型连接。');
+      return ordinaryTranslations.capture(engine);
+    }
+    const profile=captureGeneration(tool,connectionId);
+    return {...profile,engine:'ai' as const,translate:(source:string,language:string,signal:AbortSignal)=>process.env.AGENTVIEWER_TEST_MODE==='1'&&process.env.AGENTVIEWER_TEST_TRANSLATOR==='1'?Promise.resolve('【'+language+'】'+source):profile.generate(translationPrompt(source,language),signal)};
+  };
+  const translate = (source:string,language:string,signal:AbortSignal,tool:ToolRoute='selection')=>captureTranslation(tool).translate(source,language,signal);
+  const translationReady = (tool:ToolRoute) => { const engine=settings.get('translation.engine');return engine==='ai' ? settings.get('ai.defaultDriver')!=='none'||!!connections.profileFor(tool) : isTranslationProvider(engine)&&ordinaryTranslations.configured(engine); };
   const fullTranslationProfile = () => {
+    const engine=settings.get('translation.engine');if(isTranslationProvider(engine))return ordinaryTranslations.capture(engine);
     const { generate, fingerprint, model } = captureGeneration('full');
     const pdfEngine = new BabelDocAdapter(join(directory, 'translations', 'babeldoc-jobs'), generate, babelDocLaunch(root));
     return {
@@ -261,7 +273,7 @@ void app.whenReady().then(async () => {
   await translations.load();
   selectionTranslations = new SelectionTranslationService({
     context: viewId => core.context(viewId), revision: documentId => core.documents.get(documentId)?.info.revision,
-    capture: connectionId => { const profile = captureGeneration('selection', connectionId); return { ...profile, translate: (source, language, signal) => process.env.AGENTVIEWER_TEST_MODE === '1' && process.env.AGENTVIEWER_TEST_TRANSLATOR === '1' ? Promise.resolve('【' + language + '】' + source) : profile.generate(translationPrompt(source, language), signal) }; }
+    capture: (connectionId,engine) => captureTranslation('selection',connectionId,engine)
   });
   const workspaceInvalidations = new WorkspaceInvalidations({ views: () => core.views.values(), view: id => core.views.get(id), owner: id => windows.get(id), alive: owner => !owner.isDestroyed() && !owner.webContents.isDestroyed(), send: (owner, message) => owner.webContents.send('agentviewer:toolbar', message) });
   core.on('change', (event: CoreViewEvent) => {
@@ -281,6 +293,7 @@ void app.whenReady().then(async () => {
   const webTranslationBusy = new Set<string>(), webTranslationSuspended = new Set<string>(), lastWebTranslation = new Map<string, number>(), lastWebNavigation = new Map<string, string>();
   const applyWebTranslation = async (viewId: string, scope: 'page' | 'selection', language: string) => {
     const browser = core.browser as ElectronBrowserRuntime;
+    const profile=captureTranslation('web');
     let navigationId = '', translated = 0, skipped = 0, total = 0;
     for (let batchIndex = 0; batchIndex < (scope === 'selection' ? 1 : 25); batchIndex++) {
       const batch = await browser.translationUnits(viewId, scope);
@@ -289,11 +302,11 @@ void app.whenReady().then(async () => {
       if (batch.units.length === 0) { if (scope === 'selection') throw new Error('当前网页选区跨多个节点或处于可编辑区域，无法安全原地替换。'); break; }
       let appliedInBatch = 0;
       for (const unit of batch.units) {
-        const result = await translate(unit.text.trim(), language, new AbortController().signal, 'web');
+        const result = await profile.translate(unit.text.trim(), language, new AbortController().signal);
         const leading = unit.text.match(/^\s*/)?.[0] ?? '', trailing = unit.text.match(/\s*$/)?.[0] ?? '';
         if (await browser.applyTranslation(viewId, navigationId, unit, leading + result.trim() + trailing)) { translated++; appliedInBatch++; } else skipped++;
       }
-      if (appliedInBatch === 0 || batch.units.length < 80) break;
+      if (appliedInBatch === 0) break;
     }
     return { translated, skipped, total, navigationId };
   };
@@ -373,6 +386,10 @@ void app.whenReady().then(async () => {
     if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); readerPanelHost.preferencesChanged(); await syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-open') { await openSettings(typeof args.category === 'string' ? args.category : undefined); return {}; }
     if (method === 'connections-read') return connections.snapshot();
+    if (method === 'translation-providers-read') return ordinaryTranslations.snapshot();
+    if (method === 'translation-providers-save') return ordinaryTranslations.save(args as never);
+    if (method === 'translation-providers-remove') return ordinaryTranslations.remove(String(args.provider) as never);
+    if (method === 'translation-providers-test') return {text:await ordinaryTranslations.capture(String(args.provider) as never).translate('Hello, world!','zh-CN',AbortSignal.timeout(45000))};
     if (method === 'connections-upsert') return connections.upsert(args as never);
     if (method === 'connections-remove') return connections.remove(String(args.id));
     if (method === 'connections-route') return connections.route(String(args.tool) as ToolRoute, String(args.id));
@@ -467,10 +484,10 @@ void app.whenReady().then(async () => {
     if (method === 'translation-selection') {
       const view = core.getView(String(args.viewId));
       if (view.windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED');
-      return selectionTranslations.translate(String(event.sender.id), { requestId: typeof args.requestId === 'string' ? args.requestId : undefined, retryOf: typeof args.retryOf === 'string' ? args.retryOf : undefined, viewId: view.id, text: typeof args.text === 'string' ? args.text : undefined, sourceRevision: typeof args.sourceRevision === 'number' ? args.sourceRevision : undefined, targetLanguage: String(args.targetLanguage ?? settings.get('translation.targetLanguage')), connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined });
+      return selectionTranslations.translate(String(event.sender.id), { requestId: typeof args.requestId === 'string' ? args.requestId : undefined, retryOf: typeof args.retryOf === 'string' ? args.retryOf : undefined, viewId: view.id, text: typeof args.text === 'string' ? args.text : undefined, sourceRevision: typeof args.sourceRevision === 'number' ? args.sourceRevision : undefined, targetLanguage: String(args.targetLanguage ?? settings.get('translation.targetLanguage')), connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined, engine: typeof args.engine === 'string' ? args.engine as TranslationEngine : undefined });
     }
     if (method === 'translation-selection-cancel') return selectionTranslations.cancel(String(event.sender.id), String(args.viewId), String(args.requestId));
-    if (method === 'translation-start') { if (settings.get('ai.defaultDriver') === 'none' && !connections.profileFor('full')) throw new Error('请先在设置中选择可用的翻译模型 / Harness。'); if (core.getDocument(String(args.documentId)).info.format === 'pdf' && !babeldoc.available()) throw new Error('PDF 全文翻译需要 BabelDOC；请安装后设置 AGENTVIEWER_BABELDOC。'); return translations.start(String(args.documentId), String(args.targetLanguage ?? settings.get('translation.targetLanguage')), String(args.windowId ?? 'main'), settings.get('translation.outputDirectory') as 'managed' | 'beside-source'); }
+    if (method === 'translation-start') { if (core.getDocument(String(args.documentId)).info.format === 'pdf' && settings.get('translation.engine') !== 'ai') throw new ViewerError('CAPABILITY_UNSUPPORTED','普通翻译支持 PDF 选区；PDF 全文保版式翻译请切换到 AI 模型。'); if (core.getDocument(String(args.documentId)).info.format === 'pdf' && !babeldoc.available()) throw new Error('PDF 全文翻译需要 BabelDOC；请安装后设置 AGENTVIEWER_BABELDOC。'); return translations.start(String(args.documentId), String(args.targetLanguage ?? settings.get('translation.targetLanguage')), String(args.windowId ?? 'main'), settings.get('translation.outputDirectory') as 'managed' | 'beside-source'); }
     if (method === 'translation-list') return translations.list();
     if (method === 'translation-cancel') { translations.cancel(String(args.jobId)); return {}; }
     if (method === 'translation-resume') return translations.resume(String(args.jobId));
@@ -515,7 +532,7 @@ void app.whenReady().then(async () => {
     for (const view of core.views.values()) { const document = core.getDocument(view.documentId).info; if (document.format === 'web' && document.model.url) await core.browser.open(view.id, document.model.url, { background: true }).catch(e => core.event('browser.error', { viewId: view.id, error: String(e) })); }
   }
   void openStartupFiles();
-  browserPoll = setInterval(() => { const browser = core.browser as ElectronBrowserRuntime; for (const [viewId, entry] of browser.entries) if (entry.visible && !entry.view.webContents.isLoading()) { void browser.context(viewId).then(context => core.updateContext(viewId, context, context.actor)).catch(() => {}); if (lastWebNavigation.get(viewId) !== entry.navigationId) { lastWebNavigation.set(viewId, entry.navigationId); lastWebTranslation.delete(viewId); webTranslationSuspended.delete(viewId); } if (settings.get('translation.webAuto') && !webTranslationSuspended.has(viewId) && (settings.get('ai.defaultDriver') !== 'none' || connections.profileFor('web'))) { const now = Date.now(), last = lastWebTranslation.get(viewId) ?? 0; if (!webTranslationBusy.has(viewId) && (settings.get('translation.webDynamic') ? now - last > 4000 : last === 0)) { webTranslationBusy.add(viewId); lastWebTranslation.set(viewId, now); void applyWebTranslation(viewId, 'page', String(settings.get('translation.targetLanguage'))).catch(error => core.event('browser.translation-error', { viewId, error: String(error) })).finally(() => webTranslationBusy.delete(viewId)); } } } }, 650); browserPoll.unref();
+  browserPoll = setInterval(() => { const browser = core.browser as ElectronBrowserRuntime; for (const [viewId, entry] of browser.entries) if (entry.visible && !entry.view.webContents.isLoading()) { void browser.context(viewId).then(context => core.updateContext(viewId, context, context.actor)).catch(() => {}); if (lastWebNavigation.get(viewId) !== entry.navigationId) { lastWebNavigation.set(viewId, entry.navigationId); lastWebTranslation.delete(viewId); webTranslationSuspended.delete(viewId); } if (settings.get('translation.webAuto') && !webTranslationSuspended.has(viewId) && translationReady('web')) { const now = Date.now(), last = lastWebTranslation.get(viewId) ?? 0; if (!webTranslationBusy.has(viewId) && (settings.get('translation.webDynamic') ? now - last > 4000 : last === 0)) { webTranslationBusy.add(viewId); lastWebTranslation.set(viewId, now); void applyWebTranslation(viewId, 'page', String(settings.get('translation.targetLanguage'))).catch(error => core.event('browser.translation-error', { viewId, error: String(error) })).finally(() => webTranslationBusy.delete(viewId)); } } } }, 650); browserPoll.unref();
 }).catch(error => { dialog.showErrorBox('AgentViewer 启动失败', String(error)); app.exit(1); });
 let shutdown: 'idle' | 'saving' | 'ready' = 'idle';
 app.on('before-quit', event => {

@@ -632,6 +632,7 @@ test('设置验证、持久化和版本号', async () => {
   assert.equal(settings.get('translation.selectionShortcutEnabled'), true);
   assert.equal(settings.get('translation.selectionShortcut'), DEFAULT_SELECTION_SHORTCUT);
   assert.equal(settings.get('translation.capsuleGrowthRatio'), 1);
+  assert.equal(settings.get('translation.engine'),'ai');await settings.set('translation.engine','google');await assert.rejects(settings.set('translation.engine','unknown'));await settings.set('translation.engine','ai');
   await assert.rejects(settings.set('translation.capsuleGrowthRatio',.05));await assert.rejects(settings.set('translation.capsuleGrowthRatio',1.1));
   assert.equal(normalizeSelectionShortcut('Shift+Ctrl+y'), DEFAULT_SELECTION_SHORTCUT);
   for (const invalid of ['Y','Shift+Y','Ctrl+Y','Ctrl+S','Ctrl+Shift+S','Meta+S','Alt+F4','Ctrl+Ctrl+Y','Ctrl+Shift+Unknown','Ctrl+Meta+Y']) await assert.rejects(settings.set('translation.selectionShortcut', invalid));
@@ -650,7 +651,7 @@ test('设置验证、持久化和版本号', async () => {
   assert.equal(restored.get('translation.selectionDelayMs'), 700);
   assert.equal(restored.get('translation.selectionShortcut'),'Ctrl+Alt+J');
   assert.equal(restored.get('translation.selectionShortcutEnabled'),false);
-  assert.equal(restored.snapshot().revision, 3);
+  assert.equal(restored.get('translation.engine'),'ai');assert.equal(restored.snapshot().revision, 5);
 });
 
 test('结构译文生成独立文件，原始字节与公式保持不变', async () => {
@@ -722,6 +723,12 @@ test('运行中的全文翻译固定发起时的模型配置', async () => {
   assert.equal(service.jobs.get(job.id)?.status, 'completed');
   assert.deepEqual(used, ['model-a', 'model-a']);
   assert.equal(service.jobs.get(job.id)?.artifact?.model, 'model-a');
+  const pending=editGate(),started:string[]=[];let engine='google';
+  const simultaneous=new DocumentTranslationService(core,join(directory,'ordinary-translations'),async text=>text,'test',undefined,()=>{const captured=engine;return{fingerprint:captured,model:captured,translate:async text=>{started.push(captured);await pending.promise;return text;}};});
+  const google=await simultaneous.start(view.documentId,'en');assert.equal((await simultaneous.start(view.documentId,'en')).id,google.id);
+  engine='baidu';const baidu=await simultaneous.start(view.documentId,'en');assert.notEqual(google.id,baidu.id,'changing engines never returns a job belonging to another provider');pending.resolve();
+  for(let i=0;i<100&&[google,baidu].some(item=>item.status==='running');i++)await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(google.status,'completed');assert.equal(baidu.status,'completed');assert(started.includes('google')&&started.includes('baidu'));
 });
 
 test('用户可按视图暂停或停止 Agent，用户编辑仍可继续', async () => {

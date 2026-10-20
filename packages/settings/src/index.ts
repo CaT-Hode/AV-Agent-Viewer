@@ -45,12 +45,13 @@ export const settingsRegistry: SettingDefinition[] = [
   s('annotations.defaultColor','工作方式','批注与引用','高亮颜色','yellow',['yellow','green','blue','pink']),
   s('annotations.quoteFormat','工作方式','批注与引用','引用格式','markdown',['plain','markdown','rich']),
   b('annotations.includeTranslation','工作方式','批注与引用','引用包含译文',false),
+  { ...s('translation.engine','AI','翻译','翻译引擎','ai',['ai','google','baidu','microsoft']), effect:'next-task', description:'普通翻译使用服务商官方 API，无需 AI 模型；凭据在下方配置。' },
   b('translation.selectionAuto','AI','翻译','文档选区自动翻译',true,'连接可用后生效；不会修改原文。'),
   b('translation.selectionShortcutEnabled','AI','翻译','快捷键翻译选区',true,'选中文字后使用快捷键主动翻译；正文底部显示提示。'),
   { id: 'translation.selectionShortcut', group: 'AI', section: '翻译', label: '选区翻译快捷键', type: 'text', defaultValue: DEFAULT_SELECTION_SHORTCUT, description: '点击后按下组合键；支持 Ctrl、Alt、Shift、Meta 与字母、数字或 F1–F12，避开已有编辑快捷键。' },
   n('translation.selectionDelayMs','AI','翻译','选区翻译等待时间（毫秒）',500,200,3000),
   s('translation.selectionPresentation','AI','翻译','选区译文呈现','popover',['popover','drawer']),
-  { ...n('translation.capsuleGrowthRatio','AI','翻译','译文胶囊宽高增长比例',1,.15,1), description: '默认1.0：增高100像素时约增宽100像素；达到宽高边界后内部滚动。' },
+  { ...n('translation.capsuleGrowthRatio','AI','翻译','译文浮窗宽高增长比例',1,.15,1), description: '默认1.0：增高100像素时约增宽100像素；达到宽高边界后内部滚动。' },
   b('translation.autoFullDocument','AI','翻译','打开外语文档时自动生成译文',false),
   { ...s('translation.targetLanguage','AI','翻译','目标语言','zh-CN',['zh-CN','en','ja','fr','de','es']), effect: 'next-task' },
   { ...s('translation.outputDirectory','AI','翻译','译文保存位置','managed',['managed','beside-source']), effect: 'next-task' },
@@ -92,7 +93,7 @@ export const settingsRegistry: SettingDefinition[] = [
 const activeSettings = new Set([
   'general.startPage',
   'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.documentPaperColor','appearance.backgroundMotion','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs',
-  'translation.selectionAuto','translation.selectionShortcutEnabled','translation.selectionShortcut','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
+  'translation.engine','translation.selectionAuto','translation.selectionShortcutEnabled','translation.selectionShortcut','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
   'translation.capsuleGrowthRatio','ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart','web.backgroundLoading',
 ]);
 export function settingsAvailability(id: string) { return activeSettings.has(id) ? { available: true } : { available: false, unavailableReason: '当前引擎尚未接入此能力，暂不能修改。' }; }
