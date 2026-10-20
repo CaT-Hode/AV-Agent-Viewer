@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(root, 'dist/test-build.json');
-const inputs = ['apps', 'packages', 'assets', 'plugins', 'scripts', 'tests', 'docs', 'README.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'electron-builder.json', 'engines.lock.json', 'engines-requirements.txt'];
+const inputs = ['apps', 'packages', 'assets', 'plugins', 'scripts', 'tests', 'docs', 'README.md', 'AGENTS.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'electron-builder.json', 'engines.lock.json', 'engines-requirements.txt'];
 const outputs = ['dist/main', 'dist/renderer', 'dist/mcp'];
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 

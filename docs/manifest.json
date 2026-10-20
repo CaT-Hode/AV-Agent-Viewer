@@ -3,7 +3,8 @@
     {
       "name": "项目入口",
       "files": [
-        "README.md"
+        "README.md",
+        "AGENTS.md"
       ]
     },
     {
