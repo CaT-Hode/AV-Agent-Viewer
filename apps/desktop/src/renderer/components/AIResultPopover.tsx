@@ -20,6 +20,7 @@ export function AIResultPopover({ task, label, source, sourceText, sourceUpdated
   native?: boolean; backdropImage?: string; backdropSample?: NavigationBackdropSample; bounds?: NavigationBounds; onGeometry?(bounds: NavigationBounds): void;
 } & HTMLAttributes<HTMLElement>) {
   const host = useRef<HTMLElement>(null), [surface, setSurface] = useState<'light' | 'dark'>();
+  useEffect(()=>{const node=host.current;if(!node)return;const yieldRoom=()=>onClose();node.addEventListener('agentviewer:floating-yield',yieldRoom);return()=>node.removeEventListener('agentviewer:floating-yield',yieldRoom);},[onClose]);
   const [copied, setCopied] = useState(false), [copyError, setCopyError] = useState(''), [showSource, setShowSource] = useState(false);
   useEffect(() => { setCopied(false); setCopyError(''); setShowSource(false); }, [task.id]);
   useEffect(() => { if (copied) { const timer = setTimeout(() => setCopied(false), 1800); return () => clearTimeout(timer); } }, [copied]);
@@ -36,7 +37,7 @@ export function AIResultPopover({ task, label, source, sourceText, sourceUpdated
     const observer = new ResizeObserver(measure); observer.observe(host.current); window.addEventListener('resize', measure); measure();
     return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
   }, [onGeometry]);
-  return <section {...presentation} ref={host} className={'ai-result-popover material-host' + (native ? ' native-ai-result-popover' : '')} style={style as CSSProperties} data-surface={surface} data-native-waiting={native && !backdropImage || undefined} aria-label={label + '结果'}>
+  return <section {...presentation} ref={host} data-floating-yield="collapse" className={'ai-result-popover material-host' + (native ? ' native-ai-result-popover' : '')} style={style as CSSProperties} data-surface={surface} data-native-waiting={native && !backdropImage || undefined} aria-label={label + '结果'}>
     <LiquidGlassSurface variant="panel" effect="refractive" strength={.82} specularOpacity={.24} backdropImage={backdropImage} backdropSample={backdropSample} bounds={bounds} />
     <header><div><strong>{label}</strong><small>{source}</small></div><button className="icon-button" aria-label="关闭分析结果" title="关闭分析结果" onClick={onClose}><X size={16} /></button></header>
     {sourceText !== undefined && <div className="ai-source-bar"><button aria-expanded={showSource} onClick={() => setShowSource(value => !value)}>{showSource ? '返回结果' : '查看本次来源'}</button>{sourceUpdated && <span>来源已更新</span>}</div>}

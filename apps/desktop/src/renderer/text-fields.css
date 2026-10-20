@@ -1,0 +1,85 @@
+/* Kube Searchbox: transparent text above a separate curved surface. Smaller
+   fields inside glass panels use an inset treatment without another blur. */
+:root {
+  --field-ink:#263541; --field-muted:#6d7b87;
+  --field-fill:rgb(255 255 255 / .62); --field-hover:rgb(255 255 255 / .78);
+  --field-edge:rgb(76 100 121 / .17); --field-focus:#527e9c;
+  --field-shade:inset 0 1px 3px rgb(20 42 58 / .045),0 1px 0 rgb(255 255 255 / .55);
+}
+:root[data-theme="dark"] {
+  --field-ink:#e9f0f5; --field-muted:#9aaab7;
+  --field-fill:rgb(255 255 255 / .055); --field-hover:rgb(255 255 255 / .08);
+  --field-edge:rgb(197 217 232 / .16); --field-focus:#94bdd6;
+  --field-shade:inset 0 1px 3px rgb(0 0 0 / .15),0 1px 0 rgb(255 255 255 / .025);
+}
+:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.selection-error,.document-paper-color-control,.office-toolbox)
+  :is(input:not([type]),input[type="text"],input[type="search"],input[type="url"],input[type="password"],input[type="number"],textarea):not(:where(.settings-search *, .search-field *, .markdown-workspace-search *, .prompt-box *, .sheet-grid *, .embedded-office-input, .embedded-office-window-input)) {
+  border:1px solid var(--field-edge); border-radius:12px;
+  background:var(--field-fill); color:var(--field-ink); caret-color:var(--field-focus);
+  box-shadow:var(--field-shade); outline:0; outline-offset:2px;
+  transition:background-color 140ms ease-out,border-color 140ms ease-out,box-shadow 140ms ease-out;
+}
+:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.office-toolbox)
+  :is(input:not([type]),input[type="text"],input[type="search"],input[type="url"],input[type="password"],input[type="number"],textarea):focus:not(:where(.settings-search *, .search-field *, .markdown-workspace-search *, .prompt-box *, .sheet-grid *, .embedded-office-input, .embedded-office-window-input)) {
+  border-color:var(--field-focus);
+  box-shadow:var(--field-shade),0 0 0 3px color-mix(in srgb,var(--field-focus) 14%,transparent);
+}
+:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.office-toolbox) :is(input,textarea)::placeholder { color:var(--field-muted); opacity:1; }
+:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.office-toolbox) :is(input,textarea):disabled { opacity:.5; cursor:not-allowed; }
+:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.office-toolbox) :is(input,textarea)[aria-invalid="true"] { border-color:#bc6271; }
+
+/* Search shells own the material and focus ring; their transparent input
+   does not draw a second rounded rectangle or distort with the lens. */
+:root[data-theme] :is(.settings-search,.search-field,.home-search-capsule) {
+  border:1px solid transparent; border-radius:999px;
+  --liquid-glass-tint:rgb(255 255 255 / var(--glass-material-fill,.12));
+  box-shadow:0 2px 7px rgb(21 40 56 / .06),inset 0 1px 0 rgb(255 255 255 / .10);
+  color:var(--field-ink);
+  transition:box-shadow 160ms ease-out;
+}
+:root[data-theme="dark"] :is(.settings-search,.search-field,.home-search-capsule) { --liquid-glass-tint:rgb(255 255 255 / var(--glass-material-fill,.055)); }
+:root[data-theme] :is(.settings-search,.search-field,.home-search-capsule):focus-within {
+  --liquid-glass-tint:rgb(255 255 255 / var(--glass-material-fill,.20));
+  box-shadow:0 3px 12px rgb(21 40 56 / .10),0 0 0 2px color-mix(in srgb,var(--field-focus) 22%,transparent);
+}
+:root[data-theme="dark"] :is(.settings-search,.search-field,.home-search-capsule):focus-within { --liquid-glass-tint:rgb(255 255 255 / var(--glass-material-fill,.20)); }
+:root[data-theme] :is(.settings-search,.search-field,.home-search-capsule) > .liquid-glass-surface[data-glass-pending="true"] .liquid-glass-tint { background:var(--liquid-glass-tint); }
+:root[data-theme] :is(.settings-search,.search-field,.home-search-capsule) input {
+  background:transparent; border:0; outline:0; box-shadow:none; color:inherit;
+  padding-block:0; caret-color:var(--field-focus); min-width:0;
+}
+:root[data-theme] :is(.settings-search,.search-field,.home-search-capsule) input:focus { background:transparent; border:0; outline:0; box-shadow:none; }
+:root[data-theme] :is(.settings-search,.search-field,.home-search-capsule) input::placeholder { color:var(--field-muted); opacity:1; }
+:root[data-theme] :is(.settings-search,.search-field) { min-height:38px; padding-inline:13px; gap:9px; }
+:root[data-theme] :is(.settings-search,.search-field) input { font-size:14px; }
+:root[data-theme] .settings-shell .settings-search input::placeholder { font-size:inherit; }
+:root[data-theme] .prompt-box {
+  border:1px solid var(--field-edge); border-radius:18px;
+  background:var(--field-fill); box-shadow:var(--field-shade); overflow:hidden;
+}
+:root[data-theme] .prompt-box:focus-within { border-color:var(--field-focus); box-shadow:var(--field-shade),0 0 0 3px color-mix(in srgb,var(--field-focus) 14%,transparent); }
+:root[data-theme] .prompt-box textarea { background:transparent; color:var(--field-ink); border:0; border-radius:0; outline:0; box-shadow:none; padding:13px 15px; line-height:1.6; }
+:root[data-theme] .markdown-workspace-search { min-height:36px; padding:0 11px; gap:8px; border:1px solid var(--field-edge); border-radius:999px; background:var(--field-fill); box-shadow:var(--field-shade); color:var(--field-ink); }
+:root[data-theme] .markdown-workspace-search:focus-within { border-color:var(--field-focus); box-shadow:var(--field-shade),0 0 0 2px color-mix(in srgb,var(--field-focus) 16%,transparent); }
+:root[data-theme] .markdown-workspace-search input { background:transparent; border:0; border-radius:0; box-shadow:none; padding:0; outline:0; font-size:12px; color:inherit; }
+
+/* A background-driven ink swap is atomic. Interpolating inverse foreground /
+   fill pairs crosses through equal mid-grey and makes the selected icon vanish. */
+:root[data-theme] .navigation-capsule button { transition-property:transform,box-shadow; }
+:root[data-theme] .navigation-capsule :is(button.selected,button[aria-pressed="true"],button[aria-checked="true"]),
+:root[data-theme] .workbench .reader-toolbar .navigation-capsule :is(button.selected,button[aria-pressed="true"],button[aria-checked="true"]),
+:root[data-theme] .selection-tool-icons.navigation-capsule :is(button.selected,button[aria-pressed="true"]) {
+  color:var(--navigation-selected-ink); background:var(--navigation-selected-fill);
+  box-shadow:0 1px 3px rgb(0 0 0 / .10); transition-property:transform,box-shadow;
+}
+:root[data-theme] .selection-tool-icons.navigation-capsule .icon-button:is(.selected,[aria-pressed="true"]):hover {
+  color:var(--navigation-selected-ink); background:var(--navigation-selected-fill);
+}
+:root[data-theme] .navigation-capsule :is(.address-input,.native-office-formula-bar input):focus-visible {
+  border-radius:12px; outline:2px solid color-mix(in srgb,var(--navigation-ink) 34%,transparent); outline-offset:1px;
+  background:color-mix(in srgb,var(--navigation-ink) 7%,transparent);
+}
+@media (forced-colors:active) {
+  :root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.office-toolbox) :is(input,textarea) { background:Canvas; color:CanvasText; border-color:ButtonText; }
+  :root[data-theme] .navigation-capsule button.selected { background:Highlight; color:HighlightText; }
+}

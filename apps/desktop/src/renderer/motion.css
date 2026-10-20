@@ -37,7 +37,6 @@
 .recent-card,
 .artifact-row,
 .setting-reset,
-.popover-expand,
 .translation-actions button {
   transition:
     transform var(--dur-press, 260ms) var(--ease-spring),
@@ -91,7 +90,6 @@
 }
 
 .modal,
-.translation-popover,
 .toast,
 .ai-drawer,
 .format-sidebar {
@@ -101,10 +99,6 @@
 .modal {
   animation: modal-in var(--dur-sheet, 420ms) var(--ease-drawer) both;
   transform-origin: 50% 45%;
-}
-.translation-popover {
-  animation: sheet-in-right var(--dur-surface, 340ms) var(--ease-drawer) both;
-  transform-origin: 100% 0;
 }
 .ai-drawer,
 .format-sidebar {
@@ -216,14 +210,7 @@
   transition: outline-color 160ms var(--ease-io), outline-offset 160ms var(--ease-io);
 }
 
-/* ── selection bubble & capsules ───────────────────────────────────────── */
-@keyframes pop-spring {
-  from { opacity: 0; scale: .82; }
-  to   { opacity: 1; scale: 1; }
-}
-.selection-tools {
-  animation: pop-spring 300ms var(--ease-spring) both;
-}
+/* ── operation capsules ───────────────────────────────────────────────── */
 .agent-capsule {
   animation: sheet-in 360ms var(--ease-drawer) both;
 }
@@ -267,31 +254,6 @@
 .settings-main { animation: fade-in 520ms var(--ease-io) 180ms both; }
 
 /* ── selection tools (shared with the native toolbar window) ───────────── */
-.selection-tools {
-  position: fixed;
-  z-index: 90;
-  min-width: 180px;
-  padding: 6px;
-  border: 1px solid rgb(255 255 255 / .4);
-  border-radius: 16px;
-  background: rgb(246 249 253 / 87%);
-  color: #243147;
-  box-shadow: 0 8px 30px #15233b26, inset 0 1px #fff8;
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  backdrop-filter: blur(20px) saturate(1.4);
-}
-.selection-tool-icons {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px;
-}
-.selection-tool-icons .icon-button {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  flex-shrink: 0;
-}
 .selection-input {
   padding: 8px;
   display: grid;
@@ -322,24 +284,11 @@
 .confirm-dialog { width: min(490px, 90vw); }
 .confirm-dialog p { font-size: 13px; line-height: 1.7; }
 .dialog-hint { color: var(--soft); }
-:root[data-theme="dark"] .selection-tools {
-  background: rgb(32 40 52 / 88%);
-  color: #e3edf9;
-  border-color: rgb(167 194 226 / .18);
-  box-shadow: 0 10px 30px #0004, inset 0 1px #ffffff0d;
-}
 :root[data-theme="dark"] .selection-input textarea {
   background: rgb(21 29 41 / .6);
   border-color: rgb(113 132 156 / .33);
 }
-:root[data-theme="dark"] .selection-tools .icon-button { color: #dbe9fd; }
 :root[data-theme="dark"] .selection-error { color: #f3a4b3; }
-:root[data-glass="off"] .selection-tools {
-  background: #f2f5fa;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-:root[data-theme="dark"][data-glass="off"] .selection-tools { background: #293444; }
 
 ::highlight(reader-annotations) { background: #eed45c66; color: inherit; }
 :root[data-theme="dark"] ::highlight(reader-annotations) { background: #c7a43c66; color: #fff1bc; }
@@ -362,49 +311,6 @@
   transition: none !important;
   scroll-behavior: auto !important;
 }
-
-/* ── selection capsule consolidation ─────────────────────────────────────
-   The bubble is always a single pill; the editors float separately below. */
-:root[data-theme] .selection-tools,
-:root[data-glass="off"] .selection-tools,
-:root[data-contrast="high"] .selection-tools {
-  padding: 0;
-  border: 0;
-  border-radius: var(--glass-r-pill, 999px);
-  background: transparent;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  box-shadow: none;
-  min-width: 0;
-}
-.selection-tool-icons {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 2px;
-  padding: 6px;
-  border-radius: var(--glass-r-pill, 999px);
-  border: 1px solid rgb(255 255 255 / .47);
-  background: rgb(245 250 255 / 62%);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  backdrop-filter: blur(20px) saturate(1.4);
-  box-shadow: 0 4px 16px #15233b20, inset 0 1px #ffffff88;
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.selection-tool-icons .icon-button { flex: 0 0 30px; border-radius: 50%; }
-:root[data-theme="dark"] .selection-tool-icons {
-  background: rgb(32 42 57 / 67%);
-  border-color: rgb(212 229 255 / .19);
-  box-shadow: 0 5px 18px #0003, inset 0 1px #ffffff16;
-}
-:root[data-glass="off"] .selection-tool-icons,
-:root[data-contrast="high"] .selection-tool-icons {
-  background: #f2f5fa;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-:root[data-theme="dark"][data-glass="off"] .selection-tool-icons { background: #293444; }
 
 /* The editor panels drop below the pill. */
 .selection-input,

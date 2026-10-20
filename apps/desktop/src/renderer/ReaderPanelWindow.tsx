@@ -1,8 +1,11 @@
 import { useEffect, useState, type CSSProperties } from 'react';
+import './selection-translation.css';
+import './translation-card.css';
 
 type Backdrop = { image?: string; rect?: { x: number; y: number; width: number; height: number } };
 /** Bootstrap only: business components are portalled by the owning App. */
 export function ReaderPanelWindow() {
+  const translation = new URLSearchParams(location.hash.split('?')[1]).get('side') === 'translation';
   const [backdrop, setBackdrop] = useState<Backdrop>({});
   useEffect(() => {
     document.documentElement.classList.add('reader-panel-window');
@@ -23,5 +26,5 @@ export function ReaderPanelWindow() {
     return () => { unsubscribe?.(); window.removeEventListener('keydown', shortcut); };
   }, []);
   const rect = backdrop.rect;
-  return <div id="reader-panel-content" className="workbench reader-panel-workbench"><div className="reader-panel-backdrop" style={{ backgroundImage: backdrop.image ? `url("${backdrop.image}")` : undefined, backgroundSize: rect ? `${rect.width}px ${rect.height}px` : undefined, backgroundPosition: rect ? `${rect.x}px ${rect.y}px` : undefined } as CSSProperties} /></div>;
+  return <div id="reader-panel-content" className="workbench reader-panel-workbench">{!translation && <div className="reader-panel-backdrop" style={{ backgroundImage: backdrop.image ? `url("${backdrop.image}")` : undefined, backgroundSize: rect ? `${rect.width}px ${rect.height}px` : undefined, backgroundPosition: rect ? `${rect.x}px ${rect.y}px` : undefined } as CSSProperties} />}</div>;
 }

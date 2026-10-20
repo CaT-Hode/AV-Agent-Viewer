@@ -20,13 +20,6 @@ export function nearestGlassOption(options: readonly GlassOptionBounds[], center
   }, undefined);
 }
 
-/** A held lens reveals the actual captions as it leaves the committed pill.
- * Smoothstep has no binary midpoint and no abrupt slope at either endpoint. */
-export function glassSelectionFillOpacity(distance: number, selectedWidth: number) {
-  const amount = clampGlassControl(Math.abs(distance) / Math.max(24, selectedWidth * .55), 0, 1);
-  return 1 - amount * amount * (3 - 2 * amount);
-}
-
 export function rubberBandGlassControl(value: number, min: number, max: number) {
   const clipped = clampGlassControl(value, min, max);
   return clipped + (value - clipped) / 22;

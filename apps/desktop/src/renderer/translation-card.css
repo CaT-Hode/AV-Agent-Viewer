@@ -9,4 +9,3 @@
 .translation-card .translation-actions { align-items: center; gap: 6px; }
 .translation-actions > span { margin-left: auto; font-size: 10px; color: var(--muted); }
 .translation-card + .translation-card { margin-top: 12px; border-top: 1px solid var(--line); }
-.translation-popover .translation-card { flex: 1; }

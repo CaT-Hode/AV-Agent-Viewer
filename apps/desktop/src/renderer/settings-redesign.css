@@ -70,7 +70,10 @@
 :root[data-theme=dark] .glass-segmented-fill { background: rgb(30 126 64 / .94); }
 :root[data-theme=dark] .glass-segmented-thumb.material-host { --liquid-glass-tint: rgb(255 255 255 / calc(var(--glass-material-fill,1) * .025)); }
 .glass-segmented-viewport > button { flex: 1 0 auto; min-width: 65px; position: relative; z-index: 1; border: 0; border-radius: 14px; background: transparent; padding: 4px 12px; color: var(--muted); font-size: 11px; font-weight: 450; white-space: nowrap; }
-.glass-segmented-viewport > button[aria-checked=true] { color: #f8fff9; font-weight: 650; }
+:root[data-theme] .glass-segmented-viewport > button[aria-checked=true] { color: #f8fff9; font-weight: 650; transition-property:box-shadow; }
+/* While optical assets are pending, the committed fill and caption remain
+   visible through a clear lens instead of an opaque fallback plate. */
+:root[data-theme] .glass-segmented-thumb > .liquid-glass-surface:is([data-glass-pending="true"],[data-glass-fallback="true"]) > .liquid-glass-tint { background:transparent; opacity:0; }
 :root:is([data-glass="off"],[data-reduce-transparency="true"],[data-contrast="high"]) .glass-segmented-thumb { visibility: hidden; }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) { .glass-segmented-thumb { visibility: hidden; } }
 @media (forced-colors: active) {
@@ -91,3 +94,6 @@
 .settings-shell .connection-section .setting-row { display: flex; flex-direction: column; align-items: stretch; padding: 16px 0; }
 .settings-shell .settings-error, .settings-shell .settings-notice { border-radius: 14px; font-size: 12px; padding: 14px 18px; }
 @media (prefers-contrast: more) { .settings-shell .settings-group-card { background: white; border-color: currentColor; } :root[data-theme=dark] .settings-shell .settings-group-card { background: #17212b; } }
+
+.shortcut-recorder { display: grid; gap: 5px; }.shortcut-recorder input { cursor: pointer; text-align: center; }.shortcut-recorder small { font-size: 10px; color: #b74f5a; }
+.setting-shortcut-hint kbd { font: inherit; padding: 1px 5px; border: 1px solid var(--line); border-radius: 5px; }

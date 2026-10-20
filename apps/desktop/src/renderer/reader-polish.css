@@ -8,33 +8,6 @@
 .tab-agent-indicator { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--accent); font-size: 10px; }
 .tab-agent-indicator::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .tab[data-agent-phase=editing] { box-shadow: inset 0 -2px color-mix(in srgb, var(--accent) 45%, transparent); }
-:root[data-theme] .selection-tool-icons.navigation-capsule { position: relative; isolation: isolate; overflow: visible; background: transparent; backdrop-filter: none; border: 1px solid transparent; color: var(--navigation-ink); box-shadow: 0 4px 16px rgb(0 0 0 / .16); }
-.selection-tool-icons.navigation-capsule > :not(.navigation-glass) { position: relative; z-index: 1; }
-.selection-tool-icons .navigation-glass { border-radius: inherit; }
-.selection-tool-icons .icon-button { flex-shrink: 0; }
-:root[data-theme] .selection-tool-icons.navigation-capsule .icon-button { color: inherit; }
-.selection-tool-row { display: flex; align-items: center; gap: 2px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
-.selection-tool-row::-webkit-scrollbar { display: none; }
-/* Reuse navigation layer fades and delegated material springs. Geometry and
-   hit targets stay tied to the selection while only the glass deforms. */
-:root .selection-tools[data-motion-surface="selection"][data-motion-phase] { opacity:1; translate: none; scale: 1; --selection-glass-hidden: 0; }
-:root .selection-tools[data-motion-surface="selection"]:is([data-motion-phase="enter"],[data-motion-phase="exit"]) { --selection-glass-hidden: 1; }
-.selection-tools[data-motion-phase] .selection-tool-icons > .navigation-glass { transform: translateY(calc(var(--selection-glass-hidden,0) * 5px)) scale(calc((1 - var(--selection-glass-hidden,0) * .06) * var(--glass-material-selection-scale-x,1)),calc(1 - var(--selection-glass-hidden,0) * .12)); transition: transform var(--motion-duration,300ms) var(--ease-spring); }
-.selection-tools[data-motion-phase] .selection-tool-row { opacity:1; }
-.selection-tools[data-motion-phase="exit"] .selection-tool-row { opacity:0; transition:opacity var(--motion-duration,150ms) var(--ease-out); }
-/* Buttons are usable with the initial CSS tint. Optical PNGs and native
-   backdrop samples enhance the material asynchronously after it appears. */
-.selection-tool-icons .icon-button:not(:disabled):hover { color:var(--navigation-ink); background:color-mix(in srgb,var(--navigation-ink) 13%,transparent); opacity:1; }
-.selection-tool-row { filter:none; text-shadow:none; }
-.selection-tool-row svg { filter:none; opacity:1; }
-/* Position is sampled by one interruptible constrained spring. A CSS tween
-   would lag behind a growing sidebar and invalidate the actual hit target. */
-.selection-tools[data-selection-moving] { transition-property: opacity; }
-.selection-tool-icons.navigation-capsule { user-select:none; }
-:root:is([data-glass="off"],[data-contrast="high"],[data-reduce-transparency="true"])[data-theme] .selection-tool-icons.navigation-capsule { background:var(--navigation-solid); border-color:var(--navigation-edge); color:var(--glass-ink); }
-.selection-tool-icons.navigation-capsule > .navigation-glass[data-glass-fallback="true"] .navigation-glass-tint { background:var(--navigation-solid); opacity:1; }
-:root:is([data-motion="reduced"],[data-motion="off"]) .selection-tools .navigation-glass { transform: none; }
-@media (prefers-reduced-motion: reduce) { .selection-tools[data-motion-phase] .selection-tool-icons > .navigation-glass { transform: none; } }
 .native-office-content { padding: 0 !important; overflow: hidden !important; position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .native-office-surface { flex: 1; min-width: 0; min-height: 0; position: relative; }
 .native-office-formula-host { padding-top: 76px; flex-shrink: 0; }

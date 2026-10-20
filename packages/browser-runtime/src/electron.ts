@@ -3,9 +3,10 @@ import type { Actor, BrowserRequest, BrowserRuntime, ReadingContext, Rect } from
 import { normalizeWebAddress, NAVIGATION_EDGE_REVEAL_PX, ViewerError } from '../../contracts/src/index';
 import type { ViewerCore } from '../../document-core/src/index';
 import { randomUUID } from 'node:crypto';
+import { matchesSelectionShortcut } from '../../contracts/src/selection-shortcut';
 
 interface BrowserEntry { view: WebContentsView; navigationId: string; layoutRevision: number; owner: BrowserWindow; visible: boolean; injecting: boolean; semanticAgent?:boolean; actor: Actor; sourceRevision: number; sourceSequence: number; sourceReady?: boolean; sourceClock?: number; deviceScaleFactor?: number; scrollAt: number; scrollX: number; scrollY: number; topHover?: boolean; sourceReading?: boolean; sourcePending?: { reason: string }; layoutBounds?: Rect }
-type BrowserSurfaceOptions = { preload?: string; backgroundLoading?(): 'lazy' | 'eager'; onSourceChanged?(owner: BrowserWindow, viewId: string): void };
+type BrowserSurfaceOptions = { preload?: string; backgroundLoading?(): 'lazy' | 'eager'; selectionShortcut?(): string | undefined; onSourceChanged?(owner: BrowserWindow, viewId: string): void };
 type PendingPage = { url: string; generation: number; deferred: boolean };
 import { readContextScript } from './context-script';
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -151,6 +152,9 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     wc.on('before-input-event', (event, input) => {
       if (!alive() || !entry.visible || entry.injecting) return;
       entry.actor = 'human'; this.core.activate(viewId, 'human');
+      if (input.type === 'keyDown' && matchesSelectionShortcut(this.surfaceOptions.selectionShortcut?.(), { key: input.key, ctrlKey: input.control, metaKey: input.meta, shiftKey: input.shift, altKey: input.alt, repeat: input.isAutoRepeat })) {
+        event.preventDefault(); entry.owner.webContents.send('agentviewer:toolbar', { action: 'selection-translate-request', viewId }); return;
+      }
       if (input.type === 'keyDown' && (input.control || input.meta) && input.key.toLowerCase() === 'l') {
         event.preventDefault(); entry.owner.webContents.send('agentviewer:toolbar', { action: 'focus-address-request', viewId });
       }

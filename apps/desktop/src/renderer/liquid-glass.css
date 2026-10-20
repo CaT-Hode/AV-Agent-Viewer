@@ -310,7 +310,6 @@
    Same frost, deeper shadow so they lift off the sheet. */
 :root[data-theme] :is(
   .workbench .reader-toolbar .floating-capsule,
-  .selection-tool-icons,
   .agent-capsule
 ) {
   position: relative;
@@ -339,7 +338,6 @@
 /* MENU — popovers and modals over live content. ~92% opaque so small text
    stays readable; the frost is a hint, not a window. */
 :root[data-theme] :is(
-  .translation-popover,
   .modal,
   .selection-input,
   .selection-error,
@@ -485,8 +483,7 @@
   .ai-drawer,
   .home-sidebar,
   .settings-nav,
-  .modal,
-  .translation-popover
+  .modal
 ) :is(
   .location-chip,
   .context-summary,
@@ -528,10 +525,7 @@
 :root[data-theme] :is(.settings-nav, .modal) :is(.connection-card) {
   box-shadow: var(--glass-inset-shade), var(--glass-inset-cast);
 }
-:root[data-theme] .translation-popover .translation-card {
-  background: transparent;
-  box-shadow: none;
-}
+
 
 /* Buttons inside glass panes never blur either — they get a sheen lift. */
 :root[data-theme] :is(
@@ -703,7 +697,6 @@ html.native-toolbar-root .app-tooltip {
   padding: 5px 9px;
   max-width: 250px;
 }
-html.native-toolbar-root .selection-tool-icons { background: var(--glass-menu-fill); }
 
 /* The window can sit over a dark or a light page; swap the triplet to match. */
 html.native-toolbar-root[data-backdrop="light"] {
@@ -767,7 +760,6 @@ html.native-toolbar-root[data-backdrop="dark"] {
 :root[data-glass="off"] .workbench .reader-toolbar .floating-capsule,
 :root[data-glass="off"] .selection-tool-icons,
 :root[data-glass="off"] .agent-capsule,
-:root[data-glass="off"] .translation-popover,
 :root[data-glass="off"] .modal,
 :root[data-glass="off"] .toast {
   -webkit-backdrop-filter: none;
@@ -778,10 +770,10 @@ html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) .native-
 html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glass-fill: var(--glass-panel); }
 
 /* Set to look like the real thing rather than a semi-transparent box. */
-:root[data-glass="off"] :is(.floating-capsule, .translation-popover, .agent-capsule, .toast) {
+:root[data-glass="off"] :is(.floating-capsule, .agent-capsule, .toast) {
   background: var(--glass-panel);
 }
-:root[data-theme="dark"][data-glass="off"] :is(.floating-capsule, .translation-popover, .agent-capsule) {
+:root[data-theme="dark"][data-glass="off"] :is(.floating-capsule, .agent-capsule) {
   background: var(--glass-panel);
 }
 
@@ -870,6 +862,9 @@ html.native-toolbar-root:is([data-glass="off"], [data-contrast="high"]) { --glas
   background: var(--glass-scroll-thumb-hover);
   background-clip: padding-box;
   border: 2px solid transparent;
+}
+:root[data-theme] [data-scroll-animating="true"]::-webkit-scrollbar-thumb {
+  background-color:var(--glass-scroll-thumb-hover);
 }
 :root[data-theme] ::-webkit-scrollbar-thumb:active {
   background: rgb(var(--glass-primary));

@@ -2,7 +2,8 @@ import { MotionPresence, usePresence } from './MotionPresence';
 import { LiquidGlassSurface } from './LiquidGlassSurface';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { NavigationGlass } from './NavigationGlass';
-import { clippedReaderViewport, placeSelectionToolbar, readSelectionNavigationBounds, readSelectionPanelBounds, SELECTION_NAVIGATION_EVENT, type SelectionNavigationBounds } from '../lib/selection-position';
+import { clippedReaderViewport, placeSelectionToolbar, placeSelectionToolbarWithYield, readSelectionNavigationBounds, readSelectionPanelBounds, SELECTION_NAVIGATION_EVENT, type SelectionNavigationBounds } from '../lib/selection-position';
+import { FLOATING_HITBOX_EVENT } from '../lib/floating-hitboxes';
 import { useSelectionToolbarMotion } from '../lib/use-selection-toolbar-motion';
 import type { NavigationBackdropSample, NavigationBounds } from '../lib/navigation-optics';
 import { AlignCenter, AlignLeft, Bold, Code, Copy, FilePlus2, Heading2, Highlighter, Italic, Languages, MessageSquare, MoveHorizontal, Pencil, Quote, Send, Sparkles, Strikethrough, Underline, X } from 'lucide-react';
@@ -11,11 +12,23 @@ import { applyAppearance } from '../lib/appearance';
 import type { ReadingSnapshot, ReadingContext, SelectionContext, Rect } from '../../../../../packages/contracts/src/index';
 import type { SettingsSnapshot } from '../../../../../packages/settings/src/index';
 import { OFFICE_SELECTION_EVENTS, type OfficeSelectionToolsEvent } from '../lib/office-surface-selection';
-import { useGlassSpringValue } from '../lib/glass-elasticity';
-import { KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
+import { SELECTION_POPOVER_MOTION_BASE_MS } from '../lib/motion-policy';
 type Tool = { id: string; label: string; input: boolean };
 type State = { snapshot: ReadingSnapshot | SelectionContext; actions: Tool[] };
 const icons:Record<string,typeof Copy>={copy:Copy,citation:Quote,extract:FilePlus2,note:MessageSquare,highlight:Highlighter,underline:Underline,strike:Strikethrough,bold:Bold,italic:Italic,code:Code,replace:Pencil,heading:Heading2,'align-left':AlignLeft,'align-center':AlignCenter,'center-object':MoveHorizontal,translate:Languages,ask:Sparkles};
+function SelectionPanelGlass({ native, backdrop }: { native: boolean; backdrop: { image?: string; sample?: NavigationBackdropSample } }) {
+  const node=useRef<HTMLSpanElement>(null),published=useRef(''),[bounds,setBounds]=useState<NavigationBounds>();
+  useLayoutEffect(()=>{
+    const host=node.current?.parentElement;if(!native||!host)return;
+    const measure=()=>{
+      const box=host.getBoundingClientRect(),next={x:box.x,y:box.y,width:box.width,height:box.height},signature=JSON.stringify(next);
+      setBounds(old=>old&&JSON.stringify(old)===signature?old:next);
+      if(published.current!==signature){published.current=signature;void call('toolbar-panel',{expanded:true,bounds:next}).catch(()=>{});}
+    };
+    const observer=new ResizeObserver(measure);observer.observe(host);measure();return()=>observer.disconnect();
+  },[native,backdrop.sample]);
+  return <LiquidGlassSurface surfaceRef={node} variant="panel" effect="refractive" strength={.55} specularOpacity={.16} backdropImage={native?backdrop.image:undefined} backdropSample={native?backdrop.sample:undefined} bounds={bounds} />;
+}
 export function SelectionTools({native=false}:{native?:boolean}) {
   const [state,setState]=useState<State>(),[rect,setRect]=useState<Rect>(),[input,setInput]=useState<Tool>(),[value,setValue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [viewport,setViewport]=useState<Rect>(),[backdrop,setBackdrop]=useState<{image?:string;sample?:NavigationBackdropSample}>({}),[glassBounds,setGlassBounds]=useState<NavigationBounds>(),[surface,setSurface]=useState<'light'|'dark'>();
@@ -26,10 +39,10 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   const [opticsReady,setOpticsReady]=useState(false),[backdropReady,setBackdropReady]=useState(!native);
   const preferences=window.document.documentElement.dataset,sourceRequired=native&&preferences.glass!=='off'&&preferences.contrast!=='high'&&preferences.reduceTransparency!=='true';
   useEffect(()=>{if(!sourceRequired){setBackdropReady(true);return;}if(!backdrop.image){setBackdropReady(false);return;}if(backdropReady)return;let active=true;const image=new Image();image.src=backdrop.image;void image.decode().then(()=>{if(active)setBackdropReady(true);}).catch(()=>{});return()=>{active=false;};},[sourceRequired,backdrop.image,backdropReady]);
-  const sequence=useRef(0),toolbar=useRef<HTMLDivElement>(null),glass=useRef<HTMLDivElement>(null),identity=useRef(''),nativePresentation=useRef('');
+  const sequence=useRef(0),toolbar=useRef<HTMLDivElement>(null),glass=useRef<HTMLDivElement>(null),identity=useRef(''),nativePresentation=useRef(''),presentation=useRef('');
   const tracked=useRef<{viewId:string;revision:number;text:string;range?:Range;element?:Element}|undefined>(undefined);
   const engineSelection=useRef<{viewId:string;lease:string;state:State;rect:Rect;viewport:Rect}|undefined>(undefined);
-  const inputMotion=usePresence(!!input,{duration:160}),errorMotion=usePresence(!!error&&!input,{duration:150});
+  const inputMotion=usePresence(!!input,{duration:110}),errorMotion=usePresence(!!error&&!input,{duration:110});
   useLayoutEffect(()=>{
     if(native||!state||!rect){navigationBounds.current=undefined;return;}
     let frame=0;
@@ -54,8 +67,8 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     const read=()=>{const next=readSelectionPanelBounds(workbench);setPanelBounds(previous=>JSON.stringify(previous)===JSON.stringify(next)?previous:next);motionRefresh.current();};
     const measure=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(read);};
     const sizes=new ResizeObserver(read),changes=new MutationObserver(records=>{if(records.some(record=>record.type==='childList'))observe();motionRefresh.current();measure();});
-    const observe=()=>{sizes.disconnect();changes.disconnect();changes.observe(workbench,{childList:true,attributes:true,attributeFilter:['style']});for(const pane of workbench.querySelectorAll(':scope > .floating-side-panel,:scope > .activity-rail,:scope > .ai-rail')){sizes.observe(pane);changes.observe(pane,{attributes:true,attributeFilter:['class','style','data-motion-phase']});}};
-    observe();read();return()=>{cancelAnimationFrame(frame);sizes.disconnect();changes.disconnect();};
+    const observe=()=>{sizes.disconnect();changes.disconnect();changes.observe(workbench,{childList:true,attributes:true,attributeFilter:['style']});for(const pane of workbench.querySelectorAll(':scope > .floating-side-panel,:scope > .activity-rail,:scope > .ai-rail,:scope > .selection-translation-bubble')){sizes.observe(pane);changes.observe(pane,{attributes:true,attributeFilter:['class','style','data-motion-phase']});}};
+    observe();read();window.addEventListener(FLOATING_HITBOX_EVENT,measure);return()=>{cancelAnimationFrame(frame);sizes.disconnect();changes.disconnect();window.removeEventListener(FLOATING_HITBOX_EVENT,measure);};
   },[native,!!state]);
   const clear=(notifyEngine=true)=>{const engine=engineSelection.current;engineSelection.current=undefined;sequence.current++;identity.current='';tracked.current=undefined;setState(undefined);setRect(undefined);setInput(undefined);setError('');if(engine&&notifyEngine)window.dispatchEvent(new CustomEvent(OFFICE_SELECTION_EVENTS.dismiss,{detail:{viewId:engine.viewId,lease:engine.lease}}));if(native)void call('toolbar-action',{action:'dismiss'});};
   const geometry=useCallback((bounds:NavigationBounds)=>{setGlassBounds(old=>old&&['x','y','width','height'].every(key=>Math.abs(old[key as keyof NavigationBounds]-bounds[key as keyof NavigationBounds])<.125)?old:bounds);if(native)void call('toolbar-action',{action:'geometry',capsuleBounds:bounds}).catch(()=>{});},[native]);
@@ -104,7 +117,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
       }catch(cause){if(seq===sequence.current)setError(String(cause));}
     };
     const engineReady=(event:Event)=>{const data=(event as CustomEvent<OfficeSelectionToolsEvent>).detail;if(!data)return;if(!data.visible){if(engineSelection.current?.viewId===data.viewId)clear(false);return;}if(!data.state||!data.rect||!data.viewport)return;const same=engineSelection.current?.viewId===data.viewId&&engineSelection.current.lease===data.lease;engineSelection.current={viewId:data.viewId,lease:data.lease,state:data.state,rect:data.rect,viewport:data.viewport};tracked.current=undefined;setRect(data.rect);setViewport(data.viewport);setState(data.state);if(!same){sequence.current++;identity.current=data.lease;setInput(undefined);setError('');}};
-    const dismiss=(event:Event)=>{if(toolbar.current?.contains(event.target as Node)||(event.target instanceof Element&&event.target.closest('.reader-panel-resize,.activity-rail,.ai-rail')))return;clear();};
+    const dismiss=(event:Event)=>{if(toolbar.current?.contains(event.target as Node)||(event.target instanceof Element&&event.target.closest('.reader-panel-resize,.activity-rail,.ai-rail,.selection-translation-bubble')))return;clear();};
     const preserveChromeSelection=(event:MouseEvent)=>{if((tracked.current||engineSelection.current)&&event.target instanceof Element&&event.target.closest('.activity-rail,.ai-rail'))event.preventDefault();};
     let frame=0;
     const follow=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;const target=tracked.current;if(!target||!target.range&&!target.element)return;const node=target.range?.startContainer??target.element;if(!node?.isConnected){clear();return;}const b=target.range?.getBoundingClientRect()??target.element?.getBoundingClientRect();if(!b)return;const next={x:b.x,y:b.y,width:b.width,height:b.height};setRect(next);if(target.element){const clip=clippedReaderViewport(target.element);if(clip)setViewport(clip);}window.dispatchEvent(new CustomEvent('agentviewer:selection-position',{detail:{viewId:target.viewId,revision:target.revision,text:target.text,rect:next}}));});};
@@ -122,20 +135,27 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     if(!state||busy)return;if(tool.input&&!submit){setError('');setInput(input?.id===tool.id?undefined:tool);setValue(tool.id==='replace'?state.snapshot.context.selection.text:'');return;}
     const generation=sequence.current,requestId=crypto.randomUUID();
     setBusy(true);setError('');try{
-      if (!native) window.dispatchEvent(new CustomEvent('agentviewer:selection-start', { detail: { action: tool.id, requestId, snapshot: state.snapshot } }));
+      const started = { action: tool.id, requestId, snapshot: state.snapshot };
+      if (native) await call('toolbar-action',{action:'started',detail:started});
+      else window.dispatchEvent(new CustomEvent('agentviewer:selection-start', { detail: started }));
       const result=await call<any>('selection-action',{...('kind' in state.snapshot && state.snapshot.kind==='selection-context'?{selectionContextId:state.snapshot.id}:{snapshotId:state.snapshot.id}),action:tool.id,value:tool.input?value:undefined,idempotencyKey:requestId});
       if(result.text&&(tool.id==='copy'||tool.id==='citation'))await navigator.clipboard.writeText(result.text);
       const detail={action:tool.id,requestId,result,snapshot:state.snapshot};if(native)await call('toolbar-action',{action:'result',detail});else window.dispatchEvent(new CustomEvent('agentviewer:selection-result',{detail}));
       if(sequence.current===generation)clear();
-    }catch(e){if(!native)window.dispatchEvent(new CustomEvent('agentviewer:selection-failed',{detail:{action:tool.id,requestId,snapshot:state.snapshot}}));if(sequence.current===generation)setError(String(e));}finally{setBusy(false);}
+    }catch(e){const detail={action:tool.id,requestId,snapshot:state.snapshot,error:String(e)};if(native)void call('toolbar-action',{action:'failed',detail}).catch(()=>{});else window.dispatchEvent(new CustomEvent('agentviewer:selection-failed',{detail}));if(sequence.current===generation)setError(String(e));}finally{setBusy(false);}
   };
   const width=Math.min(600,((state?.actions.length??0)+1)*32+16),readingViewport=viewport??{x:0,y:64,width:innerWidth,height:innerHeight-64};
   const safeLeft=Math.max(0,readingViewport.x),safeTop=Math.max(0,readingViewport.y),safeViewport={x:safeLeft,y:safeTop,width:Math.max(0,Math.min(innerWidth,readingViewport.x+readingViewport.width)-safeLeft),height:Math.max(0,Math.min(innerHeight,readingViewport.y+readingViewport.height)-safeTop)};
   const position=rect&&placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(navigationBounds.current?[navigationBounds.current]:[]),...panelBounds]);
+  useLayoutEffect(()=>{
+    // Yield callbacks may update other React surfaces. Commit them after render.
+    if(!native&&state&&rect)placeSelectionToolbarWithYield(rect,safeViewport,{width,height:46},10,[...(navigationBounds.current?[navigationBounds.current]:[]),...panelBounds]);
+  },[native,state,rect,width,safeViewport.x,safeViewport.y,safeViewport.width,safeViewport.height,panelBounds,position?.x,position?.y,position?.width]);
   canPlaceAroundNavigation.current=bounds=>!!rect&&!!placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(bounds?[bounds]:[]),...panelBounds]);
   navigationPlacement.current=!!position;
-  const materialWidth=useGlassSpringValue(width,KUBE_GLASS_SPRINGS.lensShape,!state);
+  if(state)presentation.current=state.snapshot.id;
   const show=!!state&&!!rect&&(native||!!position),left=native?8:undefined,top=native?8:undefined;
+  const nativePanelWidth=native&&(inputMotion.present||errorMotion.present)?Math.max(320,width):undefined;
   const refreshMotion=useSelectionToolbarMotion(toolbar,!native&&show,identity.current,()=>{
     const element=tracked.current?.element,liveClip=element?.isConnected?clippedReaderViewport(element):undefined,clip=liveClip??safeViewport;
     // Scroll and a running spring can share a frame before React commits the
@@ -151,9 +171,9 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   // A now-impossible placement must disappear immediately, rather than leave
   // MotionPresence's old retained hit target underneath an expanding sidebar.
   if(!native&&state&&rect&&!position)return null;
-  return <MotionPresence show={show} surface="selection" duration={300} keyboardImmediate>{state&&rect&&<div ref={toolbar} className="selection-tools" data-selection-snapshot={state.snapshot.id} data-selection-material-ready={opticsReady&&backdropReady} data-paper={!native&&['pdf','docx','pptx','html'].includes(state.snapshot.document.format)||undefined} role="toolbar" aria-label="选区工具" style={{left,top,maxWidth:native?'calc(100vw - 16px)':position?.width ?? width}}>
-    <div ref={glass} data-navigation-surface={surface} className="selection-tool-icons material-host floating-capsule navigation-capsule" onMouseDown={event=>event.preventDefault()} style={{'--navigation-hide-progress':'var(--selection-glass-hidden,0)','--navigation-hide-duration':'var(--motion-duration,300ms)','--navigation-motion-easing':'var(--ease-spring)','--glass-material-selection-scale-x':Math.min(1,Math.max(.9,materialWidth/width)),width,maxWidth:'100%'} as CSSProperties}><NavigationGlass key={native?width:position?.width??width} softness="selection" onReady={setOpticsReady} backdropImage={backdrop.image} backdropSample={backdrop.sample} capsuleBounds={glassBounds} onSurface={setSurface} /><div className="selection-tool-row">{state.actions.map(tool=>{const Icon=icons[tool.id]??Pencil;return <button key={tool.id} className={'icon-button '+(input?.id===tool.id?'selected':'')} aria-label={tool.label} aria-expanded={tool.input?input?.id===tool.id:undefined} aria-controls={tool.input?'selection-editor':undefined} title={tool.label} disabled={busy} onMouseDown={e=>e.preventDefault()} onClick={()=>void run(tool)}><Icon size={16}/></button>;})}<button className="icon-button" title="关闭选区工具" aria-label="关闭选区工具" onMouseDown={e=>e.preventDefault()} onClick={()=>clear()}><X size={14}/></button></div></div>
-    <MotionPresence show={!!input} duration={160}>{input&&<form id="selection-editor" className="selection-input material-host" onSubmit={e=>{e.preventDefault();void run(input,true);}}><LiquidGlassSurface variant="panel" fallback={native} /><label>{input.label}<textarea autoFocus aria-label={input.label} value={value} onChange={e=>setValue(e.target.value)}/></label><button className="button primary" disabled={busy||!value.trim()}><Send size={14}/>{busy?'处理中…':'应用'}</button>{error&&<p role="alert" className="selection-inline-error">{error}</p>}</form>}</MotionPresence>
-    <MotionPresence show={!!error&&!input} duration={150}>{error&&!input&&<p className="selection-error material-host" role="alert"><LiquidGlassSurface variant="panel" fallback={native} />{error}</p>}</MotionPresence>
+  return <MotionPresence show={show} surface="selection" duration={SELECTION_POPOVER_MOTION_BASE_MS} identity={presentation.current} keyboardImmediate>{state&&rect&&<div ref={toolbar} className="selection-tools" data-selection-snapshot={state.snapshot.id} data-selection-material-ready={opticsReady&&backdropReady} data-paper={!native&&['pdf','docx','pptx','html'].includes(state.snapshot.document.format)||undefined} role="toolbar" aria-label="选区工具" style={{left,top,width:nativePanelWidth,maxWidth:nativePanelWidth?'none':native?'calc(100vw - 16px)':position?.width ?? width}}>
+    <div ref={glass} data-navigation-surface={surface} className="selection-tool-icons material-host floating-capsule navigation-capsule" onMouseDown={event=>event.preventDefault()} style={{width,maxWidth:'100%'} as CSSProperties}><NavigationGlass softness="selection" onReady={setOpticsReady} backdropImage={backdrop.image} backdropSample={backdrop.sample} capsuleBounds={glassBounds} onSurface={setSurface} /><div className="selection-tool-row">{state.actions.map(tool=>{const Icon=icons[tool.id]??Pencil;return <button key={tool.id} className={'icon-button '+(input?.id===tool.id?'selected':'')} aria-label={tool.label} aria-expanded={tool.input?input?.id===tool.id:undefined} aria-controls={tool.input?'selection-editor':undefined} title={tool.label} disabled={busy} onMouseDown={e=>e.preventDefault()} onClick={()=>void run(tool)}><Icon size={16}/></button>;})}<button className="icon-button" title="关闭选区工具" aria-label="关闭选区工具" onMouseDown={e=>e.preventDefault()} onClick={()=>clear()}><X size={14}/></button></div></div>
+    <MotionPresence show={!!input} duration={110}>{input&&<form id="selection-editor" className="selection-input material-host" onSubmit={e=>{e.preventDefault();void run(input,true);}}><SelectionPanelGlass native={native} backdrop={backdrop}/><label>{input.label}<textarea autoFocus aria-label={input.label} value={value} onChange={e=>setValue(e.target.value)}/></label><button className="button primary" disabled={busy||!value.trim()}><Send size={14}/>{busy?'处理中…':'应用'}</button>{error&&<p role="alert" className="selection-inline-error">{error}</p>}</form>}</MotionPresence>
+    <MotionPresence show={!!error&&!input} duration={110}>{error&&!input&&<p className="selection-error material-host" role="alert"><SelectionPanelGlass native={native} backdrop={backdrop}/>{error}</p>}</MotionPresence>
   </div>}</MotionPresence>;
 }

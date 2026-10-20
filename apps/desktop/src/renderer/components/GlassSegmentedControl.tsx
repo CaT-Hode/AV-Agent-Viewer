@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { GlassControlIndicator } from './GlassControlIndicator';
 import { useGlassElasticity, useGlassSpringValue } from '../lib/glass-elasticity';
 import { KUBE_GLASS_SPRINGS } from '../lib/glass-presets';
-import { createGlassControlDrag, clampGlassControl, glassPointerCoordinate, glassSelectionFillOpacity, nearestGlassOption, type GlassOptionBounds } from '../lib/glass-control-drag';
+import { createGlassControlDrag, clampGlassControl, glassPointerCoordinate, nearestGlassOption, type GlassOptionBounds } from '../lib/glass-control-drag';
 import { SETTINGS_CONTROL_SCALE } from './GlassControls';
 import { animatedMotion, resolveMotionMode, useMotionSnapshot } from '../lib/motion';
 
@@ -18,11 +18,9 @@ export function GlassSegmentedControl({ label, value, options, onChange, disable
   const elastic = useGlassElasticity<HTMLSpanElement>({ preset: 'slider', deform: false, disabled: unavailable });
   const gesture = useRef(createGlassControlDrag()), grip = useRef<{ grab: number; width: number; origin: number; clientX: number; owner: HTMLDivElement; id: number } | undefined>(undefined);
   const suppress = useRef(false), callbacks = useRef({ value, options, onChange, disabled }); callbacks.current = { value, options, onChange, disabled };
-  const selectedX = useGlassSpringValue(geometry.x, KUBE_GLASS_SPRINGS.switchPosition);
   const lensX = useGlassSpringValue(dragging?.x ?? geometry.x, KUBE_GLASS_SPRINGS.switchPosition, dragging !== undefined);
   const expansion = useGlassSpringValue(pressed && animatedMotion(motion) ? 1.45 : 1, KUBE_GLASS_SPRINGS.thumbScale);
   const widthRatio = useGlassSpringValue((dragging?.width ?? geometry.width) / geometry.width, KUBE_GLASS_SPRINGS.thumbScale);
-  const fillOpacity = useGlassSpringValue(dragging ? glassSelectionFillOpacity(dragging.distance, geometry.width) : 1, KUBE_GLASS_SPRINGS.fill, dragging !== undefined);
   const optionKey = options.map(option => [option.value, option.label, !!option.disabled].join(':')).join('|');
   const getOptions = (): GlassOptionBounds[] => [...(viewport.current?.querySelectorAll<HTMLButtonElement>('[role=radio]') ?? [])].map(button => ({ value: button.dataset.value!, x: button.offsetLeft, width: button.offsetWidth, disabled: button.disabled }));
   const coordinate = (clientX: number) => { const root = viewport.current!; const box = root.getBoundingClientRect(); return glassPointerCoordinate(clientX, { left: box.left, width: box.width, clientWidth: root.clientWidth, scrollLeft: root.scrollLeft }); };
@@ -59,7 +57,7 @@ export function GlassSegmentedControl({ label, value, options, onChange, disable
   };
   const choose = (next: string) => { const current = callbacks.current, option = current.options.find(item => item.value === next); if (!current.disabled && option && !option.disabled && next !== current.value) current.onChange(next); };
   const focusValue = options.some(option => option.value === value && !option.disabled) ? value : options.find(option => !option.disabled)?.value;
-  return <div ref={track} className="glass-segmented" role="radiogroup" aria-label={label} aria-disabled={unavailable || undefined} data-glass-control-owner="segmented" style={{ '--control-fill-opacity': clampGlassControl(fillOpacity, 0, 1) } as CSSProperties}
+  return <div ref={track} className="glass-segmented" role="radiogroup" aria-label={label} aria-disabled={unavailable || undefined} data-glass-control-owner="segmented"
     onPointerDown={event => {
       if (unavailable || event.button !== 0 || event.isPrimary === false || !viewport.current || (event.target instanceof Element && event.target.closest('[role="radio"]:disabled'))) return;
       const contentX = coordinate(event.clientX);
@@ -86,9 +84,9 @@ export function GlassSegmentedControl({ label, value, options, onChange, disable
     onClickCapture={event => { if (suppress.current) { suppress.current = false; event.preventDefault(); event.stopPropagation(); } }}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) cancel(); }}>
     <div ref={viewport} className="glass-segmented-viewport" onScroll={() => { const root = viewport.current!; setGeometry(old => old.scroll === root.scrollLeft ? old : { ...old, scroll: root.scrollLeft }); if (grip.current) updateDrag(grip.current.clientX, grip.current.id); }}>
-      <span className="glass-segmented-fill" style={{ width: geometry.width, transform: `translateX(${selectedX}px)`, opacity: fillOpacity }} aria-hidden="true" />
+      {/* Fill and selected ink change together; only the clear lens travels. */}
+      <span className="glass-segmented-fill" style={{ width: geometry.width, transform: `translateX(${geometry.x}px)` }} aria-hidden="true" />
       {options.map((option, index) => <button role="radio" type="button" disabled={disabled || option.disabled} data-value={option.value} key={option.value} aria-checked={value === option.value} tabIndex={focusValue === option.value ? 0 : -1} title={option.reason ?? option.label}
-        style={value === option.value && fillOpacity < .9999 ? { color: 'color-mix(in srgb,#f8fff9 calc(var(--control-fill-opacity,1) * 100%),var(--text))' } : undefined}
         onClick={() => choose(option.value)} onKeyDown={event => {
         elastic.bindings.onKeyDown(event);
         const enabled = options.map((item, itemIndex) => item.disabled ? -1 : itemIndex).filter(itemIndex => itemIndex >= 0), position = enabled.indexOf(index);

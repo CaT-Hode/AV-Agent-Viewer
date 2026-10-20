@@ -8,6 +8,8 @@
   --reader-capsule-tint: rgb(255 255 255 / .18);
   --navigation-solid: var(--glass-panel);
   --navigation-ink: var(--glass-ink);
+  --navigation-selected-fill:#253746;
+  --navigation-selected-ink:#ffffff;
   --navigation-edge: var(--glass-edge);
   --navigation-shadow: var(--glass-shadow);
 }
@@ -16,12 +18,22 @@
   --reader-capsule-tint: rgb(9 13 18 / .30);
   --navigation-saturation: 1;
   --navigation-ink: color-mix(in srgb, var(--glass-ink) 40%, white);
+  --navigation-selected-fill:#eef4f8;
+  --navigation-selected-ink:#172b3a;
 }
 .navigation-capsule[data-navigation-surface="light"] {
   --navigation-ink: #253746;
+  --navigation-tint:rgb(255 255 255 / .18);
+  --navigation-solid:#eef3f7;
+  --navigation-selected-fill:#253746;
+  --navigation-selected-ink:#ffffff;
 }
 .navigation-capsule[data-navigation-surface="dark"] {
   --navigation-ink: #f4f6f8;
+  --navigation-tint:rgb(9 13 18 / .30);
+  --navigation-solid:#1e2934;
+  --navigation-selected-fill:#eef4f8;
+  --navigation-selected-ink:#172b3a;
 }
 
 :root[data-theme] .workbench .reader-toolbar .floating-capsule.navigation-capsule {

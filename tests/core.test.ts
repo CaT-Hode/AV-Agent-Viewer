@@ -25,6 +25,7 @@ import { nativeOfficeReadMessages, updateNativeOfficeReadErrors } from '../apps/
 import { flushOfficeSurfaceDraft } from '../apps/desktop/src/renderer/lib/office-surface-draft';
 import { DocumentTranslationService, translateDocumentBytes } from '../packages/translation/src/index';
 import { SettingsService } from '../packages/settings/src/index';
+import { DEFAULT_SELECTION_SHORTCUT, matchesSelectionShortcut, normalizeSelectionShortcut, selectionShortcutFromKey } from '../packages/contracts/src/selection-shortcut';
 import { mergeTextDraft, textReplacement } from '../apps/desktop/src/renderer/lib/text-drafts';
 import { markdownLinks, replaceMarkdownLinks } from '../packages/markdown/src/links';
 import { MarkdownWorkspace } from '../packages/markdown/src/workspace';
@@ -628,11 +629,28 @@ test('设置验证、持久化和版本号', async () => {
   const { directory } = await setup(), path = join(directory, 'settings.json');
   const settings = new SettingsService(path); await settings.load();
   assert.equal(settings.get('translation.selectionDelayMs'), 500);
+  assert.equal(settings.get('translation.selectionShortcutEnabled'), true);
+  assert.equal(settings.get('translation.selectionShortcut'), DEFAULT_SELECTION_SHORTCUT);
+  assert.equal(settings.get('translation.capsuleGrowthRatio'), 1);
+  await assert.rejects(settings.set('translation.capsuleGrowthRatio',.05));await assert.rejects(settings.set('translation.capsuleGrowthRatio',1.1));
+  assert.equal(normalizeSelectionShortcut('Shift+Ctrl+y'), DEFAULT_SELECTION_SHORTCUT);
+  for (const invalid of ['Y','Shift+Y','Ctrl+Y','Ctrl+S','Ctrl+Shift+S','Meta+S','Alt+F4','Ctrl+Ctrl+Y','Ctrl+Shift+Unknown','Ctrl+Meta+Y']) await assert.rejects(settings.set('translation.selectionShortcut', invalid));
+  const key = { key:'y',ctrlKey:true,shiftKey:true };
+  assert(matchesSelectionShortcut(DEFAULT_SELECTION_SHORTCUT,key));
+  assert(!matchesSelectionShortcut(DEFAULT_SELECTION_SHORTCUT,{...key,repeat:true}));
+  assert(!matchesSelectionShortcut(DEFAULT_SELECTION_SHORTCUT,{...key,isComposing:true}));
+  assert(!matchesSelectionShortcut(DEFAULT_SELECTION_SHORTCUT,{...key,altKey:true}));
+  assert(!matchesSelectionShortcut(DEFAULT_SELECTION_SHORTCUT,{...key,getModifierState:()=>true}));
+  assert.equal(selectionShortcutFromKey({key:'F6',ctrlKey:true,altKey:true}),'Ctrl+Alt+F6');
   await assert.rejects(settings.set('translation.selectionDelayMs', 50));
   await settings.set('translation.selectionDelayMs', 700);
+  await settings.set('translation.selectionShortcut','Alt+Ctrl+J');
+  await settings.set('translation.selectionShortcutEnabled',false);
   const restored = new SettingsService(path); await restored.load();
   assert.equal(restored.get('translation.selectionDelayMs'), 700);
-  assert.equal(restored.snapshot().revision, 1);
+  assert.equal(restored.get('translation.selectionShortcut'),'Ctrl+Alt+J');
+  assert.equal(restored.get('translation.selectionShortcutEnabled'),false);
+  assert.equal(restored.snapshot().revision, 3);
 });
 
 test('结构译文生成独立文件，原始字节与公式保持不变', async () => {

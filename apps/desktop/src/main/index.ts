@@ -201,6 +201,7 @@ void app.whenReady().then(async () => {
   });
   core.registerNativeOfficeDriver(office);
   core.browser = new ElectronBrowserRuntime(core, id => { const win = windows.get(id); if (!win) throw new Error('窗口不存在'); return win; }, () => [endpoint, process.env.AGENTVIEWER_VITE_URL].filter((value): value is string => !!value), () => settings.get('agent.pointer') === true, {
+    selectionShortcut: () => settings.get('translation.selectionShortcutEnabled') === true ? String(settings.get('translation.selectionShortcut')) : undefined,
     preload: join(__dirname, 'browser-preload.cjs'), backgroundLoading: () => settings.get('web.backgroundLoading') === 'eager' ? 'eager' : 'lazy', onSourceChanged: (owner, viewId) => { toolbarHost.sourceChanged(owner, viewId); selectionHost.sourceChanged(owner, viewId); agentHost.sourceChanged(owner, viewId); aiResultHost.sourceChanged(owner, viewId); readerPanelHost.sourceChanged(owner, viewId); },
   });
   pdfContent = new PdfContentService(core, root, directory);
@@ -326,7 +327,6 @@ void app.whenReady().then(async () => {
   });
   core.extensions.set('selection-ai', async ({action, snapshot, frozenSource, value, idempotencyKey}) => {
     if (action === 'translate') {
-      if (snapshot.document.format === 'web') { const current = await core.context(snapshot.context.viewId); if (current.selection.text !== snapshot.context.selection.text) throw new Error('网页选区已改变，请重新选择。'); return applyWebTranslation(snapshot.context.viewId, 'selection', String(settings.get('translation.targetLanguage'))); }
       const view = core.getView(snapshot.context.viewId), owner = windows.get(view.windowId);
       if (!owner || owner.isDestroyed()) throw new ViewerError('TARGET_NOT_FOUND', '选区所属阅读窗口已关闭。');
       return selectionTranslations.translateSnapshot(String(owner.webContents.id), { requestId: typeof idempotencyKey === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(idempotencyKey) ? idempotencyKey : undefined, viewId: view.id, targetLanguage: String(settings.get('translation.targetLanguage')) }, snapshot.context);
@@ -367,6 +367,7 @@ void app.whenReady().then(async () => {
     const owner = BrowserWindow.fromWebContents(event.sender); if (!owner || ![...windows.values(), settingsWindow].includes(owner)) throw new Error('AUTH_SCOPE_DENIED');
     const { method, args } = request;
     if (method === 'reader-panel-layout') { const viewId = typeof args.viewId === 'string' ? args.viewId : undefined; if (viewId && core.getView(viewId).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.update(owner, viewId, args.panels as never); return {}; }
+    if (method === 'translation-popover-layout') { const view = core.getView(String(args.viewId)); if (view.windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.updateTranslation(owner, view.id, args.visible === true ? args.bounds as never : undefined); return {}; }
     if (method === 'settings-read') return { definitions: settingsRegistry.map(definition => ({ ...definition, ...settingsAvailability(definition.id) })), snapshot: settings.snapshot() };
     if (method === 'settings-set') { if (!settingsAvailability(String(args.id)).available) throw new Error('此设置依赖尚未接入的引擎。'); const snapshot = await settings.set(String(args.id), args.value as string | number | boolean); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); if (['appearance.glass','appearance.reduceTransparency','appearance.highContrast'].includes(String(args.id))) readerPanelHost.preferencesChanged(); if (args.id === 'appearance.theme' || args.id === 'appearance.documentBackground' || args.id === 'appearance.documentPaperColor') await syncOfficeAppearance(); return snapshot; }
     if (method === 'settings-undo') { const snapshot = await settings.undo(); for (const win of [...windows.values(), settingsWindow]) if (win && !win.isDestroyed()) win.webContents.send('agentviewer:settings-changed', snapshot); readerPanelHost.preferencesChanged(); await syncOfficeAppearance(); return snapshot; }

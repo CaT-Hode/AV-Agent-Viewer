@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_DOCUMENT_PAPER_COLOR, normalizeDocumentPaperColor } from './document-paper';
+import { DEFAULT_SELECTION_SHORTCUT, normalizeSelectionShortcut } from '../../contracts/src/selection-shortcut';
 
 export type SettingValue = string | number | boolean;
 export type SettingDefinition = { id: string; group: string; section: string; label: string; description?: string; type: 'boolean' | 'number' | 'select' | 'text'; defaultValue: SettingValue; options?: string[]; min?: number; max?: number; effect?: 'immediate' | 'next-task' | 'reopen' | 'restart'; available?: boolean; unavailableReason?: string };
@@ -45,8 +46,11 @@ export const settingsRegistry: SettingDefinition[] = [
   s('annotations.quoteFormat','工作方式','批注与引用','引用格式','markdown',['plain','markdown','rich']),
   b('annotations.includeTranslation','工作方式','批注与引用','引用包含译文',false),
   b('translation.selectionAuto','AI','翻译','文档选区自动翻译',true,'连接可用后生效；不会修改原文。'),
+  b('translation.selectionShortcutEnabled','AI','翻译','快捷键翻译选区',true,'选中文字后使用快捷键主动翻译；正文底部显示提示。'),
+  { id: 'translation.selectionShortcut', group: 'AI', section: '翻译', label: '选区翻译快捷键', type: 'text', defaultValue: DEFAULT_SELECTION_SHORTCUT, description: '点击后按下组合键；支持 Ctrl、Alt、Shift、Meta 与字母、数字或 F1–F12，避开已有编辑快捷键。' },
   n('translation.selectionDelayMs','AI','翻译','选区翻译等待时间（毫秒）',500,200,3000),
   s('translation.selectionPresentation','AI','翻译','选区译文呈现','popover',['popover','drawer']),
+  { ...n('translation.capsuleGrowthRatio','AI','翻译','译文胶囊宽高增长比例',1,.15,1), description: '默认1.0：增高100像素时约增宽100像素；达到宽高边界后内部滚动。' },
   b('translation.autoFullDocument','AI','翻译','打开外语文档时自动生成译文',false),
   { ...s('translation.targetLanguage','AI','翻译','目标语言','zh-CN',['zh-CN','en','ja','fr','de','es']), effect: 'next-task' },
   { ...s('translation.outputDirectory','AI','翻译','译文保存位置','managed',['managed','beside-source']), effect: 'next-task' },
@@ -88,8 +92,8 @@ export const settingsRegistry: SettingDefinition[] = [
 const activeSettings = new Set([
   'general.startPage',
   'appearance.theme','appearance.density','appearance.glass','appearance.documentBackground','appearance.documentPaperColor','appearance.backgroundMotion','appearance.motion','appearance.reduceTransparency','appearance.highContrast','appearance.autoHideToolbar','appearance.toolbarDelayMs',
-  'translation.selectionAuto','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
-  'ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart','web.backgroundLoading',
+  'translation.selectionAuto','translation.selectionShortcutEnabled','translation.selectionShortcut','translation.selectionDelayMs','translation.selectionPresentation','translation.targetLanguage','translation.outputDirectory','translation.openArtifact','translation.webAuto','translation.webDynamic',
+  'translation.capsuleGrowthRatio','ai.defaultDriver','agent.pointer','agent.capsuleDetail','tasks.resumeOnStart','web.backgroundLoading',
 ]);
 export function settingsAvailability(id: string) { return activeSettings.has(id) ? { available: true } : { available: false, unavailableReason: '当前引擎尚未接入此能力，暂不能修改。' }; }
 
@@ -118,10 +122,12 @@ export class SettingsService {
     if (definition.type === 'select' && (typeof value !== 'string' || !definition.options?.includes(value))) throw new Error('设置选项无效');
     if (definition.type === 'text' && typeof value !== 'string') throw new Error('设置值需要文本');
     if (id === 'appearance.documentPaperColor' && !normalizeDocumentPaperColor(value)) throw new Error('纸面颜色需要 #RGB 或 #RRGGBB 格式');
+    if (id === 'translation.selectionShortcut' && !normalizeSelectionShortcut(value)) throw new Error('快捷键无效或与现有操作冲突，请使用其他组合键。');
   }
   async undo() { const last = this.history.pop(); if (!last) return this.snapshot(); return this.set(last.id, last.value, false); }
   async set(id: string, value: SettingValue, record = true) {
     if (id === 'appearance.documentPaperColor') value = normalizeDocumentPaperColor(value) ?? value;
+    if (id === 'translation.selectionShortcut') value = normalizeSelectionShortcut(value) ?? value;
     this.validate(id, value); if (record && this.get(id) !== value) { this.history.push({ id, value: this.get(id) }); if (this.history.length > 100) this.history.shift(); } this.values[id] = value; this.revision++;
     const snapshot = this.snapshot();
     this.writing = this.writing.catch(() => {}).then(async () => {

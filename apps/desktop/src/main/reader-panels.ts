@@ -6,7 +6,7 @@ import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
 import { readerPanelDestination, validReaderPanelRect } from './reader-panel-policy';
 
 type Rect = { x: number; y: number; width: number; height: number };
-type Side = 'left' | 'right';
+type Side = 'left' | 'right' | 'translation';
 type Entry = { owner: BrowserWindow; side: Side; popup: BrowserWindow; boundViewId: string; viewId?: string; bounds?: Rect; visible: boolean; ready: boolean; source?: string; attachedSource?: string; attachingSource?: string; attachRevision: number; unsubscribe?: () => void; frameSource?: WebContents; sampling: boolean; pending: boolean; timer?: ReturnType<typeof setTimeout>; sampledAt: number; signature?: string; pixels?: string; image?: string; rect?: Rect; generation: number };
 const GUTTER = 12, FROST_FRAME_MS = 180;
 const intersection = (a: Rect, b: Rect): Rect | undefined => { const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y), right = Math.min(a.x + a.width, b.x + b.width), bottom = Math.min(a.y + a.height, b.y + b.height); return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : undefined; };
@@ -27,7 +27,7 @@ export class ReaderPanelHost {
       return { action: 'allow', overrideBrowserWindowOptions: { parent: owner, frame: false, transparent: true, show: false, skipTaskbar: true, resizable: false, minimizable: false, maximizable: false, hasShadow: false, backgroundColor: '#00000000', webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=' + windowId] } } };
     });
     owner.webContents.on('did-create-window', (popup, details) => {
-      const params = new URLSearchParams(new URL(details.url).hash.split('?')[1]), side = params.get('side') === 'left' ? 'left' : 'right';
+      const params = new URLSearchParams(new URL(details.url).hash.split('?')[1]), side = params.get('side') as Side;
       const entry: Entry = { owner, popup, side, boundViewId: params.get('view')!, visible: false, ready: false, sampling: false, pending: false, sampledAt: 0, generation: 0, attachRevision: 0 };
       let entries = this.entries.get(owner); if (!entries) this.entries.set(owner, entries = new Map()); entries.set(side, entry);
       popup.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -50,7 +50,16 @@ export class ReaderPanelHost {
   update(owner: BrowserWindow, viewId: string | undefined, panels: { side: Side; bounds: Rect }[]) {
     const viewport = owner.getContentBounds();
     if (!Array.isArray(panels) || panels.length > 2 || new Set(panels.map(panel => panel.side)).size !== panels.length || panels.some(panel => !['left', 'right'].includes(panel.side) || !validReaderPanelRect(panel.bounds, viewport))) throw new Error('INVALID_PANEL_GEOMETRY');
-    this.layouts.set(owner, { viewId, panels });
+    const floating = this.layouts.get(owner);
+    this.layouts.set(owner, { viewId, panels: [...panels, ...(floating && floating.viewId === viewId ? floating.panels.filter(panel => panel.side === 'translation') : [])] });
+    for (const entry of this.entries.get(owner)?.values() ?? []) this.apply(entry);
+  }
+  updateTranslation(owner: BrowserWindow, viewId: string, bounds?: Rect) {
+    if (bounds && !validReaderPanelRect(bounds, owner.getContentBounds())) throw new Error('INVALID_PANEL_GEOMETRY');
+    const layout = this.layouts.get(owner);
+    if (!bounds && layout?.viewId !== viewId) return;
+    const panels = layout?.viewId === viewId ? layout.panels.filter(panel => panel.side !== 'translation') : [];
+    this.layouts.set(owner, { viewId, panels: [...panels, ...(bounds ? [{ side: 'translation' as const, bounds }] : [])] });
     for (const entry of this.entries.get(owner)?.values() ?? []) this.apply(entry);
   }
   sourceChanged(owner: BrowserWindow, viewId: string) { for (const entry of this.entries.get(owner)?.values() ?? []) if (entry.viewId === viewId) this.sync(entry); }
@@ -58,7 +67,12 @@ export class ReaderPanelHost {
   private apply(entry: Entry) {
     const layout = this.layouts.get(entry.owner), bounds = layout?.panels.find(panel => panel.side === entry.side)?.bounds;
     if (entry.viewId !== layout?.viewId) { entry.generation++; entry.signature = undefined; entry.pixels = undefined; entry.image = undefined; entry.rect = undefined; this.send(entry); }
-    else if (JSON.stringify(entry.bounds) !== JSON.stringify(bounds)) { entry.generation++; entry.signature = undefined; entry.pixels = undefined; }
+    else if (JSON.stringify(entry.bounds) !== JSON.stringify(bounds)) {
+      // Reuse the last source pixels in document coordinates while a drag is
+      // sampled. They must not appear glued to the moving native window.
+      if (entry.side === 'translation' && entry.bounds && bounds && entry.rect) { entry.rect = { ...entry.rect, x: entry.rect.x+entry.bounds.x-bounds.x, y: entry.rect.y+entry.bounds.y-bounds.y }; this.send(entry); }
+      entry.generation++; entry.signature = undefined; entry.pixels = undefined;
+    }
     entry.viewId = layout?.viewId; entry.bounds = entry.boundViewId === layout?.viewId ? bounds : undefined;
     this.sync(entry);
   }
@@ -115,7 +129,8 @@ export class ReaderPanelHost {
     const { native, web } = this.documentSources(entry); if (!native && !web) return;
     const sourceBounds = native?.bounds ?? web!.view.getBounds(), panel = entry.bounds;
     const slot = { x: Math.round(panel.x) - GUTTER, y: Math.round(panel.y) - GUTTER, width: Math.ceil(panel.width) + 2 * GUTTER, height: Math.ceil(panel.height) + 2 * GUTTER };
-    const area = intersection(slot, sourceBounds); if (!area) return;
+    const overscan = entry.side === 'translation' ? 84 : 0;
+    const area = intersection({ x:slot.x-overscan,y:slot.y-overscan,width:slot.width+2*overscan,height:slot.height+2*overscan }, sourceBounds); if (!area) return;
     const local = { x: area.x - sourceBounds.x, y: area.y - sourceBounds.y, width: area.width, height: area.height };
     const density = screen.getDisplayMatching(entry.owner.getBounds()).scaleFactor;
     const capture = alignFrameCapture(local, sourceBounds, density) ?? { x: Math.floor(local.x), y: Math.floor(local.y), width: Math.ceil(local.width), height: Math.ceil(local.height) };
@@ -129,9 +144,9 @@ export class ReaderPanelHost {
     const image: Promise<{ image: NativeImage; rect: Rect }> = native ? native.capture(capture) : latest && crop && frameSize && crop.x + crop.width <= frameSize.width && crop.y + crop.height <= frameSize.height ? Promise.resolve({ image: latest.image.crop(crop), rect: capture }) : web!.view.webContents.capturePage(capture).then(image => ({ image, rect: capture }));
     void image.then(value => {
       if (!entry.visible || generation !== entry.generation || entry.popup.isDestroyed()) return;
-      // Frost has no optical displacement field. Half-DIP pixels suffice for
-      // its blur and avoid re-encoding a full-height bitmap at display density.
-      const reduced = value.image.resize({ width: Math.max(1, Math.ceil(value.rect.width * .5)), height: Math.max(1, Math.ceil(value.rect.height * .5)), quality: 'good' });
+      // Refraction needs CSS-pixel detail. Tall frosted sidebars use half-DIP.
+      const ratio = entry.side === 'translation' ? 1 : .5;
+      const reduced = value.image.resize({ width: Math.max(1, Math.ceil(value.rect.width * ratio)), height: Math.max(1, Math.ceil(value.rect.height * ratio)), quality: 'good' });
       const hash = createHash('sha256').update(reduced.toBitmap()).digest('hex');
       entry.signature = signature;
       if (hash === entry.pixels && entry.image) return;

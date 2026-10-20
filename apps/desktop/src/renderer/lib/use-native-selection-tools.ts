@@ -8,6 +8,7 @@ import { SelectionToolbarMotion } from './selection-toolbar-motion';
 import { animatedMotion, resolveMotionMode } from './motion';
 import { glassSpringParameters } from './glass-elasticity';
 import { KUBE_GLASS_SPRINGS } from './glass-presets';
+import { FLOATING_HITBOX_EVENT } from './floating-hitboxes';
 
 type SelectionTools = { snapshot: { id: string }; actions: unknown[] };
 /** Fetch once per source selection. Scroll/resize only moves the trusted surface. */
@@ -15,6 +16,7 @@ export function useNativeSelectionTools(enabled: boolean, context: ReadingContex
   const current = useRef({ enabled, context, settings, report, navigationVisible }); current.current = { enabled, context, settings, report, navigationVisible };
   const cache = useRef<{ key: string; value?: SelectionTools; pending?: Promise<SelectionTools> } | undefined>(undefined);
   const dismissed = useRef<string | undefined>(undefined);
+  const translation = useRef<{ viewId: string; bounds?: Rect } | undefined>(undefined);
   const navigation = useRef<{viewId:string;bounds?:Rect}|undefined>(undefined),navigationFlight=useRef<{viewId:string;revision:number}|undefined>(undefined),navigationRevision=useRef(0),published = useRef<string|undefined>(undefined);
   const motion=useRef(new SelectionToolbarMotion()),frame=useRef(0),lastFrameAt=useRef(0),fullPublication=useRef<string|undefined>(undefined),publishFrame=useRef<(seconds?:number)=>void>(()=>{});
   const stopMotion=()=>{cancelAnimationFrame(frame.current);frame.current=0;motion.current.reset();};
@@ -50,7 +52,8 @@ export function useNativeSelectionTools(enabled: boolean, context: ReadingContex
       const reader = document.querySelector('.reader-panel')?.getBoundingClientRect(); if (!reader) return;
       const surface=document.querySelector('.native-office-surface')?.getBoundingClientRect();
       const obstacle=latest.navigationVisible&&navigation.current?.viewId===context.viewId?navigation.current.bounds:undefined;
-      const obstacles=[...(obstacle?[obstacle]:[]),...readSelectionPanelBounds()],desired=nativeSelectionLayout(context,reader,selection.actions.length,surface??reader,obstacles);
+      const translationBounds=translation.current?.viewId===context.viewId?translation.current.bounds:undefined;
+      const obstacles=[...(obstacle?[obstacle]:[]),...readSelectionPanelBounds(),...(translationBounds?[translationBounds]:[])],desired=nativeSelectionLayout(context,reader,selection.actions.length,surface??reader,obstacles);
       const mode=resolveMotionMode(document.documentElement.dataset.motion,matchMedia('(prefers-reduced-motion: reduce)').matches);
       const semanticIdentity=JSON.stringify([context.viewId,context.contentRevision,context.viewport?.navigationId,context.selection.kind,context.selection.text,context.selection.locator]);
       let pose=motion.current.retarget(desired?{x:desired.x+8,y:desired.y+8,width:desired.width-16}:undefined,{viewport:reader,height:46,obstacles,selection:nativeSelectionAnchor(context,surface??reader),gap:10},semanticIdentity,animatedMotion(mode));
@@ -89,6 +92,8 @@ export function useNativeSelectionTools(enabled: boolean, context: ReadingContex
     const off = window.agentViewer?.onSelectionTool(event => { if (event.action === 'dismiss') { const c = current.current.context; dismissed.current = c && nativeSelectionKey(c);stopMotion();published.current=undefined;fullPublication.current=undefined; void call('selection-layout', { visible: false, animate: true }); } });
     const offNavigation=window.agentViewer?.onToolbar(event=>{if(event.action!=='geometry'||event.viewId!==current.current.context?.viewId)return;const bounds=event.bounds as Rect|undefined;if(!bounds||![bounds.x,bounds.y,bounds.width,bounds.height].every(Number.isFinite))return;navigationRevision.current++;navigation.current={viewId:String(event.viewId),bounds};publish();});
     const onResize=()=>publish();window.addEventListener('resize',onResize);
-    return () => { resize.disconnect();panels.disconnect();cancelAnimationFrame(frame.current);frame.current=0;motion.current.reset(); off?.(); offNavigation?.(); published.current=undefined;fullPublication.current=undefined; window.removeEventListener('resize',onResize); void call('selection-layout', { visible: false }); };
+    window.addEventListener(FLOATING_HITBOX_EVENT,onResize);
+    const onTranslation=(event:Event)=>{const detail=(event as CustomEvent<{viewId:string;bounds?:Rect}>).detail;if(!detail)return;translation.current=detail;publish();};window.addEventListener('agentviewer:translation-geometry',onTranslation);
+    return () => { resize.disconnect();panels.disconnect();cancelAnimationFrame(frame.current);frame.current=0;motion.current.reset();translation.current=undefined; off?.(); offNavigation?.(); published.current=undefined;fullPublication.current=undefined; window.removeEventListener('resize',onResize);window.removeEventListener(FLOATING_HITBOX_EVENT,onResize);window.removeEventListener('agentviewer:translation-geometry',onTranslation); void call('selection-layout', { visible: false }); };
   }, [enabled]);
 }

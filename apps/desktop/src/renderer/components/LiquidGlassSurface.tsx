@@ -3,7 +3,6 @@ import { requestGlassOptics, glassGeometryStyleSignature, glassOpticsKey, readGl
 import { KUBE_GLASS_PRESETS, REFRACTIVE_BLUR_LIMIT_PX } from '../lib/glass-presets';
 import { glassCaptureOverscan, NAVIGATION_METRICS } from '../lib/navigation-optics';
 import { scheduleLayoutRead } from '../lib/layout-frame';
-import { observeGlassBusy } from '../lib/glass-work-budget';
 
 export type LiquidGlassVariant = 'panel' | 'search' | 'switch' | 'slider' | 'capsule' | 'button' | 'tooltip' | 'lens';
 export type LiquidGlassEffect = 'frosted' | 'refractive';
@@ -21,7 +20,7 @@ export type LiquidGlassSurfaceProps = {
   blur?: number;
   /** Explicit per-surface exception; ordinary optics retain the global crisp policy. */
   blurLimit?: number;
-  /** The interaction shell is ready immediately; optical assets arrive later. */
+  /** True once the requested optics are decoded, or an explicit fallback is active. */
   onReady?(ready: boolean): void;
   strength?: number;
   glassThickness?: number;
@@ -50,14 +49,12 @@ const finite = (value: number | undefined, fallback: number, minimum: number, ma
 export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect, profile: requestedProfile, bezelWidth, blur, blurLimit, onReady, strength, glassThickness, refractiveIndex, specularOpacity, specularSaturation, concave = false, lensZoom, fallback = false, backdropImage, backdropSample, bounds, surfaceRef, className, interaction = 'auto', navigation = false }: LiquidGlassSurfaceProps) {
   const effect = requestedEffect ?? (navigation ? 'refractive' : 'frosted'), refractive = effect === 'refractive';
   const preset = KUBE_GLASS_PRESETS[variant === 'capsule' || variant === 'button' || variant === 'tooltip' ? 'search' : variant];
-  const opticalBlur = refractive ? Math.min(finite(blur, preset.blur, 0, 40), finite(blurLimit, REFRACTIVE_BLUR_LIMIT_PX, 0, 2)) : finite(blur, preset.blur, 0, 40);
+  const opticalBlur = refractive ? Math.min(finite(blur, preset.blur, 0, 40), finite(blurLimit, REFRACTIVE_BLUR_LIMIT_PX, 0, 12)) : finite(blur, preset.blur, 0, 40);
   const profile = requestedProfile ?? preset.profile;
   const root = useRef<HTMLSpanElement>(null);
   const [asset, setAsset] = useState<GlassOpticsLease>();
   const optics = asset?.optics;
   const [automaticFallback,setAutomaticFallback]=useState(false);
-  const [renderingBusy,setRenderingBusy]=useState(false);
-  useLayoutEffect(() => refractive ? observeGlassBusy(setRenderingBusy) : undefined,[refractive]);
   useLayoutEffect(() => () => asset?.release(), [asset]);
   const id = `liquid-glass-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const assignRef = useCallback((node: HTMLSpanElement | null) => {
@@ -101,7 +98,11 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
           clearTimeout(timer); request?.abort(); measuredKey = '';
           setAutomaticFallback(true); setAsset(previous => previous ? undefined : previous);
         };
-        const rect = host.getBoundingClientRect(), hostStyle = getComputedStyle(host), style = getComputedStyle(surface);
+        const rect = host.getBoundingClientRect();
+        // Settings pages can contain many controls below the fold. Their
+        // textures must not occupy the worker queue before visible controls.
+        if (rect.bottom < -80 || rect.top > innerHeight + 80 || rect.right < -80 || rect.left > innerWidth + 80) return;
+        const hostStyle = getComputedStyle(host), style = getComputedStyle(surface);
         const usedSize = (axis: 'width' | 'height') => {
           const used = Number.parseFloat(hostStyle[axis]);
           if (!Number.isFinite(used)) return rect[axis];
@@ -132,7 +133,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
           // the settled size requests a new field; stale jobs stop in worker.
           if (measuredKey !== key) {
             measuredKey = key; clearTimeout(timer); request?.abort();
-            timer = setTimeout(() => {
+            const generate = () => {
               if (disposed) return;
               request = new AbortController(); const signal = request.signal;
               void requestGlassOptics(options, signal).then(async next => {
@@ -144,7 +145,11 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
                 if (signal.aborted || disposed) { next.release(); return; }
                 setAutomaticFallback(false); setAsset(next);
               });
-            }, 120);
+            };
+            // First presentation and cache hits have no artificial wait. Only
+            // replacement geometry is coalesced while a decoded field is visible.
+            if (root.current?.querySelector('svg')) timer = setTimeout(generate, 80);
+            else generate();
           }
           // Absolute positioning covers the border box. All reads for sibling
           // surfaces have finished before these shared-frame writes occur.
@@ -156,6 +161,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
       });
     };
     const size = new ResizeObserver(measure); size.observe(host);
+    const visible = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) measure(); }, { rootMargin: '80px' }); visible.observe(host);
     let inlineGeometry = glassGeometryStyleSignature(host.style);
     const appearance = new MutationObserver(records => {
       if (navigation && host.dataset.navigationResizing === 'true') { measure(); return; }
@@ -171,10 +177,10 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-glass', 'data-contrast', 'data-reduce-transparency'] });
     const transition = (event: TransitionEvent) => { if (event.target === host && !['opacity', 'scale', 'translate', 'transform', 'background-color', 'box-shadow'].includes(event.propertyName)) measure(); };
     window.addEventListener('resize', measure); host.addEventListener('transitionend', transition); media.forEach(query => query.addEventListener('change', measure)); measure();
-    return () => { disposed = true; cancelMeasure?.(); clearTimeout(timer); request?.abort(); size.disconnect(); appearance.disconnect(); window.removeEventListener('resize', measure); host.removeEventListener('transitionend', transition); media.forEach(query => query.removeEventListener('change', measure)); };
+    return () => { disposed = true; cancelMeasure?.(); clearTimeout(timer); request?.abort(); size.disconnect(); visible.disconnect(); appearance.disconnect(); window.removeEventListener('resize', measure); host.removeEventListener('transitionend', transition); media.forEach(query => query.removeEventListener('change', measure)); };
   }, [refractive, bezelWidth, opticalBlur, strength, glassThickness, refractiveIndex, profile, concave, lensZoom, fallback, navigation, variant]);
 
-  const activeOptics = refractive && !fallback && !automaticFallback && !renderingBusy ? optics : undefined;
+  const activeOptics = refractive && !fallback && !automaticFallback ? optics : undefined;
   useLayoutEffect(() => {
     const surface = root.current, host = surface?.parentElement;
     if (navigation && host) {
@@ -191,8 +197,8 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     surface?.dispatchEvent(new Event('agentviewer:glass-optics', { bubbles: true }));
   },[activeOptics,navigation]);
   useLayoutEffect(()=>{
-    onReady?.(true);
-  },[onReady]);
+    onReady?.(!refractive || !!activeOptics || fallback || automaticFallback);
+  },[onReady,refractive,activeOptics,fallback,automaticFallback]);
   const sampled = !!backdropImage, overscan = !refractive ? 0 : activeOptics?.overscan ?? (navigation ? NAVIGATION_METRICS.captureOverscan : glassCaptureOverscan(bezelWidth ?? preset.bezelWidth, glassThickness ?? preset.glassThickness, refractiveIndex ?? preset.refractiveIndex, concave ? 'concave' : profile, strength ?? preset.refraction, opticalBlur));
   const totalWidth = activeOptics ? activeOptics.width + overscan * 2 : undefined, totalHeight = activeOptics ? activeOptics.height + overscan * 2 : undefined;
   const sourceStyle: CSSProperties = {

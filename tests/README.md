@@ -27,6 +27,8 @@ npm.cmd run mcp:budget
 
 ## 当前验证范围
 
+10月20日独立TEMP/Electron复核覆盖滚动、选中对比度、单层浮栏、输入框、翻译快捷键、底部胶囊、拖动收起及网页原文保留。长文检查18px、默认1.0、弧边安全区、边界滚动；全局避让检查真实hitbox、移动及收起。翻译使用确定性夹具，DOM事件与API不代表真实输入或模型质量。
+
 10月19日结构化Kit验收使用既有office-export流程的`AGENTVIEWER_AUTHORING_ONLY=1`分支，经过真实原生引擎、读回、幂等、可用的Undo/Redo、保存及独立重新导入，源文件不变。Word覆盖文字/段落/页面、批注、表格和修订；Excel覆盖工作表、数值/公式、网格/格式、验证、排序/筛选、图表和透视；PPT覆盖文字/对象、幻灯片、组合、母版、备注、背景及原生动画属性。页面布局、修订开关等无原生撤销的动作显式报告限制。
 
 `artifacts/agent-v2-validation/native-authoring-final.json`记录该链。public-office记录三格式公开SDK读写、重试和保存；public-content-refs记录Word长表格续读/写入、PDF精确范围和文件分页；web-ref-isolation记录跨域frame、元素续读和连接隔离。这些检查保持隐藏窗口与人工活动状态，无输入动作。

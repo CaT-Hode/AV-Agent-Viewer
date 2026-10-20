@@ -1,7 +1,7 @@
 import { BrowserWindow, WebContentsView, screen, type NativeImage, type WebContents } from 'electron';
 import { AGENT_OPERATION_METRICS, NAVIGATION_METRICS } from '../renderer/lib/navigation-optics';
 import { NativeBackdropCache, backdropStatistics, type BackdropCacheStatistics, type BackdropPixels } from './backdrop-cache';
-import { AI_POPOVER_MOTION_BASE_MS, motionDurationForMode, resolveMotionMode } from '../renderer/lib/motion-policy';
+import { AI_POPOVER_MOTION_BASE_MS, SELECTION_POPOVER_MOTION_BASE_MS, motionDurationForMode, resolveMotionMode } from '../renderer/lib/motion-policy';
 import { nativeTooltipLayout, type TooltipRect, type TooltipSize } from '../renderer/lib/tooltip-placement';
 import { nativeBackdropFrames } from './backdrop-frame-hub';
 import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
@@ -13,7 +13,7 @@ export type BackdropSource = { view: WebContentsView; navigationId: string; layo
 export type NativeBackdropSource = { bounds: Rect; navigationId: string; layoutRevision: number; revision: number; sourceId: number; capture(rect: Rect): Promise<{ image: NativeImage; rect: Rect }>; attach(window: BrowserWindow): Promise<void> };
 type NativeHostOptions = { sourceFor(viewId: string): NativeBackdropSource | undefined };
 type TooltipReply = { ticket: number; offsetY: number; viewId?: unknown; placement?: ReturnType<typeof nativeTooltipLayout>['placement'] };
-type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; ready?: boolean; focusViewId?: string; dispose?: () => void; panel?: boolean; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
+type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; ready?: boolean; focusViewId?: string; dispose?: () => void; panel?: boolean; panelBounds?: Rect; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
 type CaptureRequest = { state: Record<string, unknown>; source: BackdropSource; page: WebContentsView; b: Rect; p: Rect; zoom: number; density: number; frameAligned: boolean; capsule: Rect; capture: Rect; geometryRevision: number; key: string; shape: string };
 
 // A trusted, capsule-sized surface above the website; no page script or full-width scrim.
@@ -132,7 +132,16 @@ export class WebToolbarHost {
     if (method === 'toolbar-panel' || method === 'toolbar-tooltip') {
       const resize=()=>{if(owner.isDestroyed()||entry.view.webContents.isDestroyed())return;this.setBounds(owner, entry);this.sampleBackdrop(owner, entry);};
       if (this.route === '/ai-result-toolbar' || this.route === '/agent-toolbar' && method === 'toolbar-panel') throw new Error('AUTH_SCOPE_DENIED');
-      if (method === 'toolbar-panel') { entry.panel=!!args.expanded;resize(); }
+      if (method === 'toolbar-panel') {
+        entry.panel=!!args.expanded;
+        if(!entry.panel)entry.panelBounds=undefined;
+        else if(this.route==='/selection-toolbar'&&args.bounds){
+          const bounds=args.bounds as Rect;
+          if(![bounds.x,bounds.y,bounds.width,bounds.height].every(Number.isFinite)||bounds.x<0||bounds.y<0||bounds.width<=0||bounds.width>720||bounds.height<=0||bounds.height>720)throw new Error('INVALID_PANEL_BOUNDS');
+          entry.panelBounds={...bounds};
+        }
+        resize();
+      }
       else {
         if (args.ready !== undefined) {
           if (args.ready !== entry.tooltipTicket || args.viewId !== entry.state.viewId) throw new Error('STALE_TOOLTIP');
@@ -155,9 +164,15 @@ export class WebToolbarHost {
       }
       return {};
     }
-    if (method !== 'toolbar-action' || !['back', 'forward', 'reload', 'navigate', 'copy', 'translate', 'zoom', 'undo', 'save', 'focus', 'blur', 'hover', 'leave', 'dismiss', 'result', 'geometry'].includes(String(args.action))) throw new Error('AUTH_SCOPE_DENIED');
+    if (method !== 'toolbar-action' || !['back', 'forward', 'reload', 'navigate', 'copy', 'translate', 'zoom', 'undo', 'save', 'focus', 'blur', 'hover', 'leave', 'dismiss', 'result', 'started', 'failed', 'geometry','hitboxes'].includes(String(args.action))) throw new Error('AUTH_SCOPE_DENIED');
     if (typeof args.viewId === 'string' && args.viewId !== entry.state.viewId) throw new Error('STALE_VIEW');
-    if ((this.route === '/agent-toolbar' || this.route === '/ai-result-toolbar') && args.action !== 'geometry') throw new Error('AUTH_SCOPE_DENIED');
+    if ((this.route === '/agent-toolbar' || this.route === '/ai-result-toolbar') && !['geometry','hitboxes'].includes(String(args.action))) throw new Error('AUTH_SCOPE_DENIED');
+    if(args.action==='hitboxes'){
+      const boxes=args.boxes as {id:string;group:string;bounds:Rect}[];
+      if(!Array.isArray(boxes)||boxes.length>64||boxes.some(box=>typeof box.id!=='string'||box.id.length>160||!['selection','navigation','navigation-child','panel','rail','translation','agent','floating','tooltip'].includes(box.group)||!box.bounds||![box.bounds.x,box.bounds.y,box.bounds.width,box.bounds.height].every(Number.isFinite)||box.bounds.width<=0||box.bounds.height<=0||box.bounds.width>4000||box.bounds.height>3000))throw new Error('INVALID_GEOMETRY');
+      const origin=this.bounds(entry),zoom=entry.view.webContents.getZoomFactor();
+      owner.webContents.send(this.channel,{action:'floating-hitboxes',sourceId:entry.view.webContents.id,viewId:entry.state.viewId,boxes:entry.state.visible?boxes.map(box=>({...box,bounds:{x:origin.x+box.bounds.x*zoom,y:origin.y+box.bounds.y*zoom,width:box.bounds.width*zoom,height:box.bounds.height*zoom}})):[]});return {};
+    }
     if (args.action === 'geometry') {
       if(entry.tooltipPending)return {};
       const geometry = args.capsuleBounds as Rect | undefined;
@@ -190,6 +205,7 @@ export class WebToolbarHost {
       this.syncFrameSubscription(owner,entry);this.sampleBackdrop(owner,entry);return;
     }
     const visible=typeof state.viewId==='string'&&!!state.viewId&&!!state.visible;
+    if(!visible&&entry)owner.webContents.send(this.channel,{action:'floating-hitboxes',sourceId:entry.view.webContents.id,viewId:entry.state.viewId,boxes:[]});
     if(!entry&&!visible){
       const target=this.deferred.get(owner);
       if(typeof state.viewId==='string'&&state.viewId)this.deferred.set(owner,{viewId:state.viewId,...(target?.viewId===state.viewId&&target.focusRequested?{focusRequested:true}:{})});
@@ -234,10 +250,10 @@ export class WebToolbarHost {
     const wasExiting=!!entry.exitTimer;
     if(visible){clearTimeout(entry.exitTimer);entry.exitTimer=undefined;}
     const mode=((state.settings ?? previous.settings) as any)?.values?.['appearance.motion'];
-    const duration=this.route==='/selection-toolbar'?motionDurationForMode(140,resolveMotionMode(mode)):this.route==='/agent-toolbar'||this.route==='/ai-result-toolbar'?Math.max(0,Math.min(650,Number(state.hideDurationMs ?? motionDurationForMode(this.route==='/ai-result-toolbar'?AI_POPOVER_MOTION_BASE_MS:200,resolveMotionMode(mode))))):navigationExitDuration(state.hideDurationMs,previous.hideDurationMs);
+    const duration=this.route==='/selection-toolbar'?Math.min(180,motionDurationForMode(SELECTION_POPOVER_MOTION_BASE_MS,resolveMotionMode(mode))):this.route==='/agent-toolbar'||this.route==='/ai-result-toolbar'?Math.max(0,Math.min(650,Number(state.hideDurationMs ?? motionDurationForMode(this.route==='/ai-result-toolbar'?AI_POPOVER_MOTION_BASE_MS:200,resolveMotionMode(mode))))):navigationExitDuration(state.hideDurationMs,previous.hideDurationMs);
     const retainedExit=(this.route==='/ai-result-toolbar'||this.route==='/web-toolbar')&&wasExiting&&state.viewId===previous.viewId?retainedSurfaceExit(duration,previous.hideDurationMs):undefined;
     const animate=!visible&&!!previous.visible&&!!(state.animate||(state.viewId&&state.viewId===previous.viewId));
-    if (!state.visible || state.viewId !== entry.state.viewId || (entry.tooltipLayout && JSON.stringify(previous.bounds)!==JSON.stringify(state.bounds))) { clearTimeout(entry.tooltipTimer);entry.panel = false; entry.tooltip = false;entry.tooltipLayout=undefined;entry.tooltipPending=false;entry.tooltipTicket=(entry.tooltipTicket??0)+1;entry.tooltipClose?.(this.tooltipReply(entry));entry.tooltipClose=undefined; }
+    if (!state.visible || state.viewId !== entry.state.viewId || (entry.tooltipLayout && JSON.stringify(previous.bounds)!==JSON.stringify(state.bounds))) { clearTimeout(entry.tooltipTimer);entry.panel = false; entry.panelBounds = undefined; entry.tooltip = false;entry.tooltipLayout=undefined;entry.tooltipPending=false;entry.tooltipTicket=(entry.tooltipTicket??0)+1;entry.tooltipClose?.(this.tooltipReply(entry));entry.tooltipClose=undefined; }
     if (state.viewId !== entry.state.viewId) { this.clearFrameSubscription(entry); entry.capsuleBounds = undefined; entry.geometryRevision++; entry.cache.clear(); }
     const agentGeometryChange = this.route === '/agent-toolbar' && (previous.kind !== state.kind || previous.status !== state.status || previous.target !== state.target);
     if (agentGeometryChange) { entry.capsuleBounds = undefined; entry.geometryRevision++; }
@@ -289,9 +305,12 @@ export class WebToolbarHost {
   private normalBounds(owner: BrowserWindow, entry: ToolbarEntry): Rect {
     const b = entry.state.bounds as Rect | undefined; if (!b) return this.bounds(entry);
     const agent = this.route === '/agent-toolbar', normalHeight = Math.max(1, Math.round(b.height));
-    const width = agent && entry.capsuleBounds ? Math.min(Math.round(b.width), Math.ceil(entry.capsuleBounds.width) + 2 * AGENT_OPERATION_METRICS.shadowGutter) : Math.max(1, Math.round(b.width));
-    const height = entry.panel ? 255 : normalHeight;
-    const next = { x: Math.round(b.x + (agent ? (b.width - width) / 2 : 0)), y: Math.max(0, Math.min(Math.round(b.y), owner.getContentBounds().height - height)), width, height };
+    let width = agent && entry.capsuleBounds ? Math.min(Math.round(b.width), Math.ceil(entry.capsuleBounds.width) + 2 * AGENT_OPERATION_METRICS.shadowGutter) : Math.max(1, Math.round(b.width));
+    const selectionPanel=this.route==='/selection-toolbar'&&entry.panel,available=owner.getContentBounds();
+    let height = entry.panel ? 255 : normalHeight;
+    if(selectionPanel){width=Math.min(available.width,Math.max(width,336,Math.ceil((entry.panelBounds?.x??8)+(entry.panelBounds?.width??320)+8)));height=Math.min(available.height,Math.max(normalHeight,Math.ceil((entry.panelBounds?.y??62)+(entry.panelBounds?.height??185)+8)));}
+    const x=Math.round(b.x+(agent?(b.width-width)/2:0));
+    const next = { x:selectionPanel?Math.max(0,Math.min(x,available.width-width)):x, y: Math.max(0, Math.min(Math.round(b.y), available.height - height)), width, height };
     return next;
   }
   private setBounds(owner:BrowserWindow,entry:ToolbarEntry){
@@ -390,9 +409,11 @@ export class WebToolbarHost {
     const source=this.nativeSource(entry);if(!source)return;
     const b=this.bounds(entry),p=source.bounds,zoom=entry.view.webContents.getZoomFactor(),metrics=this.route==='/agent-toolbar'?AGENT_OPERATION_METRICS:NAVIGATION_METRICS;
     const capsule=entry.capsuleBounds??{x:metrics.shadowGutter,y:metrics.shadowGutter,width:b.width/zoom-2*metrics.shadowGutter,height:this.route==='/ai-result-toolbar'?330:metrics.height};
-    const extra=metrics.captureOverscan,captureTop=this.route==='/web-toolbar'?metrics.shadowGutter-NAVIGATION_METRICS.hideShift:capsule.y,captureBottom=this.route==='/web-toolbar'?metrics.shadowGutter+capsule.height:capsule.y+capsule.height;
+    const extra=metrics.captureOverscan,captureTop=this.route==='/web-toolbar'?metrics.shadowGutter-NAVIGATION_METRICS.hideShift:capsule.y;
+    const captureBottom=this.route==='/selection-toolbar'&&entry.panel?b.height/zoom:this.route==='/web-toolbar'?metrics.shadowGutter+capsule.height:capsule.y+capsule.height;
     const left=Math.max(0,Math.floor(b.x-p.x+(capsule.x-extra)*zoom)),top=Math.max(0,Math.floor(b.y-p.y+(captureTop-extra)*zoom));
-    const right=Math.min(p.width,Math.ceil(b.x-p.x+(capsule.x+capsule.width+extra)*zoom)),bottom=Math.min(p.height,Math.ceil(b.y-p.y+(captureBottom+extra)*zoom));
+    const panelRight=this.route==='/selection-toolbar'&&entry.panel?(entry.panelBounds?.x??8)+(entry.panelBounds?.width??320):0;
+    const right=Math.min(p.width,Math.ceil(b.x-p.x+(Math.max(capsule.x+capsule.width,panelRight)+extra)*zoom)),bottom=Math.min(p.height,Math.ceil(b.y-p.y+(captureBottom+extra)*zoom));
     const rect={x:left,y:top,width:right-left,height:bottom-top};if(rect.width<=0||rect.height<=0)return;
     const key=JSON.stringify([source.navigationId,source.layoutRevision,source.revision,rect,zoom]),shape=JSON.stringify([rect.width,rect.height,zoom]);
     const publish=(pixels:BackdropPixels,actual=rect)=>{
@@ -455,10 +476,11 @@ export class WebToolbarHost {
     // capsuleBounds/origin still update throughout the animation, but moving
     // the UI alone does not turn every RAF geometry report into a screenshot.
     const captureTop = this.route === '/web-toolbar' ? metrics.shadowGutter+tooltipOffset - NAVIGATION_METRICS.hideShift : capsule.y;
-    const captureBottom = this.route === '/web-toolbar' ? metrics.shadowGutter+tooltipOffset + capsule.height : capsule.y + capsule.height;
+    const captureBottom = this.route === '/selection-toolbar' && entry.panel ? b.height/zoom : this.route === '/web-toolbar' ? metrics.shadowGutter+tooltipOffset + capsule.height : capsule.y + capsule.height;
     const left = Math.max(0, Math.floor(b.x - p.x + (capsule.x - metrics.captureOverscan) * zoom));
     const top = Math.max(0, Math.floor(b.y - p.y + (captureTop - metrics.captureOverscan) * zoom));
-    const right = Math.min(p.width, Math.ceil(b.x - p.x + (capsule.x + capsule.width + metrics.captureOverscan) * zoom));
+    const panelRight=this.route==='/selection-toolbar'&&entry.panel?(entry.panelBounds?.x??8)+(entry.panelBounds?.width??320):0;
+    const right = Math.min(p.width, Math.ceil(b.x - p.x + (Math.max(capsule.x + capsule.width,panelRight) + metrics.captureOverscan) * zoom));
     const bottom = Math.min(p.height, Math.ceil(b.y - p.y + (captureBottom + metrics.captureOverscan) * zoom));
     const requestedCapture = { x: left, y: top, width: right - left, height: bottom - top };
     const density = screen.getDisplayMatching(owner.getBounds()).scaleFactor;
@@ -466,7 +488,7 @@ export class WebToolbarHost {
     // rectangle. Fractional physical edges otherwise trigger resampling in
     // capturePage, and cannot truthfully share the original ROI metadata.
     const aligned = alignFrameCapture(requestedCapture, p, density), capture = aligned ?? requestedCapture;
-    if (capture.width <= 0 || capture.height <= 0 || capture.width > (result ? 900 : 3000) || capture.height > (result ? 720 : 300)) return;
+    if (capture.width <= 0 || capture.height <= 0 || capture.width > (result ? 900 : 3000) || capture.height > (result ? 720 : entry.panel ? 600 : 300)) return;
     const shape = JSON.stringify([capture.width, capture.height, source.deviceScaleFactor, page.webContents.getZoomFactor(), zoom, density]);
     const key = JSON.stringify([state.viewId, state.address, page.webContents.id, source.navigationId, source.layoutRevision, source.revision, source.scrollX, source.scrollY, p.width, p.height, capture.x, capture.y, shape]);
     return { state, source, page, b, p, zoom, density, frameAligned: !!aligned, capsule, capture, geometryRevision, key, shape };

@@ -1,4 +1,5 @@
 import { scheduleLayoutRead } from './layout-frame';
+import { FLOATING_HITBOX_EVENT, floatingHitboxes, yieldFloatingRoom } from './floating-hitboxes';
 
 export type NavigationLane = { left: number; right: number; width: number; center: number };
 type Rect = { left: number; right: number };
@@ -22,6 +23,18 @@ function readingPanels(reader: HTMLElement) {
   return panels;
 }
 function localLane(reader: DOMRect, lane: NavigationLane) { return {...lane,left:lane.left-reader.left,right:lane.right-reader.left,center:lane.center-reader.left}; }
+function clearFloatingLane(box:DOMRect,lane:NavigationLane){
+  const obstacles=floatingHitboxes(['navigation','navigation-child','selection','panel','rail']).filter(item=>item.bounds.y<box.top+80&&item.bounds.y+item.bounds.height>box.top+4);
+  if(!obstacles.length)return lane;
+  let lanes=[{left:lane.left,right:lane.right}];
+  for(const {bounds} of obstacles)lanes=lanes.flatMap(item=>bounds.x-8>=item.right||bounds.x+bounds.width+8<=item.left?[item]:[{left:item.left,right:Math.min(item.right,bounds.x-8)},{left:Math.max(item.left,bounds.x+bounds.width+8),right:item.right}]).filter(item=>item.right>item.left);
+  lanes.sort((a,b)=>(b.right-b.left)-(a.right-a.left)||Math.abs((a.left+a.right)/2-lane.center)-Math.abs((b.left+b.right)/2-lane.center));
+  const best=lanes[0];
+  if(best&&best.right-best.left>=68)return {...best,width:best.right-best.left,center:(best.left+best.right)/2};
+  const room=yieldFloatingRoom({x:lane.center-110,y:box.top+12,width:Math.min(220,lane.width),height:60},{x:lane.left,y:box.top+12,width:lane.width,height:60},[],['navigation','navigation-child','selection','panel','rail']);
+  if(room)return {left:room.x,right:room.x+room.width,width:room.width,center:room.x+room.width/2};
+  return best?{...best,width:best.right-best.left,center:(best.left+best.right)/2}:{left:lane.center,right:lane.center,width:0,center:lane.center};
+}
 
 /** Entering panes announce their final width immediately. A closing pane keeps
  * its reservation until removal: navigation can then grow without racing it. */
@@ -32,7 +45,7 @@ export function readNavigationTargetLane(reader: HTMLElement): NavigationLane {
     if ((side !== 'left' && side !== 'right') || bounds.width <= 0 || bounds.height <= 0 || getComputedStyle(panel).display === 'none' || bounds.bottom <= box.top + 12 || bounds.top >= box.top + 72) return [];
     return [{side,bounds} as {side:'left'|'right';bounds:Rect}];
   });
-  return localLane(box,navigationLane(box,panels));
+  return localLane(box,clearFloatingLane(box,navigationLane(box,panels)));
 }
 
 /** Only the pane's visible shape yields to the continuously moving capsule.
@@ -92,7 +105,7 @@ export function readNavigationLane(reader: HTMLElement): NavigationLane {
     if (bounds.bottom <= box.top + 12 || bounds.top >= box.top + 72) return [];
     return [{ side, bounds } as { side:'left'|'right'; bounds: DOMRect }];
   });
-  const lane = navigationLane(box, panels);
+  const lane = clearFloatingLane(box,navigationLane(box, panels));
   return localLane(box,lane);
 }
 /** Width previews happen outside React, and closing panes remain present until
@@ -128,7 +141,8 @@ export function observeNavigationLane(reader: HTMLElement, update: (beforePaint?
     }
   };
   observe(); const write = update(); write?.();
-  return () => { disposed = true; cancelFrame?.(); resize.disconnect(); changes.disconnect(); panelCache.delete(workbench); };
+  window.addEventListener(FLOATING_HITBOX_EVENT,schedule);
+  return () => { disposed = true; cancelFrame?.(); resize.disconnect(); changes.disconnect(); panelCache.delete(workbench);window.removeEventListener(FLOATING_HITBOX_EVENT,schedule); };
 }
 export type NavigationDensity = 'wide'|'tight'|'compact'|'small'|'minimal'|'micro';
 export function navigationDensity(width: number): NavigationDensity { return width >= 760 ? 'wide' : width >= 580 ? 'tight' : width >= 400 ? 'compact' : width >= 330 ? 'small' : width >= 110 ? 'minimal' : 'micro'; }

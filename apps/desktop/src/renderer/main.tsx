@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { glassOpticsCacheStats } from './lib/liquid-glass-optics';
 import { GlassInteractionHost } from './components/GlassInteractionHost';
+import { installSmoothScrolling } from './lib/smooth-scroll';
+import { installFloatingHitboxes } from './lib/floating-hitboxes';
 const App = lazy(() => import('./App').then(module => ({ default: module.App })));
 const TooltipHost = lazy(() => import('./TooltipHost').then(module => ({ default: module.TooltipHost })));
 const SettingsApp = lazy(() => import('./SettingsApp').then(module => ({ default: module.SettingsApp })));
@@ -30,6 +32,15 @@ import './document-paper.css';
 import './frosted-shadow.css';
 import './sidebar-presence.css';
 import './adaptive-panel.css';
+import './selection-tools.css';
+import './text-fields.css';
+
+if (location.hash !== '#/export-worker') {
+  const disposeScrolling = installSmoothScrolling(document);
+  const disposeHitboxes = installFloatingHitboxes(document);
+  import.meta.hot?.dispose(disposeScrolling);
+  import.meta.hot?.dispose(disposeHitboxes);
+}
 declare global { interface Window { __agentViewerRenderingDiagnostics?: () => { glass: ReturnType<typeof glassOpticsCacheStats> } } }
 if (window.agentViewer?.testMode) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats() }) });
 if (location.hash === '#/export-worker') {

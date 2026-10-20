@@ -1,0 +1,48 @@
+/* Shared by the DOM reader and the native web selection view. One optical
+   capsule, one presence clock; no independently moving frosted shell. */
+:root[data-theme] .selection-tools {
+  position:fixed; z-index:90; min-width:0; padding:0; border:0;
+  background:transparent; box-shadow:none; border-radius:999px;
+  -webkit-backdrop-filter:none; backdrop-filter:none; animation:none;
+}
+:root .selection-tools[data-motion-surface="selection"][data-motion-phase] {
+  --selection-hidden:0; --liquid-glass-opacity:calc(1 - var(--selection-hidden));
+  opacity:1; scale:1; translate:none; transition:none;
+}
+:root .selection-tools[data-motion-surface="selection"]:is([data-motion-phase="enter"],[data-motion-phase="exit"],[data-selection-material-ready="false"]) { --selection-hidden:1; }
+.selection-tools[data-selection-material-ready="false"] { pointer-events:none; }
+:root[data-theme] .selection-tool-icons.navigation-capsule {
+  --navigation-hide-progress:var(--selection-hidden,0);
+  --navigation-hide-duration:var(--motion-duration,143ms);
+  --navigation-motion-easing:ease-out;
+  position:relative; isolation:isolate; display:flex; align-items:center;
+  flex-wrap:nowrap; padding:6px; gap:0; border-radius:999px; border:1px solid transparent;
+  background:transparent; color:var(--navigation-ink); overflow:visible;
+  -webkit-backdrop-filter:none; backdrop-filter:none;
+  box-shadow:0 4px 16px rgb(0 0 0 / calc(.16 * (1 - var(--selection-hidden,0))));
+  transition:box-shadow var(--motion-duration,143ms) ease-out;
+  user-select:none;
+}
+.selection-tool-icons > .navigation-glass { transform:none; transition:none; }
+.selection-tool-row {
+  display:flex; align-items:center; gap:2px; max-width:100%; overflow-x:auto;
+  scrollbar-width:none; filter:none; text-shadow:none;
+  opacity:calc(1 - var(--selection-hidden,0)); transition:opacity var(--motion-duration,143ms) ease-out;
+}
+.selection-tool-row::-webkit-scrollbar { display:none; }
+.selection-tool-row svg { filter:none; opacity:1; }
+:root[data-theme] .selection-tool-icons.navigation-capsule .icon-button { width:30px; height:30px; flex:0 0 30px; border-radius:50%; color:inherit; }
+:root[data-theme] .selection-tool-icons.navigation-capsule .icon-button:not(:disabled):hover { color:var(--navigation-ink); background:color-mix(in srgb,var(--navigation-ink) 12%,transparent); }
+/* A pending worker never swaps in the old opaque menu. Once ready, all optics
+   and foreground leaves arrive together over the actual source. */
+.selection-tool-icons.navigation-capsule > .navigation-glass[data-glass-pending="true"] .navigation-glass-tint { background:var(--navigation-tint); }
+:root[data-theme] :is(.selection-input,.selection-error).material-host { --liquid-glass-tint:rgb(255 255 255 / .64); --field-fill:rgb(255 255 255 / .92); }
+:root[data-theme="dark"] :is(.selection-input,.selection-error).material-host { --liquid-glass-tint:rgb(9 13 18 / .64); --field-fill:rgb(20 29 38 / .92); }
+.selection-tools :is(.selection-input,.selection-error)[data-motion-phase] { translate:none; scale:1; }
+.selection-input label { font-weight:600; }
+html.native-toolbar-root .selection-input textarea { max-height:240px; }
+html.native-toolbar-root .selection-error { max-height:240px; overflow:auto; }
+.selection-tools :is(.selection-input,.selection-error) .liquid-glass-surface[data-glass-pending="true"] .liquid-glass-tint { background:var(--liquid-glass-tint); }
+:root:is([data-glass="off"],[data-contrast="high"],[data-reduce-transparency="true"])[data-theme] .selection-tool-icons.navigation-capsule { background:var(--navigation-solid); color:var(--navigation-ink); }
+:root:is([data-motion="reduced"],[data-motion="off"]) .selection-tools[data-motion-phase] { translate:none; }
+@media (prefers-reduced-motion:reduce) { :root .selection-tools[data-motion-phase] { translate:none; } }

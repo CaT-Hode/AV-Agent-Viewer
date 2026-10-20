@@ -1,4 +1,5 @@
 import type { Rect } from '../../../../../packages/contracts/src/index';
+import { floatingHitboxes, yieldFloatingRoom } from './floating-hitboxes';
 
 export type SelectionToolbarPosition = { x: number; y: number; width: number };
 export type SelectionToolbarScene = { viewport: Rect; height: number; obstacles: readonly Rect[]; selection?: Rect; gap?: number };
@@ -117,6 +118,20 @@ export function placeSelectionToolbar(anchor: Rect, viewport: Rect, size: { widt
   return compactCandidates[0];
 }
 
+/** Share the hitbox fallback across DOM and native readers. Plans are complete
+ * before any lower-priority surface is moved or collapsed. */
+export function placeSelectionToolbarWithYield(anchor:Rect,viewport:Rect,size:{width:number;height:number},gap=10,obstacles:readonly Rect[]=[]){
+  const placement=placeSelectionToolbar(anchor,viewport,size,gap,obstacles);
+  if(typeof window==='undefined'||placement&&placement.width>=Math.min(size.width,viewport.width-16)*.75)return placement;
+  const yieldable=floatingHitboxes(['selection']).filter(item=>item.canMove||item.canCollapse);
+  if(!yieldable.length)return placement;
+  const same=(a:Rect,b:Rect)=>['x','y','width','height'].every(key=>Math.abs(a[key as keyof Rect]-b[key as keyof Rect])<1);
+  const fixed=[anchor,...obstacles.filter(rect=>!yieldable.some(item=>same(rect,item.bounds)))];
+  const width=Math.min(size.width,viewport.width-16),preferred={x:anchor.x+anchor.width/2-width/2,y:anchor.y-size.height-gap,width,height:size.height};
+  const room=yieldFloatingRoom(preferred,{x:viewport.x+8,y:viewport.y+8,width:viewport.width-16,height:viewport.height-16},fixed);
+  return room?{x:room.x,y:room.y,width:room.width}:placement;
+}
+
 export const SELECTION_NAVIGATION_EVENT = 'agentviewer:selection-navigation-bounds';
 export type SelectionNavigationBounds = { visible: boolean; bounds?: Rect };
 /** Actual capsule geometry, rather than the full-width transparent host. */
@@ -131,11 +146,13 @@ export function readSelectionNavigationBounds(): Rect | undefined {
  * sidebar's hidden owner anchor reserves the same space as its separate window
  * and remains an obstacle until that window has finished its exit. */
 export function readSelectionPanelBounds(workbench = document.querySelector('.workbench')): Rect[] {
-  if (!workbench) return [];
-  return [...workbench.querySelectorAll<HTMLElement>(':scope > .floating-side-panel,:scope > .activity-rail,:scope > .ai-rail')].flatMap(node => {
+  const shared=floatingHitboxes(['selection']).map(item=>item.bounds);
+  if (!workbench) return shared;
+  const local=[...workbench.querySelectorAll<HTMLElement>(':scope > .floating-side-panel,:scope > .activity-rail,:scope > .ai-rail')].flatMap(node => {
     const box = node.getBoundingClientRect();
     return box.width > 0 && box.height > 0 && (node.dataset.panelAnchor === 'true' || getComputedStyle(node).visibility !== 'hidden') ? [{ x: box.x, y: box.y, width: box.width, height: box.height }] : [];
   });
+  return [...local,...shared];
 }
 
 export function clippedReaderViewport(element: Element): Rect | undefined {

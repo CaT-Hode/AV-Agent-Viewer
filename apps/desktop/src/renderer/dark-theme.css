@@ -78,12 +78,12 @@
 :root[data-theme="dark"] :is(.home-hero p,.home-muted,.home-section-title span,.recent-card small,.outline-item,.tool-row,.office-field,.pdf-side-label,.harness-line,.location-chip,.modal p) { color: #b2b2b2; }
 :root[data-theme="dark"] :is(.tree-caption,.side-label,.side-hint,.home-sidebar-head,.format-heading,.job-card>span,.translation-loading,.translation-card details,.settings-empty) { color: #9c9c9c; }
 :root[data-theme="dark"] :is(.home-kicker,.eyebrow,.translation-card-top) { color: #c0c0c0; }
-:root[data-theme="dark"] :is(.connection-card button,.translation-actions button,.popover-expand,.harness-line button,.job-card>button,.tool-grid button svg,.capsule-document-title svg) { color: #cfcfcf; }
+:root[data-theme="dark"] :is(.connection-card button,.translation-actions button,.harness-line button,.job-card>button,.tool-grid button svg,.capsule-document-title svg) { color: #cfcfcf; }
 :root[data-theme="dark"] .recent-icon { background: #363636; color: #d6d6d6; }
 :root[data-theme="dark"] :is(.context-summary,.selection-preview) { background: #2c2c2c; color: #c8c8c8; border-color: #5a5a5a; }
 :root[data-theme="dark"] :is(.translation-card details p,.prompt-box textarea) { color: #c4c4c4; }
 :root[data-theme="dark"] :is(.prompt-box,.prompt-box textarea) { background: #202020; border-color: #404040; }
-:root[data-theme="dark"] :is(.translation-card details,.translation-actions,.popover-expand,.drawer-heading,.activity-rail .rail-collapse) { border-color: var(--divider); }
+:root[data-theme="dark"] :is(.translation-card details,.translation-actions,.drawer-heading,.activity-rail .rail-collapse) { border-color: var(--divider); }
 :root[data-theme="dark"] .translation-card { background: transparent; }
 :root[data-theme="dark"] .rail-dot { background: #c9c9c9; border-color: #2b2b2b; }
 :root[data-theme="dark"] .toast { background: #3a3a3a; color: #ededed; border: 1px solid #585858; box-shadow: var(--shadow); }

@@ -1,5 +1,5 @@
 import type { ReadingContext, Rect } from '../../../../../packages/contracts/src/index';
-import { placeSelectionToolbar } from './selection-position';
+import { placeSelectionToolbarWithYield } from './selection-position';
 
 /** Human-only automation must be revalidated when an async snapshot returns:
  * an agent can acquire the same range without changing its text or geometry. */
@@ -27,6 +27,6 @@ export function nativeSelectionKey(context: ReadingContext) {
 export function nativeSelectionLayout(context: ReadingContext, reader: Rect, actionCount: number, surface:Rect=reader, obstacles: readonly Rect[] = []) {
   const anchor = nativeSelectionAnchor(context, surface); if (!anchor) return;
   const width = Math.min(600, (actionCount + 1) * 32 + 16, reader.width);
-  const placement = placeSelectionToolbar(anchor, reader, { width, height: 46 },10,obstacles); if (!placement) return;
+  const placement = placeSelectionToolbarWithYield(anchor, reader, { width, height: 46 },10,obstacles); if (!placement) return;
   return { x: placement.x - 8, y: placement.y - 8, width: placement.width + 16, height: 62 };
 }
