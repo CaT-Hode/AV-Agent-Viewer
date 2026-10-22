@@ -191,7 +191,25 @@ export async function verifyReaderMotion(main: Page, directory: string, evidence
   const hoverAfter = await selectionToolbar.boundingBox(); assert.ok(hoverAfter);
   assert.ok(Math.abs(hoverAfter.x - hoverBefore.x) < 1 && Math.abs(hoverAfter.y - hoverBefore.y) < 1, 'the selection toolbar never avoids its own button tooltip');
   assert.equal(await main.evaluate(() => window.getSelection()?.toString()), needle, 'hovering an action preserves the selected preview text');
-  const hover = { label: await hoveredAction.getAttribute('aria-label'), before: hoverBefore, after: hoverAfter };
+  await main.locator('.selection-tools[data-selection-material-ready="true"]').waitFor();
+  const stationary = await main.evaluate(`new Promise(resolve => {
+    const toolbar = document.querySelector('.selection-tools'), capsule = document.querySelector('.reader-toolbar:not([aria-hidden="true"]) .navigation-capsule');
+    const texture = () => [...toolbar.querySelectorAll('feImage')].map(node => node.getAttribute('href'));
+    const before = texture(), durations = []; let writes = 0, iteration = 0, previous = performance.now();
+    const observer = new MutationObserver(records => { writes += records.length; }); observer.observe(toolbar, { attributes:true, attributeFilter:['style'] });
+    const tick = now => {
+      durations.push(now - previous); previous = now;
+      const rect = capsule?.getBoundingClientRect();
+      window.dispatchEvent(new CustomEvent('agentviewer:selection-navigation-bounds', { detail: rect ? { visible:true, bounds:{x:rect.x,y:rect.y,width:rect.width,height:rect.height} } : { visible:false } }));
+      if (++iteration < 100) requestAnimationFrame(tick);
+      else requestAnimationFrame(() => { observer.disconnect(); resolve({ samples:iteration, writes, before, after:texture(), durations }); });
+    }; requestAnimationFrame(tick);
+  })`) as { samples:number; writes:number; before:(string|null)[]; after:(string|null)[]; durations:number[] };
+  assert.equal(stationary.samples, 100);
+  assert.equal(stationary.writes, 0, 'unchanged navigation/hover geometry never rewrites the stationary toolbar style');
+  assert.ok(stationary.before.length > 0, 'the selection toolbar is using its real decoded glass texture');
+  assert.deepEqual(stationary.after, stationary.before, 'stationary hover refresh reuses the decoded glass field');
+  const hover = { label: await hoveredAction.getAttribute('aria-label'), before: hoverBefore, after: hoverAfter, stationary };
   await main.mouse.move(1150, 600);
   const before = await reader.evaluate(e => e.scrollTop);
   const dismissalDelta = await reader.evaluate(e => e.clientHeight + 128);

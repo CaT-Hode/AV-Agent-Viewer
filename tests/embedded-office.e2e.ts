@@ -146,11 +146,20 @@ const ready = async (view: ViewInfo) => {
   await until(async () => main.locator('.embedded-office-canvas').evaluate(canvas => { const target = canvas as HTMLCanvasElement, context = target.getContext('2d'); if (!context || !target.width || !target.height || !target.dataset.officeFrameRevision) return false; const pixels = context.getImageData(0, 0, target.width, target.height).data, colors = new Set<number>(); for (let i = 0; i < pixels.length; i += Math.max(4, Math.floor(pixels.length / 100000 / 4) * 4)) if (pixels[i + 3]) { colors.add((pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2]); if (colors.size > 12) return true; } return false; }), 'paintTile contains actual text and lines');
   return actual!;
 };
-const open = async (format: keyof typeof names) => {
-  const before=await invoke<any>('office-statistics'),started=Date.now(),view=await invoke<ViewInfo>('open', { uri: join(directory, names[format]) }),openedAt=Date.now();
+const open = async (format: keyof typeof names, previous?: ViewInfo) => {
+  const before=await invoke<any>('office-statistics'),started=Date.now(),opening=invoke<ViewInfo>('open', { uri: join(directory, names[format]) });
+  // Real reads from the preceding focused Canvas can finish during the new
+  // document's import. Their sticky human/focused state is not a new tab intent.
+  const previousReads=previous?Promise.all(Array.from({length:4},(_,index)=>(async()=>{
+    if(index)await new Promise(done=>setTimeout(done,index*20));
+    try{const state=await status(previous);return {viewId:state.viewId,visible:state.visible,focused:state.focused};}
+    catch(error){if(!/\b(?:OFFICE_DISPLAY_EXPIRED|NATIVE_SESSION_EXPIRED)\b/.test(String(error)))throw error;return {retired:String(error)};}
+  })())):Promise.resolve([]);
+  const view=await opening,openedAt=Date.now(),previousReadbacks=await previousReads;
   await until(async () => (await workspace()).activeViewId === view.id, 'desktop IPC opened view');const activeAt=Date.now();
   await main.locator(`.embedded-office-document[data-office-ready="true"] .embedded-office-content[data-office-surface="${view.id}"]`).waitFor({timeout:120000});const canvasReadyAt=Date.now();
   await ready(view);const paintedAt=Date.now(),runtime=await invoke<any>('office-statistics');
+  if(previous){assert.equal((await workspace()).activeViewId,view.id,'late previous-Canvas state never reactivates the old tab');results.tabHandoff={previousViewId:previous.id,viewId:view.id,previousReadbacks};}
   const firstLayout=await app.evaluate(({ipcMain},viewId)=>((ipcMain as any).__officeQaTrace as any[]).find(item=>item.viewId===viewId&&item.method==='office-surface-layout'&&item.args?.visible===true),view.id);
   assert.ok(firstLayout?.result?.visible&&firstLayout.result.nativeGeometry,'the mounted renderer receives drawable geometry before its first presentation, without waiting for a heartbeat refresh');
   ((results.openTimings??=[]) as unknown[]).push({format,viewId:view.id,sampleBytes:originals.get(names[format])!.length,engineProcessStarted:before.started,engineWasReady:typeof before.startupMs==='number',appElapsedAtOpenMs:started-launchedAt,rpcMs:openedAt-started,activeMs:activeAt-started,canvasReadyMs:canvasReadyAt-started,verifiedPaintMs:paintedAt-started,runtime});
@@ -743,7 +752,7 @@ if (retiringWordCanvas) await main.locator('.embedded-office-canvas').evaluate(n
     if (!(node instanceof HTMLCanvasElement) || node.width <= 1 || node.height <= 1) throw new Error('actual Writer backing is missing before tab handoff');
     (window as any).__officeRetiredCanvasQa = node;
   });
-let calc = await open('xlsx');
+let calc = await open('xlsx',word);
 results.sheetElasticity = await verifyOfficeElasticity(main);
 if (retiringWordCanvas) {
     const retirement = await main.evaluate(() => {

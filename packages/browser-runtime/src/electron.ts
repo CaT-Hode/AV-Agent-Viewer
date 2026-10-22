@@ -109,6 +109,14 @@ export class ElectronBrowserRuntime implements BrowserRuntime {
     void result.finally(() => { if (this.loadingPages.get(viewId) === result) this.loadingPages.delete(viewId); }).catch(() => {});
     return result;
   }
+  /**
+   * Internal main-process bridge for semantic operations. It only materializes
+   * a lazy WebContents entry; reading viewport text belongs to the semantic
+   * service and must not happen as a side effect of attaching its debugger.
+   */
+  async ensureLoadedForSemantic(viewId: string): Promise<void> {
+    await this.ensureLoaded(viewId);
+  }
   private async loadPage(viewId: string, pending: PendingPage) {
     if (this.pendingPages.get(viewId) !== pending || !this.core.views.has(viewId)) throw new ViewerError('TARGET_NOT_FOUND', '网页已关闭。');
     const metadata = this.core.getView(viewId), owner = this.windowFor(metadata.windowId);

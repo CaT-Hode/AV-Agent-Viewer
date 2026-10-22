@@ -117,8 +117,10 @@ export class WebSemanticService {
     const view = this.core.getView(viewId), document = this.core.getDocument(view.documentId);
     if (document.info.format !== 'web' || !this.core.browser) throw new ViewerError('INVALID_TARGET', 'The target is not a live webpage.');
     const browser = this.core.browser as ElectronBrowserRuntime;
-    // Reading context loads a lazy background page without activating it.
-    await browser.context(viewId, 'agent');
+    // Only materialize the lazy page here. Reading the viewport context is a
+    // separate semantic operation and would duplicate a full-page script read
+    // before every debugger request.
+    await browser.ensureLoadedForSemantic(viewId);
     const entry = browser.entries.get(viewId);
     if (!entry || entry.view.webContents.isDestroyed()) throw new ViewerError('TARGET_NOT_FOUND', 'The webpage is unavailable.');
     const contents = entry.view.webContents, existing = this.connections.get(contents.id);

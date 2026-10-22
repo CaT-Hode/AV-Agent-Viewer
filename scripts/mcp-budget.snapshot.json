@@ -10,11 +10,11 @@
   },
   "entry": {
     "tokens": {
-      "o200k_base": 361,
-      "cl100k_base": 336,
-      "max": 361
+      "o200k_base": 375,
+      "cl100k_base": 350,
+      "max": 375
     },
-    "hash": "5fb7f8ee02d0edaaf7d6a558f51b9f3cd974c8641dac989de5ae2c290b83064a",
+    "hash": "20fbc12b9acc8b83e0126487d47598f636a6258b3cbc910a430fb472d97549e5",
     "tools": [
       "av_tools",
       "av_workspace"
@@ -22,11 +22,11 @@
   },
   "shared": {
     "tokens": {
-      "o200k_base": 2291,
-      "cl100k_base": 2172,
-      "max": 2291
+      "o200k_base": 2305,
+      "cl100k_base": 2186,
+      "max": 2305
     },
-    "hash": "7bcfc9879eb72adf51dcc5eadcff858caa41af5a0a80405975d27569a6f75cfc",
+    "hash": "479ead444d9f2a7826fff1255b519999a71cbbd6023ee35efbf96d9d7bf77c57",
     "tools": [
       "av_ai",
       "av_evidence",

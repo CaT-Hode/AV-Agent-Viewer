@@ -86,7 +86,10 @@ export class ViewerCore extends EventEmitter {
     const saved = await this.repository.load<StoredWorkspace>();
     if (!saved) return;
     if (saved.schemaVersion !== PROTOCOL_VERSION) throw new ViewerError('SCHEMA_MISMATCH', '工作区版本不兼容，原恢复文件保留。');
-    for (const entry of saved.documents) { delete entry.info.nativeOffice; this.documents.set(entry.info.id, { info: entry.info, bytes: typeof entry.bytes === 'string' ? new Uint8Array(Buffer.from(entry.bytes, 'base64')) : new Uint8Array(entry.bytes), sourceHash: entry.sourceHash }); }
+    // load transfers its restored objects to Core (including info/model). Keep
+    // the owned byte identity too, so the repository can reuse verified blobs
+    // on the first metadata checkpoint instead of freezing every file again.
+    for (const entry of saved.documents) { delete entry.info.nativeOffice; this.documents.set(entry.info.id, { info: entry.info, bytes: typeof entry.bytes === 'string' ? new Uint8Array(Buffer.from(entry.bytes, 'base64')) : entry.bytes, sourceHash: entry.sourceHash }); }
     for (const entry of this.documents.values()) if (entry.info.format !== 'web') entry.info.capabilities = this.registry.resolve(entry.info.format).capabilities(entry.info.format);
     for (const savedView of saved.views) { const { agentState: _onlineState, ...view } = savedView; this.views.set(view.id, { ...view, windowId: 'main', context: view.context ? { ...view.context, quality: 'last-confirmed' } : undefined }); }
     for (const annotation of saved.annotations ?? []) this.annotations.set(annotation.id, annotation);
@@ -340,11 +343,12 @@ export class ViewerCore extends EventEmitter {
     if (state.documentId !== view.documentId || state.sessionId !== binding.state.sessionId || state.engineEpoch !== binding.state.engineEpoch || state.viewId !== viewId) throw new ViewerError('NATIVE_SESSION_EXPIRED', '原生控制器与目标页面不匹配。');
     this.updateNativeOfficeState(state); return clone(state);
   }
-  private async stableNativeSnapshot(documentId: string): Promise<NativeOfficeSnapshot> {
+  private async stableNativeSnapshot(documentId: string): Promise<NativeOfficeSnapshot & { mirrorSha256: string }> {
     const binding = this.nativeBinding(documentId), driver = this.nativeDriver();
     for (let attempt = 0; attempt < 3; attempt++) {
       const document = this.getDocument(documentId);
-      const reuse = binding.mirrorEngineRevision < 0 ? undefined : { bytes: document.bytes, sha256: await hashDocumentBytes(document.bytes), engineEpoch: binding.state.engineEpoch, engineRevision: binding.mirrorEngineRevision };
+      const mirrorSha256 = await hashDocumentBytes(document.bytes);
+      const reuse = binding.mirrorEngineRevision < 0 ? undefined : { bytes: document.bytes, sha256: mirrorSha256, engineEpoch: binding.state.engineEpoch, engineRevision: binding.mirrorEngineRevision };
       const minimumRevision = Math.max(binding.state.engineRevision, binding.mirrorEngineRevision);
       let result: NativeOfficeSnapshot;
       try { result = await driver.snapshot(binding.state.sessionId, reuse); }
@@ -354,12 +358,14 @@ export class ViewerCore extends EventEmitter {
       if (!result.stable || !Number.isSafeInteger(result.engineRevisionAfter) || result.engineRevisionAfter < minimumRevision || result.engineRevisionBefore !== result.engineRevisionAfter || result.engineRevisionAfter !== result.state.engineRevision) continue;
       const digest = await hashDocumentBytes(result.bytes);
       if (result.sha256 && result.sha256 !== digest) throw new ViewerError('NATIVE_SNAPSHOT_INVALID', '原生文件镜像校验失败。');
-      return { ...result, sha256: digest };
+      return { ...result, sha256: digest, mirrorSha256 };
     }
     throw new ViewerError('NATIVE_SNAPSHOT_BUSY', '原生文档正在变化，未取得完整稳定快照。');
   }
-  private async acceptNativeSnapshot(documentId: string, result: NativeOfficeSnapshot, actor: Actor) {
-    const doc = this.getDocument(documentId), binding = this.nativeBinding(documentId), digest = result.sha256 ?? await hashDocumentBytes(result.bytes), changed = digest !== await hashDocumentBytes(doc.bytes);
+  private async acceptNativeSnapshot(documentId: string, result: NativeOfficeSnapshot & { mirrorSha256: string }, actor: Actor) {
+    // Both hashes were verified in the same document lane. Rehashing the old
+    // mirror here copied large Office files through the CPU worker a second time.
+    const doc = this.getDocument(documentId), binding = this.nativeBinding(documentId), digest = result.sha256!, changed = digest !== result.mirrorSha256;
     const model = changed ? await this.registry.resolve(doc.info.format).open(result.bytes, doc.info.format) : doc.info.model;
     if (changed) { doc.bytes = result.bytes.slice(); doc.info.model = model; doc.info.revision++; for (const view of this.views.values()) if (view.documentId === documentId && view.context) view.context = { ...view.context, contentRevision: doc.info.revision, quality: 'not-ready', visibleText: '', selection: { kind: 'none', text: '' } }; }
     binding.mirrorEngineRevision = result.engineRevisionAfter;
@@ -1212,7 +1218,7 @@ export class ViewerCore extends EventEmitter {
           const updated=await this.registry.resolve('markdown').apply(doc.bytes,doc.info.model,assetChange); savedBytes=updated.bytes; savedModel=updated.model;
         }
       }
-      const savedHash = await hashDocumentBytes(savedBytes);
+      const savedHash = nativeSnapshot && savedBytes === doc.bytes ? nativeSnapshot.sha256! : await hashDocumentBytes(savedBytes);
       try {
         await writeFile(temp, savedBytes,{flag:'wx'}); if (await hashDocumentBytes(new Uint8Array(await readFile(temp))) !== savedHash) throw new ViewerError('SAVE_VERIFY_FAILED', '临时文件校验失败。');
         let latest: Uint8Array | undefined;try{latest=new Uint8Array(await readFile(target));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}

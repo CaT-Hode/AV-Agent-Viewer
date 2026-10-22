@@ -19,7 +19,7 @@ function tool<N extends string, S extends z.ZodRawShape>(name: N, owner: ToolOwn
 
 /** The only public operation registry. Format unions must never leak into shared schemas. */
 export const agentTools = [
-  tool('av_workspace','shared','entry','List metadata, open an authorized file/URL, or create a document. Opens in background.',{action:z.enum(['list','open','create']).default('list'),uri:z.string().max(4000).optional(),type:z.enum(formats).optional(),title:z.string().max(160).optional(),text:text.optional(),req:req.optional(),cursor:ref.optional(),limit},true),
+  tool('av_workspace','shared','entry','List metadata, open an authorized file/URL, or create a document. Opens in background; open/create require req (reuse only to retry the same request).',{action:z.enum(['list','open','create']).default('list'),uri:z.string().max(4000).optional(),type:z.enum(formats).optional(),title:z.string().max(160).optional(),text:text.optional(),req:req.optional(),cursor:ref.optional(),limit},true),
   tool('av_tools','shared','entry','Load callable tools for a document type or shared pack. Base first; advanced packs on demand. No document effects.',{ref:ref.optional(),type:z.enum(formats).optional(),pack:z.string().max(40).default('base')}),
   tool('av_read','shared','read','Bounded text, outline or selection. Returned target refs bind their source version.',{ref,part:z.enum(['text','outline','selection']).default('text'),cursor:ref.optional(),limit:z.number().int().min(1).max(16000).default(4000)}),
   tool('av_find','shared','read','Find literal text in one document or an evidence collection; returns version-bound targets.',{ref,query:z.string().min(1).max(500),cursor:ref.optional(),limit}),

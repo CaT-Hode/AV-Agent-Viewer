@@ -25,7 +25,7 @@ export const officeKitSharedDefinitions = [
   'snapshot_diagnostic', 'reconcile_clone_shape_colors', 'store_snapshot_file', 'snapshot',
   'acknowledge_saved', 'commands',
 ] as const;
-export const officeKitOverriddenDefinitions = ['emit', 'view_for', 'state', 'body_accessibility', 'own_ime_pending', 'view_scale', 'hide_chrome', 'dispatch_command', 'native_input', 'capture', 'close_session', 'open_session', 'layout_view'] as const;
+export const officeKitOverriddenDefinitions = ['emit', 'view_for', 'state', 'body_accessibility', 'own_ime_pending', 'snapshot_input_pending', 'view_scale', 'hide_chrome', 'dispatch_command', 'native_input', 'capture', 'close_session', 'open_session', 'layout_view'] as const;
 
 const preamble = String.raw`
 import ast, base64, builtins, ctypes as C, hashlib, io, json, math, os, pathlib, queue, re, socket, struct, symtable, sys, tempfile, threading, time, urllib.parse, uuid, zipfile, zlib
@@ -78,10 +78,23 @@ ${officeKitBootstrapSource}
 ${officeKitUpdatePolicySource}
 ${nativeOfficeAppearanceProfileSource}
 ${officeKitLocaleResourceSource}
+def prepare_kit_files(result):
+    # File verification and private-profile writes use no native/UNO objects.
+    # Overlap their cold disk reads with DLL loading, then join before the
+    # first hook sees profile/configuration paths. Keep every checksum check.
+    try:
+        started=time.monotonic();emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_BEGIN'})
+        context=prepare_bootstrap_profile();profile=context['profile'];prepare_native_appearance_profile(profile,config.get('appearance',{'theme':'light','canvasColor':0xf7f5f2}))
+        emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_PREPARED','elapsedMs':round((time.monotonic()-started)*1000,2)})
+        prepare_kit_update_policy(context);resources_started=time.monotonic();resources=prepare_kit_locale_resources(profile)
+        emit({'type':'diagnostic','code':'OFFICE_KIT_UI_RESOURCES_SCOPED' if resources['applied'] else 'OFFICE_KIT_UI_RESOURCES_FULL','elapsedMs':round((time.monotonic()-resources_started)*1000,2),'uiLocale':resources.get('uiLocale'),'loadedLocales':resources.get('loadedLocales'),'resourceBytes':resources.get('resourceBytes'),'reason':resources.get('reason')})
+        result.update(context=context,profile=profile)
+    except BaseException as error:result['error']=error
 try:
     if config['rpc'].get('host')!='127.0.0.1':fail('OFFICE_KIT_RPC_HOST','Office 私有连接必须在本机。')
     rpc=socket.create_connection(('127.0.0.1',int(config['rpc']['port'])),timeout=15);kit_negotiate_transport(rpc,config['rpc']['token']);config['rpc'].pop('token',None)
     os.environ['PATH']=str(PROGRAM)+';'+os.environ.get('PATH','');os.environ['SAL_USE_VCLPLUGIN']='svp';os.environ['SAL_SKIA']='raster';os.environ['SAL_LOG']='-WARN'
+    preparation={};preparation_thread=threading.Thread(target=prepare_kit_files,args=(preparation,),daemon=True);preparation_thread.start()
     bootstrap_dll_directories=[os.add_dll_directory(str(PROGRAM))];sal=C.CDLL(str(PROGRAM/'sal3.dll'));sal.osl_setCommandArgs.argtypes=[C.c_int,C.POINTER(C.c_char_p)];sal.osl_setCommandArgs.restype=None;native_args=(C.c_char_p*1)(b'AgentViewerEmbeddedOffice');sal.osl_setCommandArgs(1,native_args)
     sal.osl_getCommandArgCount.argtypes=[];sal.osl_getCommandArgCount.restype=C.c_ulong
     if sal.osl_getCommandArgCount()!=0:fail('OFFICE_KIT_HOST_ARGUMENTS','Office 内置宿主不能带启动命令参数。')
@@ -91,12 +104,9 @@ try:
     if adapter.av_kit_windows_install()!=0:fail('OFFICE_KIT_NATIVE_ADAPTER_UNAVAILABLE','Office 本机渲染适配器与引擎版本不匹配。')
     emit({'type':'diagnostic','code':'OFFICE_KIT_ADAPTER_INSTALLED'})
     if kit_transport_failed:raise RuntimeError('OFFICE_KIT_CONNECTION_LOST|Office 私有连接已中断。')
-    bootstrap_started=time.monotonic();emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_BEGIN'})
-    bootstrap_context=prepare_bootstrap_profile();profile=bootstrap_context['profile'];prepare_native_appearance_profile(profile,config.get('appearance',{'theme':'light','canvasColor':0xf7f5f2}))
-    emit({'type':'diagnostic','code':'OFFICE_KIT_BOOTSTRAP_PREPARED','elapsedMs':round((time.monotonic()-bootstrap_started)*1000,2)})
-    prepare_kit_update_policy(bootstrap_context)
-    ui_resources=prepare_kit_locale_resources(profile)
-    emit({'type':'diagnostic','code':'OFFICE_KIT_UI_RESOURCES_SCOPED' if ui_resources['applied'] else 'OFFICE_KIT_UI_RESOURCES_FULL','uiLocale':ui_resources.get('uiLocale'),'loadedLocales':ui_resources.get('loadedLocales'),'resourceBytes':ui_resources.get('resourceBytes'),'reason':ui_resources.get('reason')})
+    preparation_thread.join()
+    if 'error' in preparation:raise preparation['error']
+    bootstrap_context=preparation['context'];profile=preparation['profile'];del preparation
     if kit_transport_failed:raise RuntimeError('OFFICE_KIT_CONNECTION_LOST|Office 私有连接已中断。')
     dll.libreofficekit_hook_2.argtypes=[C.c_char_p,C.c_char_p];dll.libreofficekit_hook_2.restype=C.c_void_p;hook_started=time.monotonic();emit({'type':'diagnostic','code':'OFFICE_KIT_HOOK_BEGIN'});office=dll.libreofficekit_hook_2(str(PROGRAM).encode(),profile.as_uri().encode())
     if not office:fail('OFFICE_KIT_INIT_FAILED','Office 内置排版引擎初始化失败。')
@@ -141,6 +151,12 @@ def own_ime_pending(view):return bool(view.get('composition'))
 
 def native_input_pending(session,view):
     return bool(view.get('composition') or (view.get('nativeEditing') or view.get('caretVisible')) and session['format'] in ['xlsx','pptx'])
+
+def snapshot_input_pending(session,view):
+    # The same authoritative Kit pending flag used by state(), without
+    # rebuilding each controller's selection/visible text before serialization.
+    activate(session,view)
+    return native_input_pending(session,view)
 
 def native_input_state(session,view):
     editing=bool(view.get('nativeEditing') or view.get('caretVisible'))
@@ -780,8 +796,11 @@ def attach_kit_view(session,controller,args,identifier):
     if args.get('_openRequestId'):view['_openRequestId']=args['_openRequestId']
     session['views'][view['viewId']]=view;session['activeViewId']=view['viewId'];activate(session,view)
     initialize_started=time.monotonic();doc_call(session,'initializeForRendering',None,S)(b'{}');open_trace(args,'initialize-render',initialize_started)
-    attach_started=time.monotonic();sync_native_view_appearance(view);callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None);view['kitRegistrations']={'callback':'attached'}
+    attach_started=time.monotonic();appearance_started=time.monotonic();sync_native_view_appearance(view);open_trace(args,'view-appearance',appearance_started)
+    callback=kit_callback(session,view);view['kitCallback']=callback;doc_call(session,'registerCallback',None,CALLBACK,P)(callback,None);view['kitRegistrations']={'callback':'attached'}
+    accessibility_started=time.monotonic()
     doc_call(session,'setAccessibilityState',None,I,B)(identifier,True)
+    open_trace(args,'view-accessibility',accessibility_started)
     interceptor=ManagedInterceptor(view);view['managedInterceptor']=interceptor;view['frame'].registerDispatchProviderInterceptor(interceptor);view['kitRegistrations']['dispatch']='attached'
     listener=SelectionChanged(session,view);view['selectionListener']=listener;controller.addSelectionChangeListener(listener);view['kitRegistrations']['selection']='attached'
     if 'bounds' in args:layout_view(view,args)

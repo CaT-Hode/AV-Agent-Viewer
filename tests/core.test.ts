@@ -215,6 +215,21 @@ test('恢复迁移校验二进制与冻结队列，撤销预算和文档队列�
   await assert.rejects(new JsonWorkspaceRepository(path).load(), /WORKSPACE_BLOB_CORRUPT/);
   assert.equal(await readFile(path, 'utf8'), goodManifest, 'a corrupt restore does not overwrite the last manifest');
 
+  const officeRecoveryPath = join(directory, 'office-recovery.json');
+  const officeRecovery = new ViewerCore(new JsonWorkspaceRepository(officeRecoveryPath));
+  for (const format of ['docx', 'pptx', 'xlsx'] as const) await officeRecovery.openBytes('restore.' + format, await blankBytes(format), format);
+  await officeRecovery.persist();
+  const restoredRepository = new JsonWorkspaceRepository(officeRecoveryPath), restoredCore = new ViewerCore(restoredRepository);
+  await restoredCore.initialize();
+  assert.deepEqual([...restoredCore.documents.values()].map(doc => doc.info.format), ['docx', 'pptx', 'xlsx'], 'bounded restore readers preserve manifest order');
+  for (const [id, doc] of officeRecovery.documents) {
+    assert.deepEqual(restoredCore.getDocument(id).bytes, doc.bytes);
+    assert.deepEqual(restoredCore.getDocument(id).info.model, JSON.parse(JSON.stringify(doc.info.model)), 'JSON recovery preserves all serialized model fields');
+  }
+  await restoredCore.persist('checkpoint');
+  assert.equal(restoredRepository.statistics.frozenSourceBytes, 0, 'first metadata checkpoint after restore reuses all three verified Office sources and models');
+  assert.equal(restoredRepository.statistics.blobWrites, 0);
+
   class HeldRepository extends JsonWorkspaceRepository {
     readonly entered = editGate(); readonly release = editGate(); readonly payloads: string[] = []; private hold = true;
     protected override async writePayload(payload: string) {

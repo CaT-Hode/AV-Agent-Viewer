@@ -67,10 +67,13 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
     const workspace = stored.workspace;
     // A missing/corrupt blob must fail the whole restore. Never turn it into an
     // empty document and overwrite the only recoverable manifest on next save.
-    // Restore one body at a time. Unbounded Promise.all used to retain every
-    // file read at once and could overrun the bounded verification CPU lane.
-    const restoredDocuments: WorkspaceDocumentSnapshot['documents'] = [];
-    for (const entry of workspace.documents) {
+    // Two bounded readers overlap disk work with verification. Large bodies
+    // and delta chains (whose base may be larger) keep the exclusive CPU lane.
+    const exclusive = workspace.documents.some((entry: any) => [entry.content, entry.model].some(reference => reference?.delta || reference?.byteLength > 32 * 1024 * 1024));
+    const restoredDocuments: WorkspaceDocumentSnapshot['documents'] = new Array(workspace.documents.length);
+    let nextDocument = 0;
+    const restore = async (index: number) => {
+      const entry = workspace.documents[index];
       let contentBlob: FrozenBlob | undefined, modelBlob: FrozenBlob | undefined;
       const bytes = new Uint8Array(await this.readBlob(entry.content, blob => { contentBlob = blob; }));
       const textModel = entry.model?.kind === 'text';
@@ -81,8 +84,17 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       if (model && typeof model === 'object') this.modelSnapshots.set(model, { revision: entry.info.revision, ...(textModel ? { text: entry.model as TextModelReference } : { blob: modelBlob! }) });
       if (textModel) this.textSnapshots.set(entry.info.id, { bytes, blob, format: entry.model.format });
       const { content: _content, model: _storedModel, ...document } = entry;
-      restoredDocuments.push({ ...document, bytes, info: { ...entry.info, model } });
-    }
+      restoredDocuments[index] = { ...document, bytes, info: { ...entry.info, model } };
+    };
+    let failed = false;
+    const readers = await Promise.allSettled(Array.from({ length: Math.min(exclusive ? 1 : 2, workspace.documents.length) }, async () => {
+      for (;;) {
+        if (failed) return;
+        const index = nextDocument++; if (index >= workspace.documents.length) return;
+        try { await restore(index); } catch (error) { failed = true; throw error; }
+      }
+    }));
+    for (const reader of readers) if (reader.status === 'rejected') throw reader.reason;
     workspace.documents = restoredDocuments;
     return workspace as T;
   }

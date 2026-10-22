@@ -1,4 +1,5 @@
 import type { Rect } from '../../../../../packages/contracts/src/index';
+import { scheduleLayoutRead } from './layout-frame';
 
 export type FloatingHitbox = { id: string; group: string; bounds: Rect; canMove?: boolean; canCollapse?: boolean; yield?(bounds?: Rect): void };
 export const FLOATING_HITBOX_EVENT = 'agentviewer:floating-hitboxes-changed';
@@ -67,7 +68,7 @@ export function floatingOwnerGroup(element:Element){const owner=element.closest(
 /** One batched geometry pass observes painted boxes, not assumed CSS sizes.
  * Same-origin portal windows forward CSS coordinates to their owning window. */
 export function installFloatingHitboxes(doc:Document){
-  const win=doc.defaultView!;let disposed=false,frame=0,sequence=0;
+  const win=doc.defaultView!;let disposed=false,cancelRead:(()=>void)|undefined,sequence=0;
   const prefix='dom:'+crypto.randomUUID()+':',nodes=new Map<Element,string>(),root=ownerWindow();
   const nativeHost=root===win&&/^#\/(?:web|agent|ai-result|selection)-toolbar/.test(win.location.hash),nativeBoxes=new Map<string,Omit<FloatingHitbox,'id'>>();
   let sent='',inflight=false;
@@ -77,33 +78,41 @@ export function installFloatingHitboxes(doc:Document){
     else if(root===win)updateFloatingHitbox(id,value);
     else root.dispatchEvent(new CustomEvent('agentviewer:floating-hitbox-report',{detail:{id,value}}));
   };
-  const read=()=>{frame=0;if(disposed)return;let pruned=false;
+  const read=()=>{cancelRead=undefined;if(disposed)return;let pruned=false;
+    const updates:{id:string;value?:Omit<FloatingHitbox,'id'>}[]=[],geometry=new Map<Element,DOMRect>();
+    const rectFor=(element:Element)=>{let rect=geometry.get(element);if(!rect){rect=element.getBoundingClientRect();geometry.set(element,rect);}return rect;};
+    const queue=(id:string,value?:Omit<FloatingHitbox,'id'>)=>updates.push({id,value});
     for(const [element,id] of nodes){
-      if(!element.isConnected){nodes.delete(element);size.unobserve(element);publish(id);pruned=true;continue;}
-      if(element.matches('[data-floating-hitbox-managed="true"]')){publish(id);continue;}
-      const style=win.getComputedStyle(element),box=element.getBoundingClientRect();
+      if(!element.isConnected){nodes.delete(element);size.unobserve(element);queue(id);pruned=true;continue;}
+      if(element.matches('[data-floating-hitbox-managed="true"]')){queue(id);continue;}
+      const style=win.getComputedStyle(element),box=rectFor(element);
       const hidden=element.closest('[hidden],[data-panel-anchor="true"]')||style.visibility==='hidden'||style.display==='none'||Number(style.opacity)===0;
-      if(hidden||box.width<=0||box.height<=0){publish(id);continue;}
+      if(hidden||box.width<=0||box.height<=0){queue(id);continue;}
       const parent=element.parentElement?.closest(selector);
-      if(parent&&nodes.has(parent)&&group(parent)===group(element)){const outer=parent.getBoundingClientRect();if(box.left>=outer.left&&box.top>=outer.top&&box.right<=outer.right&&box.bottom<=outer.bottom){publish(id);continue;}}
+      if(parent&&nodes.has(parent)&&group(parent)===group(element)){const outer=rectFor(parent);if(box.left>=outer.left&&box.top>=outer.top&&box.right<=outer.right&&box.bottom<=outer.bottom){queue(id);continue;}}
       const offset=root===win?{x:0,y:0}:{x:win.screenX-root.screenX,y:win.screenY-root.screenY};
       const bounds={x:box.x+offset.x,y:box.y+offset.y,width:box.width,height:box.height},policy=(element as HTMLElement).dataset.floatingYield??'';
-      publish(id,{group:group(element),bounds,canMove:policy.includes('move'),canCollapse:policy.includes('collapse'),yield:next=>element.dispatchEvent(new CustomEvent('agentviewer:floating-yield',{detail:{bounds:next&&{...next,x:next.x-offset.x,y:next.y-offset.y}}}))});
+      queue(id,{group:group(element),bounds,canMove:policy.includes('move'),canCollapse:policy.includes('collapse'),yield:next=>element.dispatchEvent(new CustomEvent('agentviewer:floating-yield',{detail:{bounds:next&&{...next,x:next.x-offset.x,y:next.y-offset.y}}}))});
     }
     if(pruned){attributes.disconnect();for(const element of nodes.keys())attributes.observe(element,{attributes:true,attributeFilter:['class','style','hidden','open','data-motion-phase','aria-hidden','data-floating-owner']});}
-    sendNative();
+    return ()=>{
+      if(disposed)return;
+      for(const update of updates)publish(update.id,update.value);
+      sendNative();
+    };
   };
-  const schedule=()=>{if(!disposed&&!frame)frame=win.requestAnimationFrame(read);};
+  const schedule=()=>{if(!disposed&&!cancelRead)cancelRead=scheduleLayoutRead(read);};
   const size=new ResizeObserver(schedule),attributes=new MutationObserver(schedule);
   const track=(element:Element)=>{if(nodes.has(element))return;nodes.set(element,prefix+ ++sequence);size.observe(element);attributes.observe(element,{attributes:true,attributeFilter:['class','style','hidden','open','data-motion-phase','aria-hidden','data-floating-owner']});schedule();};
-  const discover=(node:Node)=>{if(!(node instanceof Element))return;if(node.matches(selector))track(node);node.querySelectorAll(selector).forEach(track);};
+  const discover=(node:Node)=>{if(!(node instanceof Element))return;if(node.matches(selector))track(node);if(node.firstElementChild)node.querySelectorAll(selector).forEach(track);};
   discover(doc.documentElement);
   const additions=new MutationObserver(changes=>{let removed=false;for(const change of changes){for(const node of change.addedNodes)discover(node);removed ||= change.removedNodes.length>0;}if(removed)schedule();});
   additions.observe(doc.body,{childList:true,subtree:true});
   const receive=(event:Event)=>{const {id,value}=(event as CustomEvent<{id:string;value?:Omit<FloatingHitbox,'id'>}>).detail??{};if(typeof id==='string'&&id.startsWith('dom:'))updateFloatingHitbox(id,value);};
   if(root===win)win.addEventListener('agentviewer:floating-hitbox-report',receive);
   doc.addEventListener('scroll',schedule,true);win.addEventListener('resize',schedule);doc.addEventListener('toggle',schedule,true);
-  win.addEventListener(FLOATING_HITBOX_EVENT,schedule);
-  const dispose=()=>{if(disposed)return;disposed=true;win.cancelAnimationFrame(frame);size.disconnect();attributes.disconnect();additions.disconnect();for(const id of nodes.values())publish(id);nodes.clear();win.removeEventListener('agentviewer:floating-hitbox-report',receive);doc.removeEventListener('scroll',schedule,true);win.removeEventListener('resize',schedule);win.removeEventListener(FLOATING_HITBOX_EVENT,schedule);doc.removeEventListener('toggle',schedule,true);win.removeEventListener('pagehide',dispose);};
+  // Registry notifications contain already measured geometry. Re-reading the
+  // DOM in response to our own publication doubled every scroll/spring pass.
+  const dispose=()=>{if(disposed)return;disposed=true;cancelRead?.();size.disconnect();attributes.disconnect();additions.disconnect();for(const id of nodes.values())publish(id);nodes.clear();win.removeEventListener('agentviewer:floating-hitbox-report',receive);doc.removeEventListener('scroll',schedule,true);win.removeEventListener('resize',schedule);doc.removeEventListener('toggle',schedule,true);win.removeEventListener('pagehide',dispose);};
   win.addEventListener('pagehide',dispose);return dispose;
 }

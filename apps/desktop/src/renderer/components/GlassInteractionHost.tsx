@@ -20,7 +20,12 @@ export function GlassInteractionHost() {
       return controller;
     };
     const searchController = (host: HTMLElement) => controllerFor(host, host.matches('.navigation-capsule') ? 'panel' : 'search', host.matches('.navigation-capsule') ? 'surface' : 'host');
-    for (const host of document.querySelectorAll<HTMLElement>(searchSelector)) searchController(host);
+    const discover = (node: Node) => {
+      if (!(node instanceof HTMLElement)) return;
+      if (node.matches(searchSelector)) searchController(node);
+      if (node.firstElementChild) node.querySelectorAll<HTMLElement>(searchSelector).forEach(searchController);
+    };
+    discover(document.body);
     const selector = 'button.icon-button,button.button,.activity-rail button,.ai-rail button,.view-modes button,.tab-select,.outline-item,.settings-nav button,.recent-card,.selection-tool-icons button,.translation-actions button,button.tab-close';
     const materialTarget = (event: Event) => {
       const host = event.target instanceof Element ? event.target.closest<HTMLElement>('.material-host') : null;
@@ -58,9 +63,11 @@ export function GlassInteractionHost() {
       if (host && !(event.relatedTarget instanceof Node && host.contains(event.relatedTarget))) controllers.get(host)?.blur();
     };
     const blur = () => { pointers.clear(); for (const controller of controllers.values()) controller.reset(); };
-    const cleanup = new MutationObserver(() => {
-      for (const [element, controller] of controllers) if (!element.isConnected || glassElasticControllerOwner(element) === 'explicit') { controller.destroy(); controllers.delete(element); }
-      for (const host of document.querySelectorAll<HTMLElement>(searchSelector)) if (!controllers.has(host)) searchController(host);
+    const cleanup = new MutationObserver(changes => {
+      // Preserve the initial material state, but inspect only added subtrees.
+      // Editing document text must not rescan all search/navigation hosts.
+      if (controllers.size && changes.some(change => change.removedNodes.length)) for (const [element, controller] of controllers) if (!element.isConnected || glassElasticControllerOwner(element) === 'explicit') { controller.destroy(); controllers.delete(element); }
+      for (const change of changes) change.addedNodes.forEach(discover);
     });
     cleanup.observe(document.body, { childList: true, subtree: true });
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');

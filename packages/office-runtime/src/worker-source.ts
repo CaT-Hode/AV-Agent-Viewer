@@ -1052,7 +1052,16 @@ def store_snapshot_file(session,output,filter_name):
                 manager=session['doc'].getUndoManager()
                 if manager.isLocked():fail('NATIVE_UNDO_BUSY','原生撤销事务尚未结束，没有改变其记录。')
                 manager.lock();locked=True;intermediate=ROOT/(str(uuid.uuid4())+'.odp')
-            session['doc'].storeToURL((intermediate or output).as_uri(),props({'FilterName':'impress8' if guarded else filter_name,'Overwrite':True}))
+            serialization_started=time.monotonic()
+            # The ODP is read synchronously by our private clone, then deleted.
+            # Its disk sync serves no publication/recovery purpose. Keep the
+            # thumbnail path: toggling NoThumbnail mutates the pinned model.
+            # This descriptor affects only the temporary store; the final
+            # file's sync and native undo protection remain intact.
+            options={'FilterName':'impress8' if guarded else filter_name,'Overwrite':True}
+            if guarded:options.update(NoFileSync=True)
+            session['doc'].storeToURL((intermediate or output).as_uri(),props(options))
+            if guarded:emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'serialize-intermediate','elapsedMs':round((time.monotonic()-serialization_started)*1000,2)})
         finally:
             try:
                 if locked:manager.unlock()
@@ -1063,10 +1072,16 @@ def store_snapshot_file(session,output,filter_name):
                     except:restore_failed=True
                 if restore_failed:fail('NATIVE_INPUT_RESTORE_FAILED','原生视图输入未恢复，请保留文档并重新打开该视图。')
         if intermediate is not None:
+            clone_started=time.monotonic()
             clone=desktop.loadComponentFromURL(intermediate.as_uri(),'_blank',0,props({'Hidden':True,'ReadOnly':True,'FilterName':'impress8','MacroExecutionMode':uno.Any('short',0),'UpdateDocMode':uno.Any('short',0),'InteractionHandler':SafeImportInteraction()}))
+            emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'load-readonly-clone','elapsedMs':round((time.monotonic()-clone_started)*1000,2)})
             if clone is None:fail('NATIVE_EXPORT_FAILED','无法创建隔离的只读导出副本。')
+            reconcile_started=time.monotonic()
             reconcile_clone_shape_colors(session,clone)
+            emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'reconcile-colors','elapsedMs':round((time.monotonic()-reconcile_started)*1000,2)})
+            export_started=time.monotonic()
             clone.storeToURL(output.as_uri(),props({'FilterName':filter_name,'Overwrite':True}))
+            emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'export-pptx','elapsedMs':round((time.monotonic()-export_started)*1000,2)})
     finally:
         try:
             if clone is not None:clone.close(True)
@@ -1074,6 +1089,8 @@ def store_snapshot_file(session,output,filter_name):
             if intermediate is not None:
                 try:intermediate.unlink()
                 except FileNotFoundError:pass
+
+def snapshot_input_pending(session,view):return state(session,view)['pendingInput']
 
 def snapshot(session,view,export_format=None,known=None):
     def response(result,data):
@@ -1084,7 +1101,7 @@ def snapshot(session,view,export_format=None,known=None):
             return dict(result,unchanged=True)
         return dict(result,bytes=base64.b64encode(data).decode())
     for candidate in session['views'].values():
-        if not candidate.get('disposed') and state(session,candidate)['pendingInput']:fail('NATIVE_PENDING_INPUT','此文档的原生视图仍有未完成输入，没有自动提交。')
+        if not candidate.get('disposed') and snapshot_input_pending(session,candidate):fail('NATIVE_PENDING_INPUT','此文档的原生视图仍有未完成输入，没有自动提交。')
     cached=session.get('lastSnapshot');current_undo=undo_state(session)
     # An explicit native-format copy may use the same verified immutable bytes,
     # but never a cross-format or legacy cache without a declared format/raw body.
