@@ -1037,8 +1037,8 @@ def store_snapshot_file(session,output,filter_name):
     # PPTX's exporter creates and removes temporary layout slides in the live
     # model. Those implementation details must not become user undo actions.
     # XUndoManager.lock alone does not stop the native Impress exporter's own
-    # Sdr undo records. Serialize the live model to ODP, then let a private,
-    # hidden read-only clone bear the PPTX export's temporary layout changes.
+    # Sdr undo records. Copy the live model into a disposable native ODF
+    # storage, then let a viewless read-only clone bear temporary layout changes.
     # Suspend registered inputs only during the short live-model serialization.
     guarded=filter_name=='Impress MS PowerPoint 2007 XML';windows=[];manager=None;locked=False;intermediate=None;clone=None
     try:
@@ -1051,16 +1051,19 @@ def store_snapshot_file(session,output,filter_name):
                     windows.append(window);window.setEnable(False)
                 manager=session['doc'].getUndoManager()
                 if manager.isLocked():fail('NATIVE_UNDO_BUSY','原生撤销事务尚未结束，没有改变其记录。')
-                manager.lock();locked=True;intermediate=ROOT/(str(uuid.uuid4())+'.odp')
+                manager.lock();locked=True
             serialization_started=time.monotonic()
-            # The ODP is read synchronously by our private clone, then deleted.
-            # Its disk sync serves no publication/recovery purpose. Keep the
-            # thumbnail path: toggling NoThumbnail mutates the pinned model.
-            # This descriptor affects only the temporary store; the final
-            # file's sync and native undo protection remain intact.
+            # XStorage is a complete native ODF package, not a partial model.
+            # Reuse its open package instead of exporting/reopening an ODP URL.
+            # The factory may spool to native temporary files; no Python byte
+            # buffers or cross-snapshot cache are retained. Keep the thumbnail
+            # path: toggling NoThumbnail mutates the pinned source model.
             options={'FilterName':'impress8' if guarded else filter_name,'Overwrite':True}
-            if guarded:options.update(NoFileSync=True)
-            session['doc'].storeToURL((intermediate or output).as_uri(),props(options))
+            if guarded:
+                base_url=session['doc'].getURL();options['DocumentBaseURL']=base_url
+                intermediate=sm.createInstanceWithContext('com.sun.star.embed.StorageFactory',ctx).createInstance()
+                session['doc'].storeToStorage(intermediate,props(options))
+            else:session['doc'].storeToURL(output.as_uri(),props(options))
             if guarded:emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'serialize-intermediate','elapsedMs':round((time.monotonic()-serialization_started)*1000,2)})
         finally:
             try:
@@ -1073,9 +1076,12 @@ def store_snapshot_file(session,output,filter_name):
                 if restore_failed:fail('NATIVE_INPUT_RESTORE_FAILED','原生视图输入未恢复，请保留文档并重新打开该视图。')
         if intermediate is not None:
             clone_started=time.monotonic()
-            clone=desktop.loadComponentFromURL(intermediate.as_uri(),'_blank',0,props({'Hidden':True,'ReadOnly':True,'FilterName':'impress8','MacroExecutionMode':uno.Any('short',0),'UpdateDocMode':uno.Any('short',0),'InteractionHandler':SafeImportInteraction()}))
-            emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'load-readonly-clone','elapsedMs':round((time.monotonic()-clone_started)*1000,2)})
+            clone=sm.createInstanceWithContext('com.sun.star.presentation.PresentationDocument',ctx)
+            clone_created=time.monotonic()
+            if clone is not None:clone.loadFromStorage(intermediate,props({'DocumentBaseURL':base_url,'Hidden':True,'ReadOnly':True,'FilterName':'impress8','MacroExecutionMode':uno.Any('short',0),'UpdateDocMode':uno.Any('short',0),'InteractionHandler':SafeImportInteraction()}))
+            emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'load-readonly-clone','elapsedMs':round((time.monotonic()-clone_started)*1000,2),'createModelMs':round((clone_created-clone_started)*1000,2),'importMs':round((time.monotonic()-clone_created)*1000,2)})
             if clone is None:fail('NATIVE_EXPORT_FAILED','无法创建隔离的只读导出副本。')
+            if not clone.isReadonly() or clone.getCurrentController() is not None:fail('NATIVE_EXPORT_FAILED','隔离导出副本没有保持无视图只读模型。')
             reconcile_started=time.monotonic()
             reconcile_clone_shape_colors(session,clone)
             emit({'type':'diagnostic','code':'NATIVE_SNAPSHOT_STAGE','sessionId':session['sessionId'],'stage':'reconcile-colors','elapsedMs':round((time.monotonic()-reconcile_started)*1000,2)})
@@ -1087,8 +1093,7 @@ def store_snapshot_file(session,output,filter_name):
             if clone is not None:clone.close(True)
         finally:
             if intermediate is not None:
-                try:intermediate.unlink()
-                except FileNotFoundError:pass
+                intermediate.dispose()
 
 def snapshot_input_pending(session,view):return state(session,view)['pendingInput']
 

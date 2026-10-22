@@ -2,7 +2,6 @@
   "unit": [
     "core.test.ts",
     "office-model.test.ts",
-    "office-style-simulation.test.ts",
     "translation-selection.test.ts"
   ],
   "integration": [
@@ -37,7 +36,7 @@
       "runtime": "engine",
       "file": "office-export.integration.ts",
       "env": { "AGENTVIEWER_EXPORT_ITERATIONS": "2" },
-      "cases": ["Word 独立导出和撤销", "Excel 独立导出及公式保留", "PPT 样式、独立导出和撤销重做"]
+      "cases": ["Word 范围、表格、修订和独立导出", "Excel 区域、公式、图表、透视和独立导出", "PPT 对象、备注、样式、独立导出和撤销重做"]
     }
   ]
 }

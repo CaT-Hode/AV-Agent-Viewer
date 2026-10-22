@@ -1,8 +1,8 @@
 import type { NativeOfficeState, NativeOfficeThumbnailSource } from '../../../../../packages/contracts/src/native-office';
 import type { NativeOfficeRequest } from './native-office-tools';
 
-export type OfficeSlideItem = { index: number; name: string; text?: string; width: number; height: number; thumbnail?: string };
-export type OfficeSlideNavigation = { items: OfficeSlideItem[]; activeIndex?: number; source?: NativeOfficeThumbnailSource; legacy: boolean };
+type OfficeSlideItem = { index: number; name: string; text?: string; width: number; height: number };
+export type OfficeSlideNavigation = { items: OfficeSlideItem[]; activeIndex?: number; source: NativeOfficeThumbnailSource };
 const counter = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const staleThumbnailError = (message: string) => /STALE_NATIVE_THUMBNAIL|STALE_NATIVE_QUERY|NATIVE_SESSION_EXPIRED|NATIVE_QUERY_UNSUPPORTED/.test(message);
 const pendingThumbnailError = (message: string) => /NATIVE_PENDING_INPUT/.test(message);
@@ -27,20 +27,14 @@ function parseNavigation(value: unknown, state: NativeOfficeState): OfficeSlideN
     const item = raw as OfficeSlideItem | undefined;
     if (!item || !counter(item.index) || item.index >= 10000 || indices.has(item.index) || typeof item.name !== 'string' || !Number.isFinite(item.width) || item.width <= 0 || !Number.isFinite(item.height) || item.height <= 0) throw new Error('Office 幻灯片列表回执无效。');
     indices.add(item.index);
-    return { index: item.index, name: item.name, width: item.width, height: item.height, text: typeof item.text === 'string' ? item.text.slice(0, 400) : undefined, thumbnail: validOfficeThumbnail(item.thumbnail) ? item.thumbnail : undefined };
+    return { index: item.index, name: item.name, width: item.width, height: item.height, text: typeof item.text === 'string' ? item.text.slice(0, 400) : undefined };
   });
-  const source = data.thumbnailSource === undefined ? undefined : parseOfficeThumbnailSource(data.thumbnailSource);
-  if (source && (source.documentId !== state.documentId || source.sessionId !== state.sessionId || source.engineEpoch !== state.engineEpoch || source.engineRevision !== state.engineRevision)) throw new Error('STALE_NATIVE_THUMBNAIL');
-  return { items, activeIndex: counter(data.activeIndex) ? data.activeIndex : undefined, source, legacy: !source };
+  const source = parseOfficeThumbnailSource(data.thumbnailSource);
+  if (source.documentId !== state.documentId || source.sessionId !== state.sessionId || source.engineEpoch !== state.engineEpoch || source.engineRevision !== state.engineRevision) throw new Error('STALE_NATIVE_THUMBNAIL');
+  return { items, activeIndex: counter(data.activeIndex) ? data.activeIndex : undefined, source };
 }
-/** Only an explicitly unsupported new query falls back to the old public contract. */
 export async function readOfficeSlideNavigation(request: NativeOfficeRequest, expected: NativeOfficeState): Promise<OfficeSlideNavigation> {
-  let response: { state: NativeOfficeState; data: unknown };
-  try { response = await request('office-query', { viewId: expected.viewId, target: { kind: 'slides', includeThumbnails: false } }); }
-  catch (cause) {
-    if (!/INVALID_ARGUMENT|INVALID_NATIVE_QUERY|NATIVE_QUERY_UNSUPPORTED|METHOD_UNSUPPORTED|NATIVE_METHOD_UNSUPPORTED|unrecognized_keys|Unrecognized key/i.test(String(cause))) throw cause;
-    response = await request('office-query', { viewId: expected.viewId, target: { kind: 'slides' } });
-  }
+  const response = await request<{ state: NativeOfficeState; data: unknown }>('office-query', { viewId: expected.viewId, target: { kind: 'slides', includeThumbnails: false } });
   if (!officeSlideReplyOwned(response.state, expected)) throw new Error('STALE_NATIVE_THUMBNAIL');
   return parseNavigation(response.data, response.state);
 }

@@ -1,10 +1,9 @@
 import { useRef, useState, type ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { editOperationSchema, type DocumentInfo, type EditOperation, type OfficeTextStyle, type ReadingContext, type TextBlock } from '../../../../../../packages/contracts/src/index';
+import { editOperationSchema, type DocumentInfo, type EditOperation, type OfficeTextStyle, type TextBlock } from '../../../../../../packages/contracts/src/index';
 
 export type OfficeTarget = { viewId: string; blockId?: string; slideId?: string; shapeId?: string; sheetId?: string; address?: string; range?: string; from?: number; to?: number; selectedText?: string };
 export type OfficeToolProps = { document: DocumentInfo; viewId: string; target?: OfficeTarget; edit(operation: EditOperation): Promise<void>; placement?: 'ribbon' | 'sidebar' };
-export type RichBlock = TextBlock;
 
 export function useOfficeCommands({ document, edit }: OfficeToolProps) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -41,7 +40,6 @@ export function addressPosition(address: string) { const match = /^([A-Z]+)([1-9
 export function normalizedRange(start: string, end = start) { const a = addressPosition(start), b = addressPosition(end); return `${columnName(Math.min(a.column, b.column) - 1)}${Math.min(a.row, b.row)}:${columnName(Math.max(a.column, b.column) - 1)}${Math.max(a.row, b.row)}`; }
 export function rangeContains(range: string, address: string) { const [start, end] = range.split(':'), a = addressPosition(start), b = addressPosition(end ?? start), p = addressPosition(address); return p.row >= a.row && p.row <= b.row && p.column >= a.column && p.column <= b.column; }
 
-export type OfficeSelection = ReadingContext['selection'];
 
 /** A focus change to a property field must not replace the actual text range. */
 export function textRange(block: TextBlock, target?: OfficeTarget) {

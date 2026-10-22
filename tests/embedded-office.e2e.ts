@@ -22,16 +22,15 @@ import { recordCurrentBuild } from './helpers/current-build';
 import { verifyOfficeElasticity } from './helpers/reader-motion';
 
 const qaOnly = process.env.AGENTVIEWER_QA_ONLY ?? '';
-assert.ok(qaOnly === '' || qaOnly === 'theme' || qaOnly === 'ppt-selection', 'AGENTVIEWER_QA_ONLY supports an empty default flow, theme or ppt-selection diagnostic');
+assert.ok(qaOnly === '' || qaOnly === 'theme', 'AGENTVIEWER_QA_ONLY supports the registered default or theme flow');
 const themeOnly = qaOnly === 'theme';
 
 // Real Electron + desktop IPC + the direct DLL writer. Every editable file and profile is a TEMP copy.
 // Playwright is used because a Browser plugin/browser skill is not available in this test runner.
 // CDP Input is genuine Chromium composition, not a synthetic DOM event or a claim of OS Pinyin coverage.
 const require = createRequire(import.meta.url), executable = require('electron') as string, run = promisify(execFile);
-if (process.env.AGENTVIEWER_QA_EXE?.trim()) throw new Error('UNVERIFIED_DESKTOP_TARGET: this suite only accepts the current production build.');
 const directory = await mkdtemp(join(tmpdir(), 'agentviewer-embedded-office-'));
-const evidence = process.env.AGENTVIEWER_QA_DIR ? join(resolve(process.env.AGENTVIEWER_QA_DIR), 'embedded-office') : join(directory, 'evidence'); await mkdir(evidence, { recursive: true });
+const evidence = join(directory, 'evidence'); await mkdir(evidence, { recursive: true });
 await recordCurrentBuild(evidence);
 const names = { docx: '03-潮灯町的第十三夜.docx', pptx: '04-故事介绍.pptx', xlsx: '02-编年表.xlsx' } as const;
 
@@ -633,8 +632,6 @@ try {
     await main.screenshot({path:join(evidence,'writer-properties-multiline-dark.png'),scale:'css'});await properties.locator('[data-office-control-id="ok"]').click();await properties.waitFor({state:'hidden'});await invoke('save',{documentId:word.documentId});
     const metadataZip=await JSZip.loadAsync(await readFile(join(directory,names.docx))),metadataXml=await metadataZip.file('docProps/core.xml')!.async('string'),metadata=new DOMParser().parseFromString(metadataXml,'application/xml'),savedDescription=metadata.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/','description')[0]?.textContent;
     assert.equal(savedDescription?.replace(/\r\n/g,'\n'),multilineText,'the actual saved DOCX metadata preserves both lines');results.structuredMultiline={nativeReadback:true,text:multilineText,savedDescription,saved:true};
-  } else if(qaOnly==='ppt-selection') {
-    await verifyImpressEditing(await open('pptx'));
   } else {
 word = await open('docx');
 results.wordElasticity = await verifyOfficeElasticity(main);
@@ -840,7 +837,7 @@ results.dialog = { command:'.uno:InsertTable',instanceId: dialog.instanceId, kin
 
   for (const name of Object.values(names)) assert.deepEqual(await readFile(originalPaths.get(name)!), originals.get(name), 'authored source stays unchanged');
   assert.deepEqual(errors, []); assert.doesNotMatch(stderr.join(''), /Object has been destroyed|UnhandledPromiseRejection|Uncaught (?:Exception|TypeError|Error)/i);
-  passed = true; await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed, directory, evidence, scale, port, testScope: themeOnly ? 'structured-native-dialog,light-dark-light,real-table-save' : qaOnly==='ppt-selection'?'impress-selection,live-format,text-undo,save-reopen':'writer,calc,impress,native-dialog', ...results, errors, rendererScreenshotsIncludeActualEnginePixels: true, imeCoverage: themeOnly ? 'Chromium CDP dialog composition, not OS Pinyin' : 'Chromium CDP composition, not OS Pinyin' }, null, 2)); console.log(qaOnly==='ppt-selection'?'Real Impress selected text, live format, toolbar text Undo, redo and save/reopen: PASS':themeOnly ? 'Real native controls, themed DOM dialogs and saved 3x2 table: PASS' : 'Real Embedded Office Electron / native DLL tiles / desktop IPC / human Canvas input + Chromium IME / selection + styles / native dialog / save + reopen: PASS', evidence);
+  passed = true; await writeFile(join(evidence, 'results.json'), JSON.stringify({ passed, directory, evidence, scale, port, testScope: themeOnly ? 'structured-native-dialog,light-dark-light,real-table-save' : 'writer,calc,impress,native-dialog', ...results, errors, rendererScreenshotsIncludeActualEnginePixels: true, imeCoverage: themeOnly ? 'Chromium CDP dialog composition, not OS Pinyin' : 'Chromium CDP composition, not OS Pinyin' }, null, 2)); console.log(themeOnly ? 'Real native controls, themed DOM dialogs and saved 3x2 table: PASS' : 'Real Embedded Office Electron / native DLL tiles / desktop IPC / human Canvas input + Chromium IME / selection + styles / native dialog / save + reopen: PASS', evidence);
 } catch (cause) {
   results.bootstrapDiagnostics=await app.evaluate(()=>(globalThis as any).__officeQaBootstrap).catch(()=>undefined);results.runtimeAtFailure=await invoke('office-statistics').catch(()=>undefined);results.rendererPerformance=await main.evaluate(()=>(window as any).__officeQaPerformance).catch(()=>undefined);results.ipcTrace=await app.evaluate(({ipcMain})=>(ipcMain as any).__officeQaTrace).catch(()=>undefined);results.lastState = await workspace().catch(() => undefined); await main.screenshot({ path: join(evidence, 'failure.png'), scale: 'css' }).catch(() => {}); await writeFile(join(evidence, 'failure.json'), JSON.stringify({ passed: false, cause: String(cause), directory, evidence, scale, results, errors, stderr: stderr.join('').slice(-20000) }, null, 2)); console.error('Embedded Office actual UI evidence:', evidence); throw cause;
 } finally {

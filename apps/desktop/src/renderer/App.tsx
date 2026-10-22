@@ -901,7 +901,7 @@ function AgentTargetHighlight({ event }: { event: EventItem }) {
     if (!target || !reader) return;
     let element: HTMLElement | null = null;
     if (target.blockId || target.shapeId) element = reader.querySelector<HTMLElement>('[data-block-id="' + (target.blockId ?? target.shapeId) + '"]');
-    else if (target.address) element = reader.querySelector<HTMLElement>('.sheet-grid input[aria-label="' + target.address + '"]');
+    else if (target.address) element = reader.querySelector<HTMLElement>('.office-sheet-table input[data-cell-address="' + target.address + '"]');
     else if (target.pageIndex !== undefined) element = reader.querySelectorAll<HTMLElement>('.pdf-page')[target.pageIndex] ?? null;
     if (!element) return;
     const box = element.getBoundingClientRect(), host = reader.getBoundingClientRect();

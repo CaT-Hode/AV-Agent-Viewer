@@ -1,6 +1,6 @@
 # 测试与版本依据
 
-[suite.json](suite.json)登记41项单元测试、6项生产Electron流程和3项真实Kit流程，合计最多50项。单元或模拟通过不表示完整应用验收通过。
+[suite.json](suite.json)登记36项单元测试、6项生产Electron流程和3项真实Kit流程，合计45项，上限50。删除重复的Python样式模拟，保留真实引擎与文件往返检查。单元通过不表示完整应用验收通过。
 
 ```powershell
 npm.cmd test
@@ -17,14 +17,13 @@ npm.cmd run test:full
 | --- | --- |
 | core.test.ts | 当前核心、持久化、冲突、HTTP/MCP、隔离与资源释放；含替身 |
 | office-model.test.ts | OOXML模型、解析、公式与文件往返；不加载原生Office |
-| office-style-simulation.test.ts | 当前Python函数的样式、回滚和历史模拟；不证明UNO行为 |
 | translation-selection.test.ts | 翻译协议、冻结来源、取消及隔离；使用确定性响应 |
 | home-search.e2e.ts | 完整生产桌面的搜索、导航、设置；译文搜索通过本地HTTP协议夹具验证，不评价模型质量 |
 | reader-interaction.e2e.ts | 完整生产桌面的Markdown编辑、资源、导出、PDF和设置 |
 | embedded-office.e2e.ts | 当前原生DLL、Writer/Calc/Impress输入、样式、保存重开和弹窗 |
-| office-export.integration.ts | 当前适配器与真实Kit导出、撤销及独立重开；不是桌面呈现验收 |
+| office-export.integration.ts | 三格式真实Kit领域编辑、回执重放、撤销、导出及独立重开；不是桌面呈现验收 |
 
-首页和阅读器不再启用桌面TEST_MODE或内置假翻译。Office流程拒绝未核对的外部旧EXE，也不再替换为外部旧适配器。`test:office`只运行原生流程；单元及Python模拟由`npm test`单独执行。
+首页和阅读器使用生产入口与本地协议夹具。Office流程使用当前构建和适配器，不保留独立的PPT选择或authoring诊断模式。领域断言并入三个正式格式流程，证据统一由runner收集。`test:office`只运行原生流程；`npm test`运行单元测试。
 
 ## 产物与临时文件
 

@@ -8,7 +8,6 @@ import { call } from '../lib/transport';
 import '../native-office-tools.css';
 import { NAVIGATION_CONTENT_EVENT } from '../lib/useNavigationLayout';
 
-export const NATIVE_OFFICE_FORMULA_BAR_HEIGHT = 32;
 export type NativeOfficeFormulaBarProps = {
   documentId: string; viewId: string; state?: NativeOfficeState; request?: NativeOfficeRequest;
   active?: boolean;

@@ -237,14 +237,6 @@ async function prepareFromSource(source: XlsxSource, limits: XlsxPreviewLimits):
   }
 }
 
-export async function prepareBoundedXlsxPreview(bytes: Uint8Array, limits: XlsxPreviewLimits): Promise<BoundedXlsxPreview | undefined> {
-  if (![limits.rows, limits.columns].every(value => Number.isSafeInteger(value) && value > 0) || limits.rows > 1048576 || limits.columns > 16384) return undefined;
-  let source: XlsxSource | undefined;
-  try { source = await openXlsxSource(bytes); return await prepareFromSource(source, limits); }
-  catch { return undefined; }
-  finally { source?.release(); }
-}
-
 type XlsxFeatureResult = { ok: true; value: string[] } | { ok: false; error: unknown };
 /** Complete-source inspection and bounded preview share one short-lived ZIP
  * and original XML decode per entry. Preview reads record original feature

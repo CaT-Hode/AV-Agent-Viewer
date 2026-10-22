@@ -12,15 +12,13 @@
   --field-edge:rgb(197 217 232 / .16); --field-focus:#94bdd6;
   --field-shade:inset 0 1px 3px rgb(0 0 0 / .15),0 1px 0 rgb(255 255 255 / .025);
 }
-:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.selection-error,.document-paper-color-control,.office-toolbox)
-  :is(input:not([type]),input[type="text"],input[type="search"],input[type="url"],input[type="password"],input[type="number"],textarea):not(:where(.settings-search *, .search-field *, .markdown-workspace-search *, .prompt-box *, .sheet-grid *, .embedded-office-input, .embedded-office-window-input)) {
+:root[data-theme] :is(.settings-shell, .format-sidebar, .ai-drawer, .modal, .selection-input, .selection-error, .document-paper-color-control, .office-toolbox) :is(input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="password"], input[type="number"], textarea):not(:where(.settings-search *, .search-field *, .markdown-workspace-search *, .prompt-box *, .embedded-office-input, .embedded-office-window-input)) {
   border:1px solid var(--field-edge); border-radius:12px;
   background:var(--field-fill); color:var(--field-ink); caret-color:var(--field-focus);
   box-shadow:var(--field-shade); outline:0; outline-offset:2px;
   transition:background-color 140ms ease-out,border-color 140ms ease-out,box-shadow 140ms ease-out;
 }
-:root[data-theme] :is(.settings-shell,.format-sidebar,.ai-drawer,.modal,.selection-input,.office-toolbox)
-  :is(input:not([type]),input[type="text"],input[type="search"],input[type="url"],input[type="password"],input[type="number"],textarea):focus:not(:where(.settings-search *, .search-field *, .markdown-workspace-search *, .prompt-box *, .sheet-grid *, .embedded-office-input, .embedded-office-window-input)) {
+:root[data-theme] :is(.settings-shell, .format-sidebar, .ai-drawer, .modal, .selection-input, .office-toolbox) :is(input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="password"], input[type="number"], textarea):focus:not(:where(.settings-search *, .search-field *, .markdown-workspace-search *, .prompt-box *, .embedded-office-input, .embedded-office-window-input)) {
   border-color:var(--field-focus);
   box-shadow:var(--field-shade),0 0 0 3px color-mix(in srgb,var(--field-focus) 14%,transparent);
 }

@@ -478,28 +478,7 @@
 
 /* This is the #1 rule of the material: you cannot nest backdrop-filter inside
    backdrop-filter. Anything inside a pane is a translucent tint + top sheen. */
-:root[data-theme] :is(
-  .format-sidebar,
-  .ai-drawer,
-  .home-sidebar,
-  .settings-nav,
-  .modal
-) :is(
-  .location-chip,
-  .context-summary,
-  .job-card,
-  .tool-grid button,
-  .translation-card,
-  .new-format-list button,
-  .connection-card,
-  .artifact-row,
-  .recent-card,
-  .pdf-side-result,
-  .pdf-ocr-result,
-  .office-segment,
-  .word-page
-),
-:root[data-theme] .floating-capsule .address-input {
+:root[data-theme] :is(.format-sidebar, .ai-drawer, .home-sidebar, .settings-nav, .modal) :is(.location-chip, .context-summary, .job-card, .tool-grid button, .translation-card, .new-format-list button, .connection-card, .artifact-row, .recent-card, .pdf-side-result, .pdf-ocr-result, .office-segment), :root[data-theme] .floating-capsule .address-input {
   background: var(--glass-inset);
   color: var(--glass-ink);
   border-color: var(--glass-inset-hairline);

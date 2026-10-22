@@ -39,26 +39,19 @@ export function NativeOfficeSlides(props: { state: NativeOfficeState; ready: boo
     const root = host.closest<HTMLElement>('.adaptive-panel-scroll') ?? host.closest<HTMLElement>('.format-scroll') ?? host.closest<HTMLElement>('.floating-side-panel');
     const buttons = [...host.querySelectorAll<HTMLElement>('[data-office-slide-index]')];
     const update = (indices: Set<number>) => setVisible(previous => previous.size === indices.size && [...indices].every(index => previous.has(index)) ? previous : new Set(indices));
-    if (typeof IntersectionObserver === 'function') {
-      const indices = new Set<number>();
-      const observer = new IntersectionObserver(entries => { for (const entry of entries) { const index = Number((entry.target as HTMLElement).dataset.officeSlideIndex); if (entry.isIntersecting) indices.add(index); else indices.delete(index); } update(indices); }, { root, rootMargin: '64px 0px', threshold: 0 });
-      buttons.forEach(button => observer.observe(button));
-      return () => observer.disconnect();
-    }
-    // Older Chromium/test hosts still measure the actual scroll range; never
-    // fall back to exporting the whole deck on an unsupported observer.
-    const measure = () => { const bounds = root?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight }; update(new Set(buttons.filter(button => { const box = button.getBoundingClientRect(); return box.bottom > bounds.top - 64 && box.top < bounds.bottom + 64; }).map(button => Number(button.dataset.officeSlideIndex)))); };
-    root?.addEventListener('scroll', measure, { passive: true }); window.addEventListener('resize', measure); measure();
-    return () => { root?.removeEventListener('scroll', measure); window.removeEventListener('resize', measure); };
+    const indices = new Set<number>();
+    const observer = new IntersectionObserver(entries => { for (const entry of entries) { const index = Number((entry.target as HTMLElement).dataset.officeSlideIndex); if (entry.isIntersecting) indices.add(index); else indices.delete(index); } update(indices); }, { root, rootMargin: '64px 0px', threshold: 0 });
+    buttons.forEach(button => observer.observe(button));
+    return () => observer.disconnect();
   }, [itemIndices, controller]);
   const failed = [...visible].some(index => controller.error(index));
   const retryVisible = () => { if (error) setRetry(value => value + 1); else controller.retry(); };
-  return <section className="native-office-group native-office-navigation" aria-label="幻灯片导航" data-office-slide-source={sourceKey} data-office-slide-mode={data?.legacy ? 'legacy' : 'visible'}>
+  return <section className="native-office-group native-office-navigation" aria-label="幻灯片导航" data-office-slide-source={sourceKey} data-office-slide-mode="visible">
     <h3>幻灯片</h3>
     <div className="native-office-inline native-office-page-controls"><button className="icon-button" type="button" aria-label="上一张幻灯片" title={'上一张幻灯片' + (props.reason ? '\n' + props.reason : '')} disabled={props.disabled || activeIndex === undefined || !items.some(item => item.index === activeIndex - 1)} onMouseDown={event => event.preventDefault()} onClick={() => activeIndex !== undefined && props.navigate({ kind: 'slide', index: activeIndex - 1 })}><ChevronLeft size={16} aria-hidden="true" /></button><span>{activeIndex === undefined ? '—' : activeIndex + 1} / {items.length}</span><button className="icon-button" type="button" aria-label="下一张幻灯片" title={'下一张幻灯片' + (props.reason ? '\n' + props.reason : '')} disabled={props.disabled || activeIndex === undefined || !items.some(item => item.index === activeIndex + 1)} onMouseDown={event => event.preventDefault()} onClick={() => activeIndex !== undefined && props.navigate({ kind: 'slide', index: activeIndex + 1 })}><ChevronRight size={16} aria-hidden="true" /></button></div>
     {!data && !error && <p className="native-office-note" role="status">正在读取幻灯片列表…</p>}
     <div className="native-office-slide-list" ref={list}>{items.map(item => {
-      const near = visible.has(item.index), thumbnail = near && fresh && !loading ? data?.legacy ? item.thumbnail : controller.get(item.index) : undefined;
+      const near = visible.has(item.index), thumbnail = near && fresh && !loading ? controller.get(item.index) : undefined;
       return <button key={item.index} type="button" data-office-slide-index={item.index} data-thumbnail-visible={near} className={activeIndex === item.index ? 'selected' : ''} aria-label={'第 ' + (item.index + 1) + ' 张幻灯片'} aria-current={activeIndex === item.index ? 'page' : undefined} disabled={props.disabled} title={item.text || item.name} onMouseDown={event => event.preventDefault()} onClick={() => props.navigate({ kind: 'slide', index: item.index })}>
         <span className="native-office-slide-preview" style={{ aspectRatio: item.width / item.height }}>{thumbnail ? <img src={thumbnail} alt="" draggable={false} /> : <span className="native-office-slide-excerpt">{item.text || item.name}</span>}</span>
         <span className="native-office-item-label"><span>{item.index + 1}</span>{item.name}</span>

@@ -54,7 +54,7 @@ for (const entry of await readdir(testRoot, { recursive: true, withFileTypes: tr
   const file = relative(testRoot, join(entry.parentPath, entry.name)).replaceAll('\\', '/');
   if (!registered.has(file)) throw new Error('Unregistered test outside the 50-case budget: ' + file);
 }
-console.log(`Test budget: ${unitCount} unit tests (includes simulations) + ${desktopCount} production Electron flows + ${engineCount} engine flows = ${total}/50`);
+console.log(`Test budget: ${unitCount} unit tests + ${desktopCount} production Electron flows + ${engineCount} engine flows = ${total}/50`);
 if (mode === 'list') {
   for (const entry of units) for (const title of entry.titles) console.log('  [unit] ' + title);
   for (const entry of suite.integration) for (const title of entry.cases) console.log(`  [${entry.runtime}:${entry.id}] ${title}`);
@@ -65,7 +65,7 @@ const identity = mode === 'unit' ? undefined : await assertCurrentBuild();
 const temporary = await mkdtemp(join(tmpdir(), 'agentviewer-suite-'));
 const artifact = join(root, 'artifacts', 'verification', mode);
 const baseEnv = { ...process.env, TEMP: temporary, TMP: temporary };
-for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE', 'AGENTVIEWER_QA_ONLY', 'AGENTVIEWER_QA_EXE', 'AGENTVIEWER_QA_DIR', 'AGENTVIEWER_QA_WIDTH', 'AGENTVIEWER_QA_HEIGHT', 'AGENTVIEWER_AUTHORING_ONLY', 'AGENTVIEWER_EXPORT_ADAPTER']) delete baseEnv[key];
+for (const key of ['ELECTRON_RUN_AS_NODE', 'AGENTVIEWER_TEST_MODE', 'AGENTVIEWER_TEST_TRANSLATOR', 'AGENTVIEWER_VITE_URL', 'AGENTVIEWER_OFFICE_WORKER_MODE', 'AGENTVIEWER_QA_ONLY', 'AGENTVIEWER_QA_WIDTH', 'AGENTVIEWER_QA_HEIGHT']) delete baseEnv[key];
 try {
   const local = JSON.parse(await readFile(join(root, '.agentviewer/test-runtime.json'), 'utf8'));
   if (!baseEnv.AGENTVIEWER_ENGINES_DIR && typeof local.enginesDir === 'string') baseEnv.AGENTVIEWER_ENGINES_DIR = local.enginesDir;

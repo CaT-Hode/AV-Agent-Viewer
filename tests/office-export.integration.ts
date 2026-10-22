@@ -334,13 +334,10 @@ async function verifyWordVisibleProjection() {
   } finally { await runtime.close(documentId, { discard: true }); }
 }
 
-/** The same three engine flows can verify structured authoring without any
- * physical, CDP, simulated keyboard/mouse, Electron or human-window input. */
-async function verifyStructuredAuthoring() {
-  report.scope = 'Actual hidden Kit structured authoring, native readback, idempotency, Undo/Redo, serialization and independent native re-import. No input or UI validation.';
-  for (const format of ['docx', 'xlsx', 'pptx'] as const) {
+/** Domain operations share each format's real Kit export/reimport flow. */
+async function verifyStructuredAuthoring(format: 'docx' | 'xlsx' | 'pptx', item: Record<string, any>) {
     const sourceBytes = new Uint8Array(await readFile(join(samplesRoot, names[format]))), documentId = randomUUID(), viewId = randomUUID();
-    const item: Record<string, any> = { format, sourceSha256: sha(sourceBytes), operations: [] }; report.formats.push(item); phase('authoring-' + format, item);
+    const authoring: Record<string, any> = { operations: [] }; item.authoring = authoring; phase('authoring-' + format, item);
     let current: NativeOfficeState = await runtime.open({ sessionId: documentId, documentId, viewId, format, bytes: sourceBytes, revision: 0, ownerHwnd: '1', ownerViewport: { width: 1000, height: 800 }, bounds: { x: 0, y: 0, width: 1000, height: 800 }, visible: false });
     async function query(target: OfficeAuthoringQuery): Promise<any> {
       for (let attempt = 0; ; attempt++) {
@@ -355,7 +352,7 @@ async function verifyStructuredAuthoring() {
       assert.equal(result.verified, true); assert.equal(current.pendingInput, false);
       assert.deepEqual(await runtime.authoringExecute(request), result, 'An acknowledged logical request is replayed before checking its old engine revision');
       await assert.rejects(runtime.authoringExecute({ ...request, operation: { kind: 'slides.moveSlide', slideIndex: 0, index: 0 } }), /请求身份/);
-      item.operations.push({ kind: operation.kind, status: result.status, verified: result.verified, warnings: result.warnings, engineRevision: current.engineRevision, undoAvailable: !!result.undoToken });
+      authoring.operations.push({ kind: operation.kind, status: result.status, verified: result.verified, warnings: result.warnings, engineRevision: current.engineRevision, undoAvailable: !!result.undoToken });
       return result;
     }
     async function undoAndRedo(verifyUndo: () => Promise<void>, verifyRedo: () => Promise<void>) {
@@ -438,7 +435,7 @@ async function verifyStructuredAuthoring() {
       await edit({ kind: 'sheets.formatRange', sheetName, range: 'AC10', values: { numberFormat: '0.00' } }); await edit({ kind: 'sheets.formatRange', sheetName, range: 'AD10', values: { numberFormat: 'BOOLEAN' } });
       await edit({ kind: 'sheets.setRangeValues', sheetName, range: 'AC11:AD11', rows: [['=ISLOGICAL(AC10)', '=ISLOGICAL(AD10)']] });
       const controlled = await query({ kind: 'sheets.range', sheetName, range: 'AC10:AD11' }); assert.deepEqual(controlled.values, [[1, 42], [false, true]]); assert.deepEqual(controlled.logical[0], [false, true]);
-      item.logicalReadback = { literal: logical, numeric, formula };
+      authoring.logicalReadback = { literal: logical, numeric, formula };
     } else {
       const before = structuredClone(current), objects = await query({ kind: 'slides.objects', slideIndex: 2 }); originalPpt = (await query({ kind: 'slides.objectText', slideIndex: 2, objectPath: objects.objects[0].objectPath })).text;
       const text = await edit({ kind: 'slides.replaceText', slideIndex: 2, objectPath: [0], expectedText: originalPpt, text: marker }); assert.ok(text.undoToken);
@@ -469,8 +466,7 @@ async function verifyStructuredAuthoring() {
     if (format === 'docx') { assert.equal((await reopened({ kind: 'word.paragraphs', limit: 1 })).paragraphs[0].text, marker); assert.ok((await reopened({ kind: 'word.tables' })).tables.length); }
     else if (format === 'xlsx') { assert.ok((await reopened({ kind: 'sheets.range', sheetName, range: 'Q1:S4' })).values.flat().includes(marker)); assert.equal((await reopened({ kind: 'sheets.charts', sheetName })).charts[0].type, 'column'); assert.ok((await reopened({ kind: 'sheets.pivots', sheetName })).pivots.length); const logical = await reopened({ kind: 'sheets.range', sheetName, range: 'AA10:AB14' }); assert.deepEqual(logical.kinds[0], ['formula', 'formula']); assert.deepEqual(logical.values[0], [true, false]); assert.equal(logical.values[1][0], true); assert.equal(logical.values[1][1], true); assert.deepEqual((await reopened({ kind: 'sheets.range', sheetName, range: 'AC10:AD11' })).values, [[1, 42], [false, true]]); }
     else { assert.equal((await reopened({ kind: 'slides.objectText', slideIndex: 2, objectPath: [0] })).text, marker); assert.equal((await reopened({ kind: 'slides.notes', slideIndex: 2 })).text, marker); }
-    await runtime.close(copyId, { discard: true }); await runtime.close(documentId, { discard: true }); item.passed = true; item.savedCopy = { path, bytes: snapshot.bytes.length, sha256: sha(snapshot.bytes) };
-  }
+    await runtime.close(copyId, { discard: true }); await runtime.close(documentId, { discard: true }); authoring.passed = true; authoring.savedCopy = { path, bytes: snapshot.bytes.length, sha256: sha(snapshot.bytes) };
 }
 
 let failure: unknown;
@@ -478,8 +474,7 @@ try {
   assert.equal(process.platform, 'win32');
   phase('source-identities');
   report.identitiesBefore = await identities();
-  if (process.env.AGENTVIEWER_AUTHORING_ONLY === '1') await verifyStructuredAuthoring();
-  else for (const format of ['docx', 'xlsx', 'pptx'] as const) {
+  for (const format of ['docx', 'xlsx', 'pptx'] as const) {
     const sourceBytes = new Uint8Array(await readFile(join(samplesRoot, names[format]))), sourcePath = join(directory, names[format]);
     await writeFile(sourcePath, sourceBytes);
     const item: Record<string, any> = { format, sourcePath, sourceSha256: sha(sourceBytes), sourceBytes: sourceBytes.length, exports: [] };
@@ -695,6 +690,7 @@ try {
     item.passed = true;
     phase('close-owned-native-document', item);
     await core.closeNativeOffice(view.documentId);
+    await verifyStructuredAuthoring(format, item);
   }
   await verifyWordVisibleProjection();
   assert.equal(ackSavedCalls, 0, 'Copy export must never acknowledge the live source as saved');

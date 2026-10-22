@@ -67,12 +67,12 @@
 
 /* Reusable surfaces and selected states, including home and AI drawers. */
 :root[data-theme="dark"] :is(.recent-card,.artifact-row,.location-chip,.tool-grid button,.job-card,.connection-card,.modal,.new-format-list button,.office-action,.office-segment,.pdf-side-result) { background: var(--surface); color: var(--ink); border-color: var(--divider); box-shadow: 0 3px 12px #00000014; }
-:root[data-theme="dark"] :is(.button,.slide-nav button,.sheet-tabs button,.pdf-tools button) { background: #2e2e2e; border-color: #454545; color: #e2e2e2; }
+:root[data-theme="dark"] .button { background: #2e2e2e; border-color: #454545; color: #e2e2e2; }
 :root[data-theme="dark"] :is(.button:hover,.recent-card:hover,.artifact-row:hover,.tool-grid button:hover,.new-format-list button:hover,.office-action:hover) { background: #343434; border-color: #575757; }
 :root[data-theme="dark"] .button.primary { background: #6e6e6e; border-color: #828282; color: #fff; }
 :root[data-theme="dark"] .button.primary:hover { background: #7d7d7d; }
 :root[data-theme="dark"] :is(.home-tree .file-row:hover,.outline-item:hover,.tool-row:hover,.activity-rail button:hover,.ai-rail button:hover) { background: #313131; color: #e4e4e4; }
-:root[data-theme="dark"] :is(.file-row.selected,.activity-rail button.selected,.ai-rail button.selected,.view-modes button.selected,.pdf-side-tools .tool-row.selected,.office-segment button.selected,.sheet-tabs .selected) { background: var(--accent-soft); color: #e8e8e8; border-color: transparent; }
+:root[data-theme="dark"] :is(.file-row.selected, .activity-rail button.selected, .ai-rail button.selected, .view-modes button.selected, .pdf-side-tools .tool-row.selected, .office-segment button.selected) { background: var(--accent-soft); color: #e8e8e8; border-color: transparent; }
 :root[data-theme="dark"] .office-segment button:hover { background: #3a3a3a; color: #ececec; }
 :root[data-theme="dark"] :is(.home-hero h1,.home-section-title h2,.drawer-heading h2,.capsule-document-title,.translation-result) { color: var(--ink); }
 :root[data-theme="dark"] :is(.home-hero p,.home-muted,.home-section-title span,.recent-card small,.outline-item,.tool-row,.office-field,.pdf-side-label,.harness-line,.location-chip,.modal p) { color: #b2b2b2; }
@@ -116,11 +116,6 @@
 :root[data-theme="dark"] .source-editor .cm-cursor { border-color: #e0e0e0; }
 :root[data-theme="dark"] .source-editor .cm-selectionBackground { background: #4a4a4a !important; }
 :root[data-theme="dark"] .prose a { color: #cfcfcf; }
-:root[data-theme="dark"] :is(.word-page,.slide-canvas) { color: #273143; border-color: #59616d; }
-:root[data-theme="dark"] :is(.sheets-reader,.sheet-grid input) { background: #232323; color: #d8d8d8; }
-:root[data-theme="dark"] :is(.sheet-tabs,.sheet-grid th) { background: #2c2c2c; color: #b8b8b8; }
-:root[data-theme="dark"] :is(.sheet-grid th,.sheet-grid td) { border-color: #3e3e3e; }
-:root[data-theme="dark"] .sheet-grid input:focus { background: #3a3a3a; outline-color: #c9c9c9; }
 :root[data-theme="dark"][data-document-background="paper"] { --reading-canvas: radial-gradient(ellipse at 84% 10%,#3a363270,transparent 50%),#262626; }
 :root[data-theme="dark"][data-document-background="mist"] { --reading-canvas: radial-gradient(ellipse at 14% 7%,#3a444675,transparent 55%),#242424; }
 :root[data-theme="dark"][data-document-background="aurora"] { --reading-canvas: radial-gradient(ellipse at 15% 8%,#39434770,transparent 52%),radial-gradient(ellipse at 89% 79%,#3d3a3f65,transparent 58%),#262626; }

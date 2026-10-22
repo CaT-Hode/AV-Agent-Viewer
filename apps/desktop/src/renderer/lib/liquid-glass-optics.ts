@@ -115,9 +115,3 @@ export function requestGlassOptics(options: GlassOpticsOptions, signal?: AbortSi
     requested.consumers.add(consumer); signal?.addEventListener('abort', cancel, { once: true }); drain();
   });
 }
-
-/** Diagnostic cleanup cannot revoke assets still displayed by live surfaces. */
-export function clearGlassOpticsCache() {
-  for (const [key, asset] of cache) if (!asset.references) discard(key, asset);
-  for (const key of ['hits', 'builds', 'evictions', 'generatedPixels', 'pngEncodes', 'canceled', 'fallbacks'] as const) counters[key] = 0;
-}

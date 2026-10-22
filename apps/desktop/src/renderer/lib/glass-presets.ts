@@ -1,6 +1,5 @@
 /** Parameters read from kube/kube.io @ 1df5ee3e528410c9eeef55bd08a90af9796c62dc.
  * These are data and independently implemented equations, not vendored code. */
-export const KUBE_SOURCE_SHA = '1df5ee3e528410c9eeef55bd08a90af9796c62dc';
 // Application policy requested after the source study: clear refractive glass
 // has no Gaussian blur. The source presets remain intact for future tuning.
 export const REFRACTIVE_BLUR_LIMIT_PX = 0;

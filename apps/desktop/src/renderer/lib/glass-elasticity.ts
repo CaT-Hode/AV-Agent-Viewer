@@ -89,7 +89,6 @@ export function glassMaterialTarget(preset: GlassElasticPreset, active: boolean,
   return { fill: active ? .3 : focused ? .2 : .05, refraction: 1, magnification: 24 };
 }
 
-export function glassElasticMotionEnabled(mode: ElasticMotion, prefersReducedMotion: boolean) { return animatedMotion(resolveMotionMode(mode, prefersReducedMotion)); }
 /** Adapt time/response, never mutate the audited source material presets.
  * Elegant uses a gentle .78 damping ratio (about 2% free overshoot). */
 export function glassSpringParameters(parameters: SpringParameters, mode: MotionMode): SpringParameters {
@@ -329,8 +328,6 @@ export function useGlassElasticity<T extends HTMLElement = HTMLElement>(options:
   };
 }
 
-export const useGlassButtonElasticity = () => useGlassElasticity<HTMLButtonElement>({ preset: 'button' });
-
 /** A controlled position spring, separate from the optical/scale springs. */
 export function useGlassSpringValue(value: number, parameters: SpringParameters, immediate = false) {
   const axis = useRef<SpringAxis>({ value, velocity: 0 }), [display, setDisplay] = useState(value);
@@ -350,10 +347,4 @@ export function useGlassSpringValue(value: number, parameters: SpringParameters,
     return () => cancelAnimationFrame(frame);
   }, [value, parameters.stiffness, parameters.damping, parameters.mass, immediate, mode]);
   return display;
-}
-
-/** Compose visual feedback with an existing behavior without suppressing
- * native defaults, focus, value changes, click or a previous handler. */
-export function composeGlassHandlers<T>(behavior: ((event: T) => void) | undefined, feedback: ((event: T) => void) | undefined) {
-  return (event: T) => { behavior?.(event); feedback?.(event); };
 }

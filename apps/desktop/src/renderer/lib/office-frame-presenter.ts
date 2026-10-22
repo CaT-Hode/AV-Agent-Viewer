@@ -1,5 +1,6 @@
 import type {Rect} from '../../../../../packages/contracts/src/index';
-import type {OfficeSurfaceIdentity} from '../../../../../packages/contracts/src/office-surface';
+import type {OfficeSurfaceIdentity, OfficeSurfaceTile} from '../../../../../packages/contracts/src/office-surface';
+import { officeTileRgba } from './office-surface-pixels';
 import type {OfficeSurfaceGeometry} from './office-surface-geometry';
 
 export type OfficeFrameScope=OfficeSurfaceIdentity&{partIndex:number;engineRevision:number};
@@ -68,4 +69,78 @@ export class OfficeFramePresenter{
     this.releaseWhenIdle();
     return {changed:true,reused,resized};
   }
+}
+
+export type OfficeDecodedTile = Pick<OfficeSurfaceTile, 'key' | 'width' | 'height'>;
+type BitmapResource = { close(): void };
+type TileDecodeOptions<T extends BitmapResource> = {
+  current(): boolean;
+  validate(tile: OfficeSurfaceTile): void;
+  decode(image: ImageData): Promise<T>;
+  /** Ownership transfers to the cache, including its rejected-admission disposal. */
+  admit(tile: OfficeDecodedTile, bitmap: T): void;
+  imageData?(pixels: Uint8ClampedArray<ArrayBuffer>, width: number, height: number): ImageData;
+};
+
+/** Keep raw tiles out of the suspended async frame. Only the ImageData needed
+ * by the browser decoder and small identity/size metadata survive this call.
+ * Straight RGBA may share its buffer with ImageData: never detach or edit it. */
+function beginTileDecode<T extends BitmapResource>(tiles: OfficeSurfaceTile[], index: number, options: TileDecodeOptions<T>) {
+  const tile = tiles[index];
+  delete tiles[index];
+  if (!tile) throw new Error('Office tile 回执缺少像素。');
+  options.validate(tile);
+  const metadata: OfficeDecodedTile = { key: tile.key, width: tile.width, height: tile.height };
+  const pixels = officeTileRgba(tile);
+  const image = options.imageData ? options.imageData(pixels, tile.width, tile.height) : new ImageData(pixels, tile.width, tile.height);
+  return { metadata, bitmap: options.decode(image) };
+}
+
+/** Consumes an exclusively owned renderer RPC batch. The original reply loses
+ * each raw tile before decoding waits; failure/cancellation drops every unused
+ * tile as well. Cache tickets and their final cancellation remain with caller. */
+export async function consumeOfficeTileBatch<T extends BitmapResource>(tiles: OfficeSurfaceTile[], options: TileDecodeOptions<T>): Promise<void> {
+  try {
+    for (let index = 0; index < tiles.length; index++) {
+      if (!options.current()) break;
+      const pending = beginTileDecode(tiles, index, options);
+      const bitmap = await pending.bitmap;
+      if (!options.current()) { bitmap.close(); break; }
+      options.admit(pending.metadata, bitmap);
+    }
+  } finally { tiles.length = 0; }
+}
+
+/** One fetch flight may mix its last visible pixels with offscreen prefetch.
+ * Track only initially missing visible keys; the final live check prevents an
+ * intervening eviction/invalidation from announcing an incomplete viewport.
+ * If that check fails, normal batch-end painting/retry remains authoritative. */
+export function createOfficeVisibleTileCompletion(keys: readonly string[], has: (key: string) => boolean, current: () => boolean) {
+  const required = [...new Set(keys)], missing = new Set(required.filter(key => !has(key)));
+  let checked = missing.size === 0;
+  return {
+    /** Call only after successful cache admission. At most one completion edge
+     * is checked per flight; halo and duplicate admissions are constant-time. */
+    admitted(key: string): boolean {
+      if (checked || !missing.delete(key) || missing.size > 0) return false;
+      checked = true;
+      return current() && required.every(has);
+    },
+  };
+}
+
+type CanvasBacking = { width:number; height:number; readonly isConnected:boolean };
+
+/** Release the backing only after React has really detached the old DOM node.
+ * A hidden/minimized/obscured view keeps its pixels. The microtask also allows
+ * StrictMode or a ref handoff to reattach the same node without clearing it. */
+export function createOfficeCanvasBinding<T extends CanvasBacking>(reference:{current:T|null}) {
+  return (node:T|null)=>{
+    const previous=reference.current;reference.current=node;
+    if(!previous||previous===node)return;
+    queueMicrotask(()=>{
+      if(reference.current===previous||previous.isConnected)return;
+      previous.width=1;previous.height=1;
+    });
+  };
 }

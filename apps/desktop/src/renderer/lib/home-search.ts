@@ -110,6 +110,3 @@ export function rankHomeSearchCandidates(query: string, candidates: readonly Hom
   const count = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 12;
   return matches.sort((a, b) => b.value.score - a.value.score || a.index - b.index).slice(0, count).map(item => item.value);
 }
-export function homeSearchResults(query: string, sources: HomeSearchSources, limit = 12): RankedHomeSearchCandidate[] {
-  return rankHomeSearchCandidates(query, buildHomeSearchCandidates(sources), limit);
-}

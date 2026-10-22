@@ -11,7 +11,6 @@ const index = (value: number, fallback = 0) => Number.isSafeInteger(value) && va
 export function officePreviewScope(document: Pick<DocumentInfo, 'id' | 'format' | 'revision'>, viewId: string, sourceRevision = document.revision) {
   return { documentId: document.id, viewId, format: document.format, sourceRevision, key: JSON.stringify([document.id,viewId,document.format,sourceRevision]) };
 }
-export function officePreviewHasContent(model: DocumentModel) { return model.format === 'docx' ? !!model.blocks?.length : model.format === 'pptx' ? !!model.slides?.length : model.format === 'xlsx' ? !!model.sheets?.length : false; }
 export type WordPreviewItem = { kind: 'paragraph'; block: TextBlock; text: string; sourceIndex: number; truncated: boolean } | { kind: 'table'; id: string; rows: { index: number; cells: { index: number; blocks: Extract<WordPreviewItem,{kind:'paragraph'}>[] }[] }[]; partial: boolean };
 
 /** Reading pages use a bounded source window; no full-book grouping/render pass. */

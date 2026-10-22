@@ -197,5 +197,3 @@ export function NativeOfficeTools(props: NativeOfficeToolsProps) {
     </div>
   </div>;
 }
-
-export { NativeOfficeTools as NativeOfficeSidebar };

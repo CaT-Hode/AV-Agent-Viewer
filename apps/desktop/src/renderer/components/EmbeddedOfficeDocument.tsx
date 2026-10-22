@@ -11,16 +11,13 @@ import { assertOfficeSurfaceLease, OfficeSurfaceInputController } from '../lib/o
 import { OfficeSurfaceDispatchQueue } from '../lib/office-surface-dispatch';
 import { OfficeTileCache } from '../lib/office-tile-cache';
 import { OfficeTilePlanCache } from '../lib/office-tile-plan';
-import { createOfficeCanvasBinding } from '../lib/office-canvas-retirement';
-import { consumeOfficeTileBatch } from '../lib/office-tile-decoder';
-import { createOfficeVisibleTileCompletion } from '../lib/office-visible-tile-completion';
 import { OfficePointerClickTracker, type OfficePointerCapture } from '../lib/office-surface-pointer';
 import { officeSurfaceStaleRead } from '../lib/office-surface-errors';
 import { useEmbeddedOfficeSelectionTools } from '../lib/useEmbeddedOfficeSelectionTools';
 import { OfficePendingScroll } from '../lib/office-pending-scroll';
 import { observeNavigationLane, readNavigationLane, readNavigationTargetLane } from '../lib/navigation-lane';
 import { officePresentationFitForView, officePresentationManualLayout } from '../lib/office-presentation-fit';
-import {OfficeFramePresenter,drawOfficeFrameTile} from '../lib/office-frame-presenter';
+import { OfficeFramePresenter, drawOfficeFrameTile, createOfficeCanvasBinding, consumeOfficeTileBatch, createOfficeVisibleTileCompletion } from '../lib/office-frame-presenter';
 import { OfficeStartupPreview, type OfficeStartupPreviewLocation } from './OfficeStartupPreview';
 import { useOfficeFormulaNavigationHost } from '../lib/useOfficeFormulaNavigationHost';
 import {flushOfficeSurfaceDraft,officeSurfaceHasDrafts} from '../lib/office-surface-draft';

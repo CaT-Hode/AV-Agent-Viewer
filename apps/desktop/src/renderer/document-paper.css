@@ -25,7 +25,7 @@
 :root[data-theme] .document-content.format-markdown article.prose :not(pre)>code { color:var(--document-paper-ink);background:var(--document-paper-soft); }
 :root[data-theme] .document-content.format-markdown article.prose a { color:var(--document-paper-ink);text-decoration:underline;text-underline-offset:3px; }
 :root[data-theme] .document-content.format-markdown article.prose li::marker { color:var(--document-paper-muted); }
-:root[data-theme] .document-content :is(.office-word-paper,.word-page) { background:var(--document-paper);color:var(--document-paper-ink); }
+:root[data-theme] .document-content .office-word-paper { background:var(--document-paper);color:var(--document-paper-ink); }
 :root[data-theme] .document-content .office-document-editor { --office-cell-bg:var(--document-paper);--office-grid-line:var(--document-paper-rule); }
 :root[data-theme] .document-content :is(.office-sheet-table,.office-slide-canvas) { color:var(--document-paper-ink); }
 :root[data-theme] .document-content .office-sheet-table th { color:var(--document-paper-muted); }

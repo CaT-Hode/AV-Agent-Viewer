@@ -60,8 +60,8 @@ npm.cmd run package:portable
 
 ## 验证与本机替换
 
-测试≤50项，单元/模拟不作桌面验收。桌面及原生入口重建、核对源码/产物SHA，通过后保留证据、清理临时数据。文档≤2000字符，每模块≤2篇，见[manifest](../manifest.json)。
+测试45项、上限50，单元不作桌面验收。桌面及原生入口重建、核对源码/产物SHA，通过后保留证据、清理临时数据。文档≤2000字符，每模块≤2篇，见[manifest](../manifest.json)。
 
-认证通过后，install:local 暂存并核对完整文件、长度与SHA，再切换目录并保留回退。运行中的安装版阻止替换，不强关用户进程；APPDATA数据独立保留。构建、安装和远端push分别验证，不能互相代替。
+发行安装先通过认证，再暂存并校验文件、长度与SHA，切换目录并保留回退。本机开发入口使用已验证dist，正常关闭后重建并核对运行身份。保留APPDATA及恢复副本，不强关用户进程。构建、本机更新与push分别验证。
 
 [测试](../../tests/README.md) · [依赖许可](dependencies.md) · [适配器](../../packages/office-runtime/native/README.md)

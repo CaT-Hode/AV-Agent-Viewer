@@ -91,12 +91,6 @@ export function nativeOfficeCommandTooltip(presentation: NativeOfficeCommandPres
 export function nativeOfficeToolCandidates(format: NativeOfficeFormat, category: OfficeToolboxCategory): readonly NativeOfficeCommandGroup[] {
   return groups[format][category] ?? [];
 }
-export function nativeOfficeToolGroups(format: NativeOfficeFormat, category: OfficeToolboxCategory, catalog: readonly NativeOfficeCommand[]) {
-  const available = new Map(catalog.map(command => [command.command, command]));
-  // Older versions can expose a NotesPage alias; display one entry when both exist.
-  const discovered = (command: string) => available.has(command) && !(command === '.uno:NotesPage' && available.has('.uno:NotesMode'));
-  return (groups[format][category] ?? []).map(item => ({ title: item.title, commands: item.commands.filter(command => discovered(command.command)).map(command => ({ ...available.get(command.command)!, ...command })) })).filter(item => item.commands.length);
-}
 export function nativeOfficeStatusKey(state: NativeOfficeState) { return JSON.stringify([state.documentId, state.viewId, state.sessionId, state.engineEpoch, state.engineRevision, state.selectionEpoch ?? null, nativeOfficeInteractionBlocked(state), state.inputState?.editing, state.textHistory]); }
 export function nativeOfficeOwnedState(state: NativeOfficeState | undefined, identity: { documentId: string; viewId: string; format?: NativeOfficeFormat }): state is NativeOfficeState {
   return !!state && state.documentId === identity.documentId && state.viewId === identity.viewId && (!identity.format || state.format === identity.format);

@@ -82,13 +82,13 @@ def kit_ui_read_cache(directory, expected):
         value=kit_ui_bytes(resources/record['path'],16*1024*1024)
         if len(value)!=record['bytes'] or hashlib.sha256(value).hexdigest()!=record['sha256']:raise ValueError('UI cache checksum mismatch')
 
-def prepare_kit_locale_resources(profile):
+def prepare_kit_locale_resources(profile, catalog=None):
     # Failure is an optimization miss: leave the original complete layer and
     # all environment values intact. Never repair an installed engine/profile.
     context={'applied':False,'reason':'unavailable'};staging=None;cache_root=None
     try:
         if any(key in os.environ for key in KIT_UI_RESOURCE_OVERRIDE_KEYS):return {'applied':False,'reason':'explicit-override'}
-        locale=kit_ui_default_locale(pathlib.Path(profile));catalog=kit_ui_resource_catalog(PROGRAM);locales=kit_ui_selected_locales(catalog,locale)
+        locale=kit_ui_default_locale(pathlib.Path(profile));catalog=kit_ui_resource_catalog(PROGRAM) if catalog is None else catalog;locales=kit_ui_selected_locales(catalog,locale)
         selected=[record for record in catalog['records'] if re.fullmatch(r'(?:registry|fcfg_langpack)_(.*)\.xcd',record['path'])[1] in locales]
         manifest={'schemaVersion':KIT_UI_RESOURCE_SCHEMA,'engineBuildId':KIT_UI_RESOURCE_BUILD,'sourceCatalogSha256':catalog['sha256'],'uiLocale':locale,'loadedLocales':locales,'files':selected}
         key=hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest()

@@ -1,5 +1,3 @@
-import { KUBE_GLASS_PRESETS } from './glass-presets';
-
 /** Shared CSS-pixel geometry for App, native-view capture and both toolbars. */
 export const NAVIGATION_METRICS = {
   height: 60, radius: 30, bezelWidth: 29, glassThickness: 70,
@@ -55,13 +53,6 @@ export function glassCaptureOverscan(bezelWidth: number, thickness: number, inde
   const shift = maximum * Math.min(1, maximum / 100) * 127 / 255 * refraction;
   return Math.ceil(shift + 3 * blur + 1);
 }
-/** Physical trace for tests/consumers. Rendering uses the author's fixed-100
- * map encoding and max(trace)*ratio SVG scale, documented separately. */
-export function convexBevelDisplacement(depth: number, band: number = NAVIGATION_METRICS.bezelWidth): number {
-  const preset = KUBE_GLASS_PRESETS.search;
-  return traceGlassRay(depth / band, band, preset.glassThickness, preset.refractiveIndex, 'convex');
-}
-
 export type NavigationBounds = { x: number; y: number; width: number; height: number };
 export type NavigationBackdropSample = {
   sequence: number; capturedAt: number; sourceContentsId: number;
