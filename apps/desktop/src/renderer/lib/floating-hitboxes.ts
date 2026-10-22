@@ -60,7 +60,10 @@ export function yieldFloatingRoom(preferred:Rect,viewport:Rect,protectedRects:re
 }
 
 const selector='[data-floating-hitbox],.floating-side-panel,.activity-rail,.ai-rail,.navigation-capsule,.agent-operation-capsule,.selection-translation-bubble,.ai-result-popover,.selection-tools,.selection-input,.selection-error,.modal,.app-tooltip,[role="menu"],[role="listbox"],[role="dialog"],[role="tooltip"],.zoom-menu,.reader-zoom-menu';
-function group(element:Element){return element.closest('.selection-tools')?'selection':element.matches('.navigation-capsule')?'navigation':element.closest('.navigation-capsule')?'navigation-child':element.matches('.floating-side-panel')?'panel':element.matches('.activity-rail,.ai-rail')?'rail':element.matches('.selection-translation-bubble')?'translation':element.matches('.agent-operation-capsule')?'agent':element.matches('.app-tooltip,[role="tooltip"]')?'tooltip':'floating';}
+function group(element:Element){return element.closest('.selection-tools')?'selection':element.matches('.navigation-capsule')?'navigation':element.closest('.navigation-capsule')?'navigation-child':element.matches('.floating-side-panel')?'panel':element.matches('.activity-rail,.ai-rail')?'rail':element.matches('.selection-translation-bubble')?'translation':element.matches('.agent-operation-capsule')?'agent':element.matches('.app-tooltip,[role="tooltip"]')?(element.getAttribute('data-floating-owner')||'tooltip'):'floating';}
+/** A portal tooltip belongs to its trigger's floating surface. Its source must
+ * not avoid its own description and move the hovered button out of reach. */
+export function floatingOwnerGroup(element:Element){const owner=element.closest(selector);return owner?group(owner):'tooltip';}
 /** One batched geometry pass observes painted boxes, not assumed CSS sizes.
  * Same-origin portal windows forward CSS coordinates to their owning window. */
 export function installFloatingHitboxes(doc:Document){
@@ -87,12 +90,12 @@ export function installFloatingHitboxes(doc:Document){
       const bounds={x:box.x+offset.x,y:box.y+offset.y,width:box.width,height:box.height},policy=(element as HTMLElement).dataset.floatingYield??'';
       publish(id,{group:group(element),bounds,canMove:policy.includes('move'),canCollapse:policy.includes('collapse'),yield:next=>element.dispatchEvent(new CustomEvent('agentviewer:floating-yield',{detail:{bounds:next&&{...next,x:next.x-offset.x,y:next.y-offset.y}}}))});
     }
-    if(pruned){attributes.disconnect();for(const element of nodes.keys())attributes.observe(element,{attributes:true,attributeFilter:['class','style','hidden','open','data-motion-phase','aria-hidden']});}
+    if(pruned){attributes.disconnect();for(const element of nodes.keys())attributes.observe(element,{attributes:true,attributeFilter:['class','style','hidden','open','data-motion-phase','aria-hidden','data-floating-owner']});}
     sendNative();
   };
   const schedule=()=>{if(!disposed&&!frame)frame=win.requestAnimationFrame(read);};
   const size=new ResizeObserver(schedule),attributes=new MutationObserver(schedule);
-  const track=(element:Element)=>{if(nodes.has(element))return;nodes.set(element,prefix+ ++sequence);size.observe(element);attributes.observe(element,{attributes:true,attributeFilter:['class','style','hidden','open','data-motion-phase','aria-hidden']});schedule();};
+  const track=(element:Element)=>{if(nodes.has(element))return;nodes.set(element,prefix+ ++sequence);size.observe(element);attributes.observe(element,{attributes:true,attributeFilter:['class','style','hidden','open','data-motion-phase','aria-hidden','data-floating-owner']});schedule();};
   const discover=(node:Node)=>{if(!(node instanceof Element))return;if(node.matches(selector))track(node);node.querySelectorAll(selector).forEach(track);};
   discover(doc.documentElement);
   const additions=new MutationObserver(changes=>{let removed=false;for(const change of changes){for(const node of change.addedNodes)discover(node);removed ||= change.removedNodes.length>0;}if(removed)schedule();});

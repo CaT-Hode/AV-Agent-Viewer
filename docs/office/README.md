@@ -8,6 +8,8 @@ Windows 通过 LibreOfficeKit 加载 Writer、Calc、Impress。每份文档有�
 
 原子 inspect 同时读取状态、属性和命令能力。混合格式保留 mixed，无法读写的字段报告 unsupported。尺寸和对象位置使用 mm，字体/线宽使用 pt；内部旧几何的1/100mm不直接泄露为公开参数。
 
+Word 可见文字先由原生页游标限定页面范围，再测量段落，按内容版本和页区间缓存。跨页表格按所在单元格与行取范围，巨段裁切到页面边界；不再为每次点击和编辑测量全文前2000段。探测 controller 不改变人工选区或撤销历史，表格选择使用原生 CellName 身份。
+
 Word 页样式须明确命名，禁止从人工当前页推断；Calc 由原生引擎解释输入并计算公式。辅助 ExcelJS 投影的1000×50读取限制不代表原生 Calc 的容量上限。
 
 Calc 布尔常量保留原生 LOGICAL 类型，数字覆盖时清除旧逻辑格式。区域读回含 values、formulas、errors、kinds 和 logical；公式的逻辑结果类型若无法确认则为 null，不根据公式字符串猜测。

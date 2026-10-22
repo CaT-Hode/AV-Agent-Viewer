@@ -409,6 +409,54 @@ def read_visible_text(session,view):
             projected=writer_visible_paragraphs(session,view,visible);result=projected['text'];truncated=projected['truncated']
         content='\n'.join(result);return content[:48000],truncated or len(content)>48000,True
     except:return '',False,False
+def writer_page_boundary(cursor,end):
+    text=cursor.Text;value=text.createTextCursorByRange(cursor.getEnd() if end else cursor.getStart());table=getattr(cursor,'TextTable',None);cell=getattr(cursor,'Cell',None)
+    return {'text':text,'range':value,'table':table,'cell':cell.CellName if cell is not None else None}
+
+def writer_page_paragraphs(session,start,end):
+    # XText ranges cannot cross table cells. Keep those ranges separate and
+    # enumerate only their visible rows, including tables beyond paragraph 2000.
+    def cells(table):
+        names=table.getCellNames();first=start['cell'] if table==start['table'] else None;last=end['cell'] if table==end['table'] else None
+        row=lambda name:int(re.match(r'^[A-Z]+([0-9]+)',name)[1])
+        low=row(first) if first else 0;high=row(last) if last else math.inf
+        return (name for name in names if low<=row(name)<=high)
+    if start['table'] is not None and start['table']==end['table']:
+        for name in cells(start['table']):yield from authoring_paragraphs(start['table'].getCellByName(name).Text)
+        return
+    if start['table'] is None and end['table'] is None and start['text']==end['text']:
+        selected=start['text'].createTextCursorByRange(start['range'].getStart());selected.gotoRange(end['range'].getEnd(),True)
+        yield from authoring_paragraphs(selected);return
+    boundary={'started':False,'finished':False}
+    def visit(text):
+        enumeration=text.createEnumeration()
+        while enumeration.hasMoreElements() and not boundary['finished']:
+            item=enumeration.nextElement()
+            if item.supportsService('com.sun.star.text.TextTable'):
+                if item==start['table']:boundary['started']=True
+                for name in cells(item):
+                    yield from visit(item.getCellByName(name).Text)
+                    if boundary['finished']:return
+                if item==end['table']:boundary['finished']=True;return
+            elif item.supportsService('com.sun.star.text.Paragraph'):
+                if not boundary['started']:
+                    if start['table'] is not None or item.Text!=start['text']:continue
+                    direction=text.compareRegionStarts(text.getStart(),text.getEnd())
+                    if text.compareRegionStarts(start['range'],item.getEnd())*direction<0:continue
+                    boundary['started']=True
+                if end['table'] is None and item.Text==end['text']:
+                    direction=text.compareRegionStarts(text.getStart(),text.getEnd())
+                    if text.compareRegionStarts(item.getStart(),end['range'])*direction<0:boundary['finished']=True;return
+                yield item
+    yield from visit(session['doc'].Text)
+
+def writer_clip_page_paragraph(paragraph,start,end):
+    text=paragraph.Text;direction=text.compareRegionStarts(text.getStart(),text.getEnd());first=paragraph.getStart();last=paragraph.getEnd()
+    if text==start['text'] and text.compareRegionStarts(start['range'],first)*direction<0:first=start['range'].getStart()
+    if text==end['text'] and text.compareRegionStarts(last,end['range'])*direction<0:last=end['range'].getEnd()
+    if text.compareRegionStarts(first,last)*direction<0:return None
+    value=text.createTextCursorByRange(first);value.gotoRange(last,True);return value
+
 def writer_visible_paragraphs(session,view,visible):
     # A separate view of the SAME LOK model provides real native page geometry.
     # Its cursor never replaces the user's selection or creates another writer.
@@ -423,9 +471,24 @@ def writer_visible_paragraphs(session,view,visible):
     try:
         pages=page_rectangles(session)
         if not pages:fail('OFFICE_KIT_SEMANTIC_GEOMETRY_UNAVAILABLE','原生页面几何尚未就绪。')
-        if not cache or cache['revision']!=session['engineRevision'] or cache['pages']!=pages:
-            doc_call(session,'setView',None,I)(probe['kitViewId']);cursor=probe['controller'].getViewCursor();paragraphs=native_paragraphs(session['doc'].Text);items=[];factor=1440/2540;page_styles=session['doc'].StyleFamilies.getByName('PageStyles');style_geometry={}
-            for index,paragraph in enumerate(paragraphs[:2000]):
+        intersecting=[index for index,page in enumerate(pages) if overlaps(page,visible)]
+        if not intersecting:return {'text':[],'truncated':False}
+        first,last=intersecting[0],intersecting[-1];page_span=(first,last)
+        if not cache or cache['revision']!=session['engineRevision'] or cache['pages']!=pages or cache.get('pageSpan')!=page_span:
+            doc_call(session,'setView',None,I)(probe['kitViewId']);cursor=probe['controller'].getViewCursor()
+            # Enumerating document.Text and measuring its first 2,000 paragraphs
+            # blocked every edited-state read, including clicks and key acks.
+            # XPageCursor bounds the actual native range before enumeration;
+            # only paragraphs on the visible pages need layout coordinates.
+            if not cursor.jumpToPage(first+1) or not cursor.jumpToStartOfPage():fail('OFFICE_KIT_SEMANTIC_GEOMETRY_UNAVAILABLE','可见页面的原生起始位置不可用。')
+            start_boundary=writer_page_boundary(cursor,False)
+            if not cursor.jumpToPage(last+1) or not cursor.jumpToEndOfPage():fail('OFFICE_KIT_SEMANTIC_GEOMETRY_UNAVAILABLE','可见页面的原生结束位置不可用。')
+            end_boundary=writer_page_boundary(cursor,True)
+            paragraphs=writer_page_paragraphs(session,start_boundary,end_boundary);items=[];factor=1440/2540;page_styles=session['doc'].StyleFamilies.getByName('PageStyles');style_geometry={};truncated=False
+            for index,paragraph in enumerate(paragraphs):
+                if index>=2000:truncated=True;break
+                paragraph=writer_clip_page_paragraph(paragraph,start_boundary,end_boundary)
+                if paragraph is None:continue
                 cursor.gotoRange(paragraph.getStart(),False);page=max(0,cursor.getPage()-1);start=cursor.getPosition();style_name=cursor.PageStyleName
                 if style_name not in style_geometry:
                     style=page_styles.getByName(style_name);style_geometry[style_name]={'left':style.LeftMargin*factor,'top':style.TopMargin*factor,'right':style.RightMargin*factor}
@@ -436,7 +499,7 @@ def writer_visible_paragraphs(session,view,visible):
                 # Page geometry supplies the rendered document's border origin.
                 rectangle={'x':pages[0]['x']+left,'y':start.Y*factor+top+pages[0]['y'],'width':max(1,pages[page]['width']-left-metrics['right']) if page<len(pages) else 1,'height':max(height,(end.Y-start.Y)*factor+height)}
                 items.append({'rect':rectangle,'text':paragraph.String,'page':page})
-            cache={'revision':session['engineRevision'],'pages':pages,'items':items,'truncated':len(paragraphs)>2000};session['paragraphProjection']=cache
+            cache={'revision':session['engineRevision'],'pages':pages,'pageSpan':page_span,'items':items,'truncated':truncated};session['paragraphProjection']=cache
         return {'text':[item['text'] for item in cache['items'] if item['text'] and overlaps(item['rect'],visible)],'truncated':cache['truncated']}
     finally:activate(session,view)
 def model_controllers(doc):

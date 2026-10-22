@@ -64,10 +64,10 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   useLayoutEffect(()=>{
     if(native||!state)return;
     const workbench=document.querySelector('.workbench');if(!workbench)return;
-    let frame=0;
-    const read=()=>{const next=readSelectionPanelBounds(workbench);setPanelBounds(previous=>JSON.stringify(previous)===JSON.stringify(next)?previous:next);motionRefresh.current();};
-    const measure=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(read);};
-    const sizes=new ResizeObserver(read),changes=new MutationObserver(records=>{if(records.some(record=>record.type==='childList'))observe();motionRefresh.current();measure();});
+    let frame=0,signature='';
+    const read=()=>{frame=0;const next=readSelectionPanelBounds(workbench),nextSignature=JSON.stringify(next);if(nextSignature===signature)return;signature=nextSignature;setPanelBounds(next);motionRefresh.current();};
+    const measure=()=>{if(!frame)frame=requestAnimationFrame(read);};
+    const sizes=new ResizeObserver(measure),changes=new MutationObserver(records=>{if(records.some(record=>record.type==='childList'))observe();measure();});
     const observe=()=>{sizes.disconnect();changes.disconnect();changes.observe(workbench,{childList:true,attributes:true,attributeFilter:['style']});for(const pane of workbench.querySelectorAll(':scope > .floating-side-panel,:scope > .activity-rail,:scope > .ai-rail,:scope > .selection-translation-bubble')){sizes.observe(pane);changes.observe(pane,{attributes:true,attributeFilter:['class','style','data-motion-phase']});}};
     observe();read();window.addEventListener(FLOATING_HITBOX_EVENT,measure);return()=>{cancelAnimationFrame(frame);sizes.disconnect();changes.disconnect();window.removeEventListener(FLOATING_HITBOX_EVENT,measure);};
   },[native,!!state]);

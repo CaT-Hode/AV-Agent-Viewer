@@ -12,6 +12,12 @@ import { mappedPreviewText } from './markdown-surfaces';
 export const refreshMarkdownPreview = StateEffect.define<null>();
 export const revealMarkdownBlock = StateEffect.define<{ from: number; to: number } | null>();
 const previewViewport = StateEffect.define<{ from: number; to: number }>();
+// Pointer selection is interpreted against the already painted projection.
+// Revealing delimiters partway through a drag moves its remaining hit targets.
+const pointerSelection = StateField.define<boolean>({
+  create: () => false,
+  update(value, transaction) { return transaction.selection ? transaction.isUserEvent('select.pointer') : transaction.docChanged ? false : value; },
+});
 type Span = { from: number; to: number };
 const buffer = 2500;
 
@@ -46,13 +52,14 @@ function selected(state: EditorState, from: number, to: number) {
   if (state.facet(EditorState.readOnly)) return false;
   return state.selection.ranges.some(range => range.empty ? range.head >= from && range.head <= to : range.from < to && range.to > from);
 }
-function selectedLine(state: EditorState, from: number, to: number) {
-  if (state.facet(EditorState.readOnly)) return false;
-  return state.selection.ranges.some(range => {
-    // Keep syntax stable while the caret moves within a line. Revealing just
-    // the marker under the caret changes glyph positions after hit testing.
-    return state.doc.lineAt(range.from).from <= to && state.doc.lineAt(range.to).to >= from;
-  });
+/** Editing visible inline text must not insert source delimiters before the
+ * clicked glyph. Reveal syntax when the caret enters a delimiter, or a source
+ * selection includes one; the interior remains stable for clicks and drags. */
+function syntaxSelected(state: EditorState, from: number, to: number, contentFrom: number, contentTo: number) {
+  if (state.facet(EditorState.readOnly) || state.field(pointerSelection, false)) return false;
+  return state.selection.ranges.some(range => range.empty
+    ? range.head >= from && range.head < contentFrom || range.head > contentTo && range.head <= to
+    : range.from < contentFrom && range.to > from || range.from < to && range.to > contentTo);
 }
 function editBlock(view: EditorView, position: number) {
   view.dispatch({ selection: { anchor: position }, scrollIntoView: true }); view.focus();
@@ -278,15 +285,16 @@ export function markdownLivePreview(documentId: string) {
       const text = () => state.sliceDoc(node.from, node.to);
       if (hidden.some(range => node.from >= range.from && node.to <= range.to)) return false;
       const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(name);
-      if (heading) { addLine(node.from, 'md-heading md-heading-' + heading[1]); if (name.startsWith('Setext')) { const last = state.doc.lineAt(node.to).from; if (!selected(state, last - 1, node.to + 1)) hide(last > 0 ? last - 1 : last, node.to); } }
-      if (name === 'HeaderMark') { if (!selectedLine(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(state.doc.lineAt(node.to).to, node.to + 1)); }
+      if (heading) { addLine(node.from, 'md-heading md-heading-' + heading[1]); if (name.startsWith('Setext')) { const last = state.doc.lineAt(node.to).from; if (state.field(pointerSelection) || !selected(state, last, node.to)) hide(last > 0 ? last - 1 : last, node.to); } }
+      if (name === 'HeaderMark') { const end = Math.min(state.doc.lineAt(node.to).to, node.to + 1); if (!syntaxSelected(state, node.from, end, end, end)) hide(node.from, end); }
       if (['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Highlight', 'Subscript', 'Superscript', 'InlineCode'].includes(name)) {
         decorations.push(Decoration.mark({ class: ({ StrongEmphasis: 'md-strong', Emphasis: 'md-emphasis', Strikethrough: 'md-strike', Highlight: 'md-highlight', Subscript: 'md-sub', Superscript: 'md-super', InlineCode: 'md-inline-code' } as Record<string, string>)[name] }).range(node.from, node.to));
-        if (!selectedLine(state, node.from, node.to)) for (let child = node.firstChild; child; child = child.nextSibling) if (/Mark$/.test(child.name)) hide(child.from, child.to);
+        const marks: SyntaxNode[] = []; for (let child = node.firstChild; child; child = child.nextSibling) if (/Mark$/.test(child.name)) marks.push(child);
+        if (marks.length >= 2 && !syntaxSelected(state, node.from, node.to, marks[0].to, marks.at(-1)!.from)) for (const mark of marks) hide(mark.from, mark.to);
       }
       if (name === 'Blockquote') for (let p = state.doc.lineAt(Math.max(span.from, node.from)).number; p <= state.doc.lineAt(Math.min(span.to, node.to)).number; p++) addLine(state.doc.line(p).from, 'md-quote');
-      if (name === 'QuoteMark' && !selectedLine(state, node.from - 1, node.to + 1)) hide(node.from, Math.min(node.to + 1, state.doc.lineAt(node.to).to));
-      if (name === 'ListMark' && !selectedLine(state, node.from - 1, node.to + 1)) hide(node.from, node.to, new PrefixWidget(/^\d/.test(text()) ? text() : '•'));
+      if (name === 'QuoteMark') { const end = Math.min(node.to + 1, state.doc.lineAt(node.to).to); if (!syntaxSelected(state, node.from, end, end, end)) hide(node.from, end); }
+      if (name === 'ListMark' && !syntaxSelected(state, node.from, node.to, node.to, node.to)) hide(node.from, node.to, new PrefixWidget(/^\d/.test(text()) ? text() : '•'));
       if (name === 'TaskMarker') hide(node.from, node.to, new PrefixWidget('', /[xX]/.test(text()), node.from));
       if (name === 'HorizontalRule' && !active) { hide(node.from, node.to, new RenderWidget('rule', '', node.from, true, documentId), true); return false; }
       if (name === 'Table' && node.to - node.from <= 24000 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { hide(node.from, node.to, new TableWidget(text(), node.from), true); return false; }
@@ -303,7 +311,7 @@ export function markdownLivePreview(documentId: string) {
         const url = node.getChild('URL'); const marks: SyntaxNode[] = []; for (let child = node.firstChild; child; child = child.nextSibling) if (child.name === 'LinkMark') marks.push(child);
         if (url) decorations.push(Decoration.mark({ class: 'md-link', attributes: { 'data-markdown-link': state.sliceDoc(url.from, url.to) } }).range(node.from, node.to));
         else { const reference = /^\[([\s\S]+?)\](?:\[([^\]]*)\])?$/.exec(text()); if (reference) decorations.push(Decoration.mark({ class: 'md-link', attributes: { 'data-markdown-reference': reference[2] || reference[1] } }).range(node.from, node.to)); }
-        if (!active && url && marks.length >= 3) { hide(marks[0].from, marks[0].to); hide(marks[1].from, node.to); }
+        if (url && marks.length >= 3 && !syntaxSelected(state, node.from, node.to, marks[0].to, marks[1].from)) { hide(marks[0].from, marks[0].to); hide(marks[1].from, node.to); }
       }
       if (name === 'FencedCode') {
         const info = node.getChild('CodeInfo'), language = info ? state.sliceDoc(info.from, info.to) : '', first = state.doc.lineAt(node.from), last = state.doc.lineAt(node.to);
@@ -325,8 +333,8 @@ export function markdownLivePreview(documentId: string) {
     }
     for (const match of source.matchAll(/^\[toc\][ \t]*$/gim)) { const from = span.from + match.index!, to = from + match[0].length; if (!inside(from) && !selected(state, from, to)) hide(from, to, new RenderWidget('toc', '', from, true, documentId, state.doc), true); }
     for (const match of source.matchAll(/^ {0,3}>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/gim)) addLine(span.from + match.index!, 'md-callout md-callout-' + match[1].toLowerCase());
-    for (const match of source.matchAll(/<(u|sub|sup)>([^\n]*?)<\/\1>/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: match[1] === 'u' ? 'md-underline' : match[1] === 'sub' ? 'md-sub' : 'md-super' }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + match[1].length + 2); hide(to - match[1].length - 3, to); } }
-    for (const match of source.matchAll(/\[\^([^\]\n]+)\](?!:)/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: 'md-footnote-reference', attributes: { 'data-markdown-footnote': match[1] } }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + 2); hide(to - 1, to); } }
+    for (const match of source.matchAll(/<(u|sub|sup)>([^\n]*?)<\/\1>/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: match[1] === 'u' ? 'md-underline' : match[1] === 'sub' ? 'md-sub' : 'md-super' }).range(from, to)); if (!syntaxSelected(state, from, to, from + match[1].length + 2, to - match[1].length - 3)) { hide(from, from + match[1].length + 2); hide(to - match[1].length - 3, to); } }
+    for (const match of source.matchAll(/\[\^([^\]\n]+)\](?!:)/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: 'md-footnote-reference', attributes: { 'data-markdown-footnote': match[1] } }).range(from, to)); if (!syntaxSelected(state, from, to, from + 2, to - 1)) { hide(from, from + 2); hide(to - 1, to); } }
     for (const match of source.matchAll(/:([a-z0-9_+\-]+):/g)) { const from = span.from + match.index!, to = from + match[0].length, emoji = markdownEmoji(match[1]); if (emoji && !inside(from) && !selected(state, from, to)) hide(from, to, new PrefixWidget(emoji)); }
     }
     for (const [position, names] of lineStyles) decorations.push(Decoration.line({ class: names.join(' ') }).range(position));
@@ -376,5 +384,5 @@ export function markdownLivePreview(documentId: string) {
     }
     destroy() { this.destroyed = true; }
   });
-  return [revealed, field, viewport];
+  return [pointerSelection, revealed, field, viewport];
 }

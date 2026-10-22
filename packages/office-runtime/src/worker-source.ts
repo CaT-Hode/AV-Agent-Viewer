@@ -544,7 +544,7 @@ def selection(session,view):
                 ranges=[native_range_locator(session,view,actual,piece) for actual,piece in zip(actuals,pieces)]
                 result['locator'].update(ranges[0])
                 if len(ranges)>1:result['locator']['blockId']='native-ranges:'+hashlib.sha256(json.dumps(ranges,sort_keys=True).encode()).hexdigest()
-                if getattr(cursor,'Cell',None) is not None:result['locator']['cell']=cursor.Cell.Name
+                if getattr(cursor,'Cell',None) is not None:result['locator']['cell']=cursor.Cell.CellName
             except:result['identityUnavailable']=True
         else:
             pages=session['doc'].getDrawPages();page=controller.getCurrentPage();index=next((i for i in range(pages.getCount()) if pages.getByIndex(i)==page),0)

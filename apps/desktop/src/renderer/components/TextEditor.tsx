@@ -162,19 +162,9 @@ export function TextEditor(props: Props) {
         blur: (_event, view) => { if (!composing.current) { flushWidget(view); flush(view); } return false; },
         paste: (event, view) => importImages(event.clipboardData?.files, view, event),
         drop: (event, view) => importImages(event.dataTransfer?.files, view, event),
-        mousedown: (event, view) => {
+        mousedown: event => {
           activateMarkdownSurface(identity.viewId, 'source');
-          if (!event.ctrlKey && !event.metaKey) {
-            // Resolve the live line's syntax before CM performs its own mouse
-            // hit test. The final caret then uses the painted glyph positions,
-            // including any markers revealed by entering a different line.
-            if (latest.current.live && event.button === 0 && event.detail === 1 && !event.shiftKey && !event.altKey &&
-                (event.target as Element).closest('.cm-line') && !(event.target as Element).closest('.md-render,.md-table-widget,input,button,textarea')) {
-              const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
-              if (position !== null) view.dispatch({ selection: { anchor: position }, userEvent: 'select.pointer' });
-            }
-            return false;
-          }
+          if (!event.ctrlKey && !event.metaKey) return false;
           const target = (event.target as HTMLElement).closest<HTMLElement>('[data-markdown-link],[data-markdown-reference],[data-markdown-footnote]'); if (!target) return false; event.preventDefault();
           if (target.dataset.markdownFootnote) { let offset = 0; for (const line of view.state.doc.iterLines()) { const match = /^\[\^([^\]]+)\]:/.exec(line); if (match?.[1] === target.dataset.markdownFootnote) { view.dispatch({ selection: { anchor: offset }, effects: EditorView.scrollIntoView(offset, { y: 'center' }) }); view.focus(); break; } offset += line.length + 1; } return true; }
           let href = target.dataset.markdownLink ?? '';

@@ -108,7 +108,12 @@ try {
   assert.ok(Math.abs(enlarged.glyphHeight / baseline.glyphHeight - 1.5) < .04, 'painted text height follows document zoom');
   assert.ok(enlarged.height >= baseline.height * 1.4);
   assert.deepEqual(await main.locator('.tab-strip').boundingBox(), tabBar, 'tabs stay at application scale');
-  assert.deepEqual(await main.locator('.navigation-capsule').boundingBox(), capsule, 'navigation remains fixed in application coordinates');
+  // Adaptive navigation resizes/recenters as controls gain focus. Document
+  // zoom must preserve its chrome scale and top offset, not freeze its width.
+  const zoomedCapsule = await main.locator('.navigation-capsule').boundingBox(); assert.ok(zoomedCapsule);
+  assert.equal(zoomedCapsule.height, capsule.height, 'document zoom preserves navigation chrome height');
+  assert.equal(zoomedCapsule.y, capsule.y, 'document zoom preserves the navigation top offset');
+  assert.equal(await main.locator('.navigation-capsule').evaluate(element => Number(getComputedStyle(element).zoom)), 1, 'navigation retains application CSS zoom');
   assert.equal(await app.evaluate(({ webContents }, id) => webContents.fromId(id)!.getZoomFactor(), mainContentsId), 1);
   // Cancel is exercised through the real input and blur, catching stale draft commits.
   const zoomInput = main.getByRole('spinbutton', { name: '正文缩放比例', exact: true });

@@ -13,6 +13,7 @@ import type { OfficeAuthoringOperation, OfficeAuthoringQuery } from '../packages
 import { JsonWorkspaceRepository } from '../packages/persistence/src/index';
 import { recordCurrentBuild } from './helpers/current-build';
 import type { DocumentModel, EditOperation, NativeOfficeDriver, NativeOfficeFormat, NativeOfficeSnapshotReuse, NativeOfficeState, NativeOfficeStyleInspection, ViewInfo } from '../packages/contracts/src/index';
+import { isOfficeSurfaceState, type OfficeSurfaceState } from '../packages/contracts/src/office-surface';
 
 // Actual bundled Kit + production Core export and filesystem publication. This
 // deliberately has no Electron window, MCP transport, source injection, fake
@@ -284,6 +285,53 @@ async function verifyModel(bytes: Uint8Array, format: NativeOfficeFormat, marker
     else assert.ok([block.color, ...(block.runs ?? []).map(run => run.color)].some(color => color?.toLowerCase() === '166a71'), 'Word run color survives actual serialization');
   }
   return model;
+}
+
+async function verifyWordVisibleProjection() {
+  phase('word-visible-page-ranges');
+  const paragraph = (text: string) => '<w:p><w:r><w:t>' + text + '</w:t></w:r></w:p>';
+  const paragraphs = Array.from({ length: 2101 }, (_, index) => paragraph('Native paragraph ' + index)).join('');
+  const table = '<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>'
+    + Array.from({ length: 1051 }, (_, row) => '<w:tr>' + [0, 1].map(column => '<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>' + paragraph(`Native table row ${row} column ${column}`) + '</w:tc>').join('') + '</w:tr>').join('') + '</w:tbl>';
+  const giant = 'GIANT_BEGIN ' + Array.from({ length: 3000 }, (_, index) => `Segment_${index.toString().padStart(4, '0')} native paragraph content. `).join('') + ' GIANT_END';
+  assert.ok(giant.length > 48000);
+  const zip = await JSZip.loadAsync(await readFile(join(samplesRoot, names.docx))), original = await zip.file('word/document.xml')!.async('string');
+  const xml = original.replace(/<w:body>[\s\S]*?<w:sectPr/, '<w:body>' + paragraphs + table + paragraph(giant) + paragraph('After giant paragraph') + '<w:sectPr');
+  assert.notEqual(xml, original); zip.file('word/document.xml', xml);
+  const documentId = randomUUID(), viewId = randomUUID(), bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  let current = await runtime.open({ sessionId: documentId, documentId, viewId, format: 'docx', bytes, revision: 0, ownerHwnd: '1', ownerViewport: { width: 1000, height: 800 }, bounds: { x: 0, y: 0, width: 1000, height: 800 }, visible: false }) as OfficeSurfaceState;
+  assert.ok(isOfficeSurfaceState(current));
+  await runtime.enableContextProjection(documentId, viewId);
+  const results: Record<string, unknown>[] = []; report.wordVisibleProjection = { sourceSha256: sha(bytes), paragraphs: 2101, tableCells: 2102, giantCharacters: giant.length, results };
+  const signature = (state: NativeOfficeState) => { assert.ok(state.selection); return { epoch: state.selectionEpoch, kind: state.selection.kind, text: state.selection.text, locator: state.selection.locator }; };
+  async function show(pageIndex: number, expected: string) {
+    const page = current.pages?.[pageIndex]; assert.ok(page);
+    const selected = signature(current), native = guard(current), started = performance.now();
+    current = await runtime.surfaceLayout(documentId, { viewId, layoutRevision: current.layoutRevision + 1, partIndex: 0, visibleTwips: page, viewportCss: { width: 1000, height: 800 }, documentOriginCss: { x: 0, y: -page.y / 15 }, boundsCss: { x: 0, y: 0, width: 1000, height: 800 }, zoom: 1, deviceScaleFactor: 1, visible: true, focused: false });
+    const text = current.visibleText; assert.equal(typeof text, 'string'); assert.ok(text);
+    assert.equal(current.visibleTextReady, true); assert.equal(current.visibleTextTruncated, false); assert.ok(text.includes(expected), 'The actual visible page text contains ' + expected);
+    assert.deepEqual(signature(current), selected, 'A semantic geometry probe never moves the human selection');
+    assert.deepEqual(guard(current), native, 'Reading visible pages preserves native content, dirty state and Undo');
+    results.push({ pageIndex, expected, characters: text.length, textSha256: sha(text), elapsedMs: performance.now() - started });
+  }
+  async function select(paragraphIndex: number) {
+    const result = await runtime.navigate({ sessionId: documentId, viewId, ...versions(current), requestId: randomUUID(), actor: 'human', target: { kind: 'paragraph', paragraphIndex, select: true } });
+    assert.ok(isOfficeSurfaceState(result.state)); current = result.state;
+    assert.ok(current.selection); assert.ok(Number.isInteger(current.selection.pageIndex)); return current.selection.pageIndex!;
+  }
+  try {
+    await show(await select(2100), 'Native paragraph 2100');
+    await show(await select(2101), 'Native table row 0 column 0');
+    await show(await select(4202), 'Native table row 1050 column 1');
+    assert.ok(current.selection); assert.ok(!('identityUnavailable' in current.selection), 'Writer table selection uses the real CellName property');
+    assert.equal(current.selection.locator?.cell, 'B1051');
+    await show(0, 'Native paragraph 0');
+    const lastPage = await select(4203);
+    await show(lastPage, 'GIANT_END');
+    assert.ok(!current.visibleText!.includes('GIANT_BEGIN'), 'A later page of a giant paragraph cannot repeat its initial 48k prefix');
+    await show(lastPage - 1, 'Segment_');
+    assert.ok(!current.visibleText!.includes('GIANT_BEGIN'));
+  } finally { await runtime.close(documentId, { discard: true }); }
 }
 
 /** The same three engine flows can verify structured authoring without any
@@ -648,6 +696,7 @@ try {
     phase('close-owned-native-document', item);
     await core.closeNativeOffice(view.documentId);
   }
+  await verifyWordVisibleProjection();
   assert.equal(ackSavedCalls, 0, 'Copy export must never acknowledge the live source as saved');
   report.ackSavedCalls = ackSavedCalls; report.transport = runtime.statistics.transport; report.runtimeStatistics = runtime.statistics;
   report.persistence = repository.statistics; report.passed = true; phase('completed');
