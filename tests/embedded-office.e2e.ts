@@ -191,6 +191,9 @@ const style = async (view: ViewInfo, target: NativeOfficeStyleTarget) => {
 const leftCategory = async (name: string, category: string) => { const entry = main.getByRole('button', { name, exact: true }); if (await entry.getAttribute('aria-pressed') !== 'true') await entry.click(); await main.locator(`.native-office-tools[data-office-category="${category}"]`).waitFor(); };
 const verifyToolIcons=async(format:string,category:string)=>{
   const pane=main.locator(`.native-office-tools[data-native-office-format="${format}"][data-office-category="${category}"]`);await pane.locator('.native-office-command-grid [data-uno-command]').first().waitFor();
+  // TooltipHost temporarily clears the hovered button's native title. Inspect
+  // restored labels after the actual pointer leaves, then test hover below.
+  await main.mouse.move(700,25);await main.getByRole('tooltip').waitFor({state:'detached'});
   const commands=await pane.locator('.native-office-command-grid [data-uno-command]').evaluateAll(nodes=>nodes.map(node=>{const button=node as HTMLButtonElement,box=button.getBoundingClientRect();return {command:button.dataset.unoCommand,label:button.getAttribute('aria-label'),title:button.getAttribute('title'),text:button.innerText.trim(),svg:!!button.querySelector('svg'),width:box.width,height:box.height};}));
   assert.ok(commands.length>0);for(const command of commands){assert.equal(command.text,'','common tool presents its glyph rather than a visible text label');assert.equal(command.svg,true);assert.ok(command.label?.trim());assert.ok(command.title?.trim());assert.doesNotMatch(command.title!,/\.uno:/,'Office hover describes the function instead of showing its engine identifier');assert.notEqual(command.label,command.command);assert.ok(Math.abs(command.width-32)<.6&&Math.abs(command.height-32)<.6,`${format} ${command.command} remains 32px`);}
   const enabled=pane.locator('.native-office-command-grid [data-uno-command]:not(:disabled)').first();await enabled.waitFor();const label=await enabled.getAttribute('aria-label');
@@ -466,6 +469,7 @@ let passed = false;
 try {
   await main.locator('#root .tab-strip').waitFor(); assert.match(main.url(), new RegExp('127\\.0\\.0\\.1:' + port)); assert.equal(await main.title(), 'AgentViewer');
   await app.evaluate(({ BrowserWindow }) => { const owner = BrowserWindow.getAllWindows()[0]; owner.hide(); owner.show(); owner.focus(); });
+  await until(()=>app.evaluate(({BrowserWindow})=>{const owner=BrowserWindow.getAllWindows()[0],bounds=owner.getContentBounds();return owner.isVisible()&&!owner.isMinimized()&&bounds.width>0&&bounds.height>0;}),'actual test window has a visible nonzero content viewport');
   await until(async () => { try { return JSON.parse(await readFile(env.AGENTVIEWER_CONNECTION_FILE, 'utf8')).protocolVersion === '1.0'; } catch { return false; } }, 'isolated desktop service discovery');
   const identity = await app.evaluate(({ app }) => ({ profile: app.getPath('userData'), pid: process.pid, lock: app.hasSingleInstanceLock(), packaged:app.isPackaged, executable:process.execPath, appPath:app.getAppPath() })); assert.equal(resolve(identity.profile), resolve(directory)); assert.equal(identity.lock, true); assert.equal(resolve(identity.executable).toLowerCase(),executable.toLowerCase()); assert.equal(resolve(identity.appPath),resolve('.')); results.identity = identity;
   await captureProcessRoots(identity.pid);

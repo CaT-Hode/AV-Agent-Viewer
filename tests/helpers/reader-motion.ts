@@ -22,7 +22,7 @@ export async function verifyReaderMotion(main: Page, directory: string, evidence
   for (const name of await readdir(resolve('dist/renderer/assets'))) if (name.endsWith('.js') && (await readFile(resolve('dist/renderer/assets', name), 'utf8')).includes('findFromDOM')) { chunk = name; break; }
   assert.ok(chunk);
   const url = new URL('assets/' + chunk, main.url()).href;
-  const text = '---\ntitle: "Pointer and motion"\n---\n\n# Pointer alignment 中文\n\n[TOC]\n\nA **bold phrase** and normal words for caret placement.\n\nA [linked phrase](https://example.test/long-target) and `inline code`.\n\n> Quoted phrase.\n\n- Listed phrase.\n\nSetext heading\n--------------\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\n## After table\n\nClick here after table 中文文字.\n\nPlain text for selection.\n\n' + Array.from({ length: 90 }, (_, i) => `Paragraph ${i} 中文测试。 A scrolling document with selectable text.`).join('\n\n') + '\n\nLong edit target ' + 'Large paragraph 中文. '.repeat(4000) + ' trailing 中文. '.repeat(4000) + '\n';
+  const text = '---\ntitle: "Pointer and motion"\n---\n\n# Pointer alignment 中文\n\n[TOC]\n\nA **bold phrase** and normal words for caret placement.\n\nA *italic phrase* and **outer *nested italic* tail**.\n\nA [linked phrase](https://example.test/long-target) and `inline code`.\n\n> Quoted phrase.\n\n- Listed phrase.\n\nSetext heading\n--------------\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\n## After table\n\nClick here after table 中文文字.\n\nPlain text for selection.\n\n' + Array.from({ length: 90 }, (_, i) => `Paragraph ${i} 中文测试。 A scrolling document with selectable text.`).join('\n\n') + '\n\nLong edit target ' + 'Large paragraph 中文. '.repeat(4000) + ' trailing 中文. '.repeat(4000) + '\n';
   const path = join(directory, 'pointer-motion.md'); await writeFile(path, text);
   const view = await invoke<{ id: string; documentId: string }>('open', { uri: path, windowId: 'main' });
   const editor = main.locator('[data-markdown-view=' + JSON.stringify(view.id) + ']'), reader = main.locator('.document-content').first();
@@ -62,12 +62,13 @@ export async function verifyReaderMotion(main: Page, directory: string, evidence
     if (box.x < Math.max(0, viewport.left) || box.x > Math.min(innerWidth, viewport.right) || y < Math.max(0, viewport.top) || y > Math.min(innerHeight, viewport.bottom)) throw new Error('Source glyph is outside the visible reader: ' + input.needle + ' at ' + box.x + ',' + y);
     return { x: box.x, y, position };
   }, { needle, position: text.indexOf(needle) + offset, url });
+  const inlineSources: Record<string, string> = { 'bold phrase': '**bold phrase**', 'italic phrase': '*italic phrase*', 'nested italic': '**outer *nested italic* tail**', 'linked phrase': '[linked phrase](https://example.test/long-target)', 'inline code': '`inline code`' };
   const clicks: unknown[] = [];
   for (const zoom of [80, 100, 125, 150, 200]) {
     const input = main.getByRole('spinbutton', { name: '正文缩放比例', exact: true }); await input.fill(String(zoom)); await input.press('Enter'); await frames();
-    for (const needle of ['Pointer alignment', 'bold phrase', 'normal words', 'linked phrase', 'inline code', 'Quoted phrase', 'Listed phrase', 'Setext heading', 'Click here after table']) {
-      // Start on another line so the first click must preserve both the
-      // source character and painted position as live decorations update.
+    for (const needle of ['Pointer alignment', 'bold phrase', 'italic phrase', 'nested italic', 'normal words', 'linked phrase', 'inline code', 'Quoted phrase', 'Listed phrase', 'Setext heading', 'Click here after table']) {
+      // The first click maps the painted preview to its exact source character.
+      // Revealing delimiters on release may then legitimately reflow the line.
       await editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; E.findFromDOM(node.querySelector('.cm-content')).dispatch({ selection: { anchor: 0 } }); }, url);
       await navigate(needle);
       const p = await point(editor, needle, 6);
@@ -77,34 +78,63 @@ export async function verifyReaderMotion(main: Page, directory: string, evidence
         const module = await import(input.url), E = Object.values(module).find((item: any) => item?.findFromDOM) as any;
         const view = E.findFromDOM(node.querySelector('.cm-content')), head = view.state.selection.main.head, rect = view.coordsAtPos(head);
         const next = view.coordsAtPos(Math.min(head + 1, view.state.doc.length)), caret = node.querySelector('.cm-cursor')!;
-        return { head, rect, next, width: caret.getBoundingClientRect().width, color: getComputedStyle(caret).borderLeftColor };
+        const dom = view.domAtPos(head), line = (dom.node.nodeType === Node.ELEMENT_NODE ? dom.node as Element : dom.node.parentElement)?.closest('.cm-line')?.textContent;
+        return { head, rect, next, line, width: caret.getBoundingClientRect().width, color: getComputedStyle(caret).borderLeftColor };
       }, { url });
       assert.ok(actual.rect && actual.next);
-      const glyph = Math.abs(actual.next.left - actual.rect.left);
-      if (Math.abs(actual.rect.left - p.x) > Math.max(4, glyph * .6) || p.y < actual.rect.top - 1 || p.y > actual.rect.bottom + 1 || actual.head !== text.indexOf(needle) + 6) await writeFile(join(evidence, 'pointer-click-failure.json'), JSON.stringify({ zoom, needle, pointer: p, expectedHead: text.indexOf(needle) + 6, ...actual }, null, 2));
-      assert.ok(Math.abs(actual.rect.left - p.x) <= Math.max(4, glyph * .6), `caret follows painted glyph at ${zoom}%: ${needle}`);
-      assert.ok(p.y >= actual.rect.top - 1 && p.y <= actual.rect.bottom + 1, 'click stays on the painted text line after widgets');
+      const painted = await point(editor, needle, 6), glyph = Math.abs(actual.next.left - actual.rect.left);
+      if (Math.abs(actual.rect.left - painted.x) > Math.max(4, glyph * .6) || painted.y < actual.rect.top - 1 || painted.y > actual.rect.bottom + 1 || actual.head !== text.indexOf(needle) + 6) await writeFile(join(evidence, 'pointer-click-failure.json'), JSON.stringify({ zoom, needle, pointer: p, painted, expectedHead: text.indexOf(needle) + 6, ...actual }, null, 2));
+      assert.ok(Math.abs(actual.rect.left - painted.x) <= Math.max(4, glyph * .6), `caret follows its source glyph after syntax reveal at ${zoom}%: ${needle}`);
+      assert.ok(painted.y >= actual.rect.top - 1 && painted.y <= actual.rect.bottom + 1, 'caret stays on its source line after syntax reveal');
       assert.equal(actual.head, text.indexOf(needle) + 6, `first click preserves the exact source offset at ${zoom}%: ${needle}`);
       assert.ok(actual.width >= 1.5, 'insertion caret remains visible at document zoom');
-      clicks.push({ zoom, needle, pointer: p, ...actual });
+      if (inlineSources[needle]) {
+        assert.ok(actual.line?.includes(inlineSources[needle]), `mouse release reveals both delimiters at ${zoom}%: ${needle}`);
+        await main.mouse.click(painted.x, painted.y); await frames();
+        const repeatedHead = await editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; return E.findFromDOM(node.querySelector('.cm-content')).state.selection.main.head; }, url);
+        assert.equal(repeatedHead, text.indexOf(needle) + 6, 'clicking an already revealed inline run keeps the same source caret');
+      }
+      clicks.push({ zoom, needle, pointer: p, painted, ...actual });
     }
     if (zoom === 100) await main.screenshot({ path: join(evidence, 'pointer-light.png'), scale: 'css' });
   }
   const zoomInput = main.getByRole('spinbutton', { name: '正文缩放比例', exact: true }); await zoomInput.fill('100'); await zoomInput.press('Enter'); await frames();
+  const readSelection = () => editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; const v = E.findFromDOM(node.querySelector('.cm-content')), r = v.state.selection.main; return { from: r.from, to: r.to, head: r.head, text: v.state.sliceDoc(r.from, r.to), box: v.coordsAtPos(r.head) }; }, url);
   for (const [startText, startOffset, endText, endOffset] of [['bold phrase', 1, 'bold phrase', 10], ['bold phrase', 2, 'normal words', 6], ['linked phrase', 2, 'inline code', 6]] as const) for (const reverse of [false, true]) {
     // A second drag starting inside the previous selection starts native
     // drag/drop rather than creating a fresh reverse text selection.
     await editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; E.findFromDOM(node.querySelector('.cm-content')).dispatch({ selection: { anchor: 0 } }); }, url);
     await navigate(startText);
     const first = await point(editor, startText, startOffset), last = await point(editor, endText, endOffset), from = reverse ? last : first, to = reverse ? first : last;
-    await main.mouse.move(from.x + (reverse ? -.2 : .2), from.y); await main.mouse.down(); await main.mouse.move(to.x + (reverse ? .2 : -.2), to.y, { steps: 8 }); await main.mouse.up(); await frames();
-    const selection = await editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; const v = E.findFromDOM(node.querySelector('.cm-content')), r = v.state.selection.main; return { from: r.from, to: r.to, head: r.head, text: v.state.sliceDoc(r.from, r.to), box: v.coordsAtPos(r.head) }; }, url);
     const startPosition = text.indexOf(startText) + startOffset, endPosition = text.indexOf(endText) + endOffset;
-    assert.deepEqual({ from: selection.from, to: selection.to, text: selection.text }, { from: startPosition, to: endPosition, text: text.slice(startPosition, endPosition) }, 'dragging within and across formatted text preserves its exact source range in either direction');
-    assert.equal(selection.head, reverse ? startPosition : endPosition, 'a fresh drag places the selection head at the actual mouse endpoint');
-    if (!selection.box || Math.abs(selection.box.left - to.x) >= 1 || to.y < selection.box.top - 1 || to.y > selection.box.bottom + 1) await writeFile(join(evidence, 'pointer-drag-failure.json'), JSON.stringify({ startText, startOffset, endText, endOffset, reverse, from, to, selection }, null, 2));
-    assert.ok(selection.box && Math.abs(selection.box.left - to.x) < 1 && to.y >= selection.box.top - 1 && to.y <= selection.box.bottom + 1, 'cross-format dragging leaves its final caret at the mouse position');
+    const expected = { from: startPosition, to: endPosition, text: text.slice(startPosition, endPosition) };
+    await main.mouse.move(from.x + (reverse ? -.2 : .2), from.y); await main.mouse.down();
+    try {
+      await main.mouse.move(to.x + (reverse ? .2 : -.2), to.y, { steps: 8 }); await frames();
+      const held = await readSelection(), firstHeld = await point(editor, startText, startOffset), lastHeld = await point(editor, endText, endOffset);
+      assert.deepEqual({ from: held.from, to: held.to, text: held.text }, expected, 'an unfinished drag keeps its exact source range in either direction');
+      assert.equal(held.head, reverse ? startPosition : endPosition, 'an unfinished drag places its head at the actual mouse endpoint');
+      if (!held.box || Math.abs(held.box.left - to.x) >= 1 || to.y < held.box.top - 1 || to.y > held.box.bottom + 1) await writeFile(join(evidence, 'pointer-drag-failure.json'), JSON.stringify({ startText, startOffset, endText, endOffset, reverse, from, to, held }, null, 2));
+      assert.ok(held.box && Math.abs(held.box.left - to.x) < 1 && to.y >= held.box.top - 1 && to.y <= held.box.bottom + 1, 'syntax reveal never moves the caret away from an unfinished drag');
+      assert.ok(Math.abs(firstHeld.x - first.x) < 1 && Math.abs(firstHeld.y - first.y) < 1 && Math.abs(lastHeld.x - last.x) < 1 && Math.abs(lastHeld.y - last.y) < 1, 'both painted drag targets remain fixed until mouse release');
+    } finally { await main.mouse.up(); }
+    await frames(); const released = await readSelection();
+    assert.deepEqual({ from: released.from, to: released.to, text: released.text }, expected, 'revealing syntax after mouse release preserves the selected source range');
+    assert.equal(released.head, reverse ? startPosition : endPosition, 'syntax reveal preserves the released drag direction');
   }
+  await navigate('bold phrase');
+  await editor.evaluate(async (node, input) => { const m = await import(input.url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any, v = E.findFromDOM(node.querySelector('.cm-content')); v.dispatch({ selection: { anchor: input.from } }); v.focus(); }, { url, from: text.indexOf('**bold phrase**') - 1 });
+  await main.keyboard.press('ArrowRight'); await main.keyboard.press('ArrowRight'); await main.keyboard.press('ArrowRight'); await frames();
+  assert.equal((await readSelection()).head, text.indexOf('bold phrase'), 'keyboard entry reaches the source content after its opening delimiters');
+  assert.ok((await editor.locator('.cm-line').filter({ hasText: 'bold phrase' }).textContent())!.includes('**bold phrase**'), 'keyboard entry reveals both delimiters');
+  await main.keyboard.insertText('编辑🙂'); await frames();
+  const inlineEdited = await editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; return E.findFromDOM(node.querySelector('.cm-content')).state.doc.toString(); }, url);
+  assert.equal(inlineEdited, text.replace('**bold phrase**', '**编辑🙂bold phrase**'), 'typing in revealed text preserves both source delimiters and the intended insertion offset');
+  await main.keyboard.press('Control+z'); await frames();
+  const inlineRestored = await editor.evaluate(async (node, url) => { const m = await import(url), E = Object.values(m).find((v: any) => v?.findFromDOM) as any; return E.findFromDOM(node.querySelector('.cm-content')).state.doc.toString(); }, url);
+  assert.equal(inlineRestored, text, 'undo restores the exact original inline source');
+  await main.keyboard.press('End'); await frames();
+  assert.ok(!(await editor.locator('.cm-line').filter({ hasText: 'bold phrase' }).textContent())!.includes('**bold phrase**'), 'moving the keyboard caret outside the formatted run hides its delimiters again');
   // Modes reuse one editor and history. Test real insertion inside a large
   // wrapped line, then undo after changing modes and redo in the live view.
   // Browser source avoids tsx's Node-only keepNames helper on event handlers.
@@ -220,10 +250,11 @@ export async function verifyReaderMotion(main: Page, directory: string, evidence
   assert.ok(enter.some(s => s.opacity! > 0 && s.opacity! < 1), 'scrolling the selection back fades the toolbar in');
   assert.equal(enter.at(-1)!.phase, 'open'); assert.ok(Math.abs(enter.at(-1)!.top - before) < 1);
   await main.screenshot({ path: join(evidence, 'selection-reappeared.png'), scale: 'css' });
-  const result = { clicks, inertia, top, bottom, reduced, hover, dismissalDelta, exit, enter };
+  const inlineSyntax = { mouseReveal: Object.keys(inlineSources), nested: true, repeatedClicks: true, heldDragStable: true, releasedRangeStable: true, keyboardRevealAndHide: true, insertionAndUndo: true };
+  const result = { clicks, inlineSyntax, inertia, top, bottom, reduced, hover, dismissalDelta, exit, enter };
   await writeFile(join(evidence, 'pointer-motion.json'), JSON.stringify(result, null, 2));
   await closeFixture(view.id); await invoke('settings-set', { id: 'appearance.motion', value: 'off' });
-  return { caretClicks: clicks.length, edgeResistance: true, momentum: true, reducedMotion: true, selectionHoverStable: true, selectionExitAndReturn: true };
+  return { caretClicks: clicks.length, inlineSyntax, edgeResistance: true, momentum: true, reducedMotion: true, selectionHoverStable: true, selectionExitAndReturn: true };
 }
 
 /** The Kit canvas, paper and selection overlays share the same elastic stage. */
