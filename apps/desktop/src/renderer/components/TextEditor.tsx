@@ -6,7 +6,7 @@ import { html } from '@codemirror/lang-html';
 import { languages } from '@codemirror/language-data';
 import { undo, redo, undoDepth, redoDepth, indentWithTab, isolateHistory } from '@codemirror/commands';
 import { openSearchPanel, search, selectNextOccurrence } from '@codemirror/search';
-import { syntaxTree } from '@codemirror/language';
+import { LanguageSupport, syntaxTree } from '@codemirror/language';
 import { markdownLivePreview, refreshMarkdownPreview } from '../lib/markdown-live-preview';
 import { MARKDOWN_COMMANDS, markdownTransformRange, type MarkdownCommandEventDetail, type MarkdownCommandName } from '../../../../../packages/markdown/src/commands';
 import { textReplacement, type TextEditorBarrier, type TextEditorChange } from '../lib/text-drafts';
@@ -18,7 +18,7 @@ import { boundedMarkdownLanguage } from '../lib/markdown-language';
 import { MARKDOWN_EXTERNAL_EDIT_EVENT, type MarkdownExternalEdit } from '../lib/markdown-external-edit';
 import { activateMarkdownSurface, markdownSurface } from '../lib/markdown-surfaces';
 import { MARKDOWN_PROJECTION_EVENT, MARKDOWN_PROJECTION_REQUEST, type MarkdownProjection } from '../lib/markdown-projection';
-import { boundedMarkdownInput } from '../lib/markdown-input';
+import { boundedMarkdownInput, markdownBlockEnter, markdownMathBracketInput, markdownHtmlCompletion } from '../lib/markdown-input';
 import { markdownEditorSetup } from '../lib/markdown-editor-setup';
 import '../markdown-editor.css';
 
@@ -52,6 +52,7 @@ export function TextEditor(props: Props) {
     let publishedOutline: unknown;
     const identity = { documentId: latest.current.documentId, viewId: latest.current.viewId, revision: latest.current.revision ?? 0 }, imports = new Map<string, { from: number; to: number }>(), importTasks = new Set<Promise<void>>();
     const spelling = new Compartment(), pairs = new Compartment(), bindings = new Compartment(); let spellcheck = true, autoPair = true;
+    const htmlCompletions = markdownHtmlCompletion(() => autoPair);
     let preferences: { imageRoot?: string; upload?: unknown; keybindings?: Record<string, string> } = {};
     const serialize = (state: EditorState) => {
       if (serializedDocument !== state.doc) { serializedDocument = state.doc; serializedText = state.doc.sliceString(0, state.doc.length, eol.current); }
@@ -135,13 +136,14 @@ export function TextEditor(props: Props) {
       // bindings. Consume the replaced default keys after explicit overrides.
       ...Object.keys(overrides).flatMap(command => (inheritedKeys[command] ?? []).map(key => ({ key, run: () => true, preventDefault: true, scope: 'editor search-panel' }))),
       ...(['undo', 'redo'] as const).filter(command => !Object.hasOwn(overrides, command)).flatMap(command => inheritedKeys[command].map(key => ({ key, run: () => execute(command), preventDefault: true }))),
+      { key: 'Enter', run: (view: EditorView) => latest.current.format === 'markdown' && autoPair && !composing.current && !view.composing && markdownBlockEnter(view) },
       ...(latest.current.format === 'markdown' ? editingKeys.filter(([, command]) => !Object.hasOwn(overrides, command)).map(([key, command]) => ({ key, run: (view: EditorView) => format(view, command) })) : []),
       ...(!Object.hasOwn(overrides, 'replace') ? [{ key: 'Mod-h', run: () => execute('replace') }] : []),
       { key: 'Mod-d', run: selectNextOccurrence }, ...(!Object.hasOwn(overrides, 'focus') ? [{ key: 'F8', run: () => execute('focus') }] : []), ...(!Object.hasOwn(overrides, 'typewriter') ? [{ key: 'F9', run: () => execute('typewriter') }] : []), indentWithTab,
     ]));
     const view: EditorView = new EditorView({ parent: host.current!, state: EditorState.create({ doc: normalize(latest.current.value), extensions: [
       Prec.highest(EditorView.domEventHandlers({ beforeinput: event => event.inputType === 'historyUndo' ? execute('undo') : event.inputType === 'historyRedo' ? execute('redo') : false })),
-      markdownEditorSetup, boundedMarkdownInput, latest.current.format === 'html' ? html() : boundedMarkdownLanguage(markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [typoraMarkdownSyntax] })), EditorView.lineWrapping, search({ top: true }), markdownStatistics, markdownOutline,
+      markdownEditorSetup, boundedMarkdownInput, markdownMathBracketInput(() => latest.current.format === 'markdown' && autoPair && !composing.current), latest.current.format === 'html' ? html() : [boundedMarkdownLanguage(markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [typoraMarkdownSyntax], completeHTMLTags: false, htmlTagLanguage: new LanguageSupport(html({ matchClosingTags: false, autoCloseTags: false }).language) })), EditorState.languageData.of(() => [{ autocomplete: htmlCompletions }])], EditorView.lineWrapping, search({ top: true }), markdownStatistics, markdownOutline,
       spelling.of(EditorView.contentAttributes.of({ spellcheck: 'true' })), pairs.of([]),
       bindings.of(keybindings()),
       liveMode.current.of(latest.current.live && latest.current.format === 'markdown' ? markdownLivePreview(latest.current.documentId ?? '') : []),

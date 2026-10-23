@@ -3,6 +3,7 @@ import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } fr
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { parseMarkdownTable, serializeMarkdownTable } from '../../../../../packages/markdown/src/commands';
+import { markdownMathRange } from '../../../../../packages/markdown/src/syntax';
 import { renderMarkdownDiagram, renderMarkdownFormula } from './markdown-renderers';
 import { call } from './transport';
 import DOMPurify from 'dompurify';
@@ -86,6 +87,31 @@ class PrefixWidget extends WidgetType {
   ignoreEvent() { return this.checked !== undefined; }
 }
 
+class HtmlBreakWidget extends WidgetType {
+  eq(other: WidgetType) { return other instanceof HtmlBreakWidget; }
+  get lineBreaks() { return 1; }
+  toDOM() { const span = document.createElement('span'); span.className = 'md-html-break'; span.dataset.markdownWidget = 'true'; span.append(document.createElement('br')); return span; }
+  ignoreEvent() { return false; }
+}
+
+const inlineHtmlTags = new Set(['strong', 'b', 'em', 'i', 'u', 's', 'del', 'mark', 'sub', 'sup', 'kbd', 'small', 'span']);
+/** Inline HTML decorates the original text rather than creating another editor.
+ * Only text styles can affect the live paper; layout and event attributes never
+ * become editor DOM attributes. */
+function inlineHtmlStyle(source: string) {
+  if (!/\bstyle\s*=/i.test(source)) return '';
+  const element = sanitizedMarkdownHtml(source).body.firstElementChild as HTMLElement | null;
+  if (!element) return '';
+  const result = document.createElement('span').style;
+  for (const property of ['color', 'background-color', 'font-weight', 'font-style', 'text-decoration']) {
+    const value = element.style.getPropertyValue(property);
+    if (value && !/url\s*\(|var\s*\(/i.test(value)) result.setProperty(property, value);
+  }
+  const size = element.style.fontSize, match = /^(\d+(?:\.\d+)?)(px|em|%)$/.exec(size);
+  if (match) { const value = Number(match[1]), unit = match[2]; if (unit === 'px' && value >= 8 && value <= 48 || unit === 'em' && value >= .5 && value <= 3 || unit === '%' && value >= 50 && value <= 300) result.fontSize = size; }
+  return result.cssText;
+}
+
 const stagedImageSource = 'data-markdown-asset-source';
 const stagedMediaSource = 'data-av-local-media';
 /** Preserve only image resource references across the normal HTML sanitizer.
@@ -117,8 +143,8 @@ function standaloneMedia(source: string) {
 }
 
 class RenderWidget extends WidgetType {
-  constructor(readonly kind: 'math' | 'diagram' | 'image' | 'html' | 'metadata' | 'footnote' | 'rule' | 'toc', readonly source: string, readonly from: number, readonly block: boolean, readonly documentId: string, readonly document?: Text, readonly diagramLanguage: 'mermaid' | 'sequence' | 'flow' = 'mermaid') { super(); }
-  eq(other: RenderWidget) { return this.kind === other.kind && this.source === other.source && this.from === other.from && this.documentId === other.documentId && this.document === other.document && this.diagramLanguage === other.diagramLanguage; }
+  constructor(readonly kind: 'math' | 'diagram' | 'image' | 'html' | 'metadata' | 'footnote' | 'rule' | 'toc', readonly source: string, readonly from: number, readonly block: boolean, readonly documentId: string, readonly document?: Text, readonly diagramLanguage: 'mermaid' | 'sequence' | 'flow' = 'mermaid', readonly contentOffset = 0) { super(); }
+  eq(other: RenderWidget) { return this.kind === other.kind && this.source === other.source && this.from === other.from && this.block === other.block && this.documentId === other.documentId && this.document === other.document && this.diagramLanguage === other.diagramLanguage && this.contentOffset === other.contentOffset; }
   toDOM(view: EditorView) {
     const host = document.createElement(this.block ? 'div' : 'span'); host.className = 'md-render md-render-' + this.kind; host.dataset.markdownWidget = 'true';
     const readOnly = view.state.facet(EditorState.readOnly);
@@ -165,6 +191,8 @@ class RenderWidget extends WidgetType {
         button.style.paddingInlineStart = (Math.max(0, Number(level[1] ?? level[2]) - 1) * 14) + 'px';
         button.addEventListener('mousedown', preventWidgetSelection); button.addEventListener('click', event => { event.stopPropagation(); let current = 0, position: number | undefined; syntaxTree(view.state).iterate({ enter: entry => { if (/^(ATX|Setext)Heading/.test(entry.name) && current++ === headingIndex) position = entry.from; } }); if (position !== undefined) editBlock(view, position); }); host.append(button); return false;
       } });
+    } else if (this.kind === 'math' && !this.source.trim()) {
+      host.classList.add('md-math-empty'); host.textContent = 'LaTeX · 在上方输入公式';
     } else {
       host.textContent = this.kind === 'math' ? this.source : '正在绘制图表…';
       // Offscreen buffered widgets do not initialize MathJax/Mermaid. Rendering
@@ -179,7 +207,7 @@ class RenderWidget extends WidgetType {
       for (const control of host.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input,textarea')) { const text = document.createElement('span'); const offset = this.kind === 'metadata' ? Number(control.dataset.markdownSourceOffset ?? -1) : this.kind === 'footnote' ? (/^\[\^[^\]]+\]:[ \t]*/.exec(this.source)?.[0].length ?? -1) : -1; if (offset >= 0) mappedPreviewText(text, host, this.kind === 'footnote' ? this.source.slice(offset) : control.value, offset, this.kind === 'footnote'); else text.textContent = control.value; control.replaceWith(text); }
       for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (this.kind !== 'toc') button.remove();
     }
-    if (!readOnly && this.kind !== 'toc') host.addEventListener(['html', 'metadata', 'footnote'].includes(this.kind) ? 'dblclick' : 'click', event => { if (this.kind === 'html' && (event.target as HTMLElement).closest('video,audio,iframe,a,input,button,textarea')) return; event.preventDefault(); const from = view.posAtDOM(host); if (['metadata', 'html', 'footnote'].includes(this.kind)) view.dispatch({ effects: revealMarkdownBlock.of({ from, to: from + this.source.length }) }); editBlock(view, from + (this.kind === 'math' ? this.block ? 3 : 1 : 0)); });
+    if (!readOnly && this.kind !== 'toc') host.addEventListener(['html', 'metadata', 'footnote'].includes(this.kind) ? 'dblclick' : 'click', event => { if (this.kind === 'html' && (event.target as HTMLElement).closest('video,audio,iframe,a,input,button,textarea')) return; event.preventDefault(); const from = view.posAtDOM(host); if (['metadata', 'html', 'footnote'].includes(this.kind)) view.dispatch({ effects: revealMarkdownBlock.of({ from, to: from + this.source.length }) }); editBlock(view, Math.min(view.state.doc.length, from + this.contentOffset)); });
     return this.block ? measuredBlock(host) : host;
   }
   ignoreEvent() { return true; }
@@ -268,7 +296,20 @@ export function markdownLivePreview(documentId: string) {
     const addLine = (position: number, name: string) => { const line = state.doc.lineAt(position).from; const names = lineStyles.get(line) ?? []; if (!names.includes(name)) names.push(name); lineStyles.set(line, names); };
     const hide = (from: number, to: number, widget?: WidgetType, block = false) => { if (to <= from) return; decorations.push(Decoration.replace({ widget, block }).range(from, to)); hidden.push({ from, to }); };
     const reveal = state.field(revealed);
-    const excluded = (from: number) => { let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1); while (node) { if (['FencedCode', 'CodeBlock', 'BlockMath', 'Frontmatter', 'InlineCode', 'Table', 'HTMLBlock'].includes(node.name)) return true; node = node.parent; } return false; };
+    const htmlGroups = new Map<string, { node: SyntaxNode; source: string }[]>();
+    const excluded = (from: number) => { let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1); while (node) { if (['FencedCode', 'CodeBlock', 'InlineMath', 'BlockMath', 'Frontmatter', 'InlineCode', 'Table', 'HTMLBlock'].includes(node.name)) return true; node = node.parent; } return false; };
+    const math = (from: number, to: number, bodyFrom: number, bodyTo: number, block: boolean, active: boolean, renderedBody?: string, contentStart?: number) => {
+      const source = state.sliceDoc(bodyFrom, bodyTo), body = renderedBody ?? source, first = state.doc.lineAt(from), last = state.doc.lineAt(to);
+      const caret = contentStart ?? bodyFrom + (/^[ \t]*\n/.exec(source)?.[0].length ?? 0);
+      if (!active) hide(from, to, new RenderWidget('math', body, from, block, documentId, undefined, 'mermaid', caret - from), block);
+      else {
+        decorations.push(Decoration.mark({ class: 'md-math-source' }).range(from, to));
+        if (block) {
+          for (const span of spans) for (let number = Math.max(first.number, state.doc.lineAt(span.from).number); number <= Math.min(last.number, state.doc.lineAt(span.to).number); number++) addLine(state.doc.line(number).from, 'md-math-editor' + (number === first.number ? ' md-math-start' : '') + (number === last.number ? ' md-math-end' : ''));
+          decorations.push(Decoration.widget({ widget: new RenderWidget('math', body, from, true, documentId, undefined, 'mermaid', caret - last.to), block: true, side: 1 }).range(last.to));
+        }
+      }
+    };
     for (const span of spans) {
       const source = state.sliceDoc(span.from, span.to);
       if (span.from === 0) { const metadata = /^\uFEFF?---\n[\s\S]*?\n(?:---|\.\.\.)(?=\n|$)/.exec(source); if (metadata && !(reveal && reveal.from === 0 && reveal.to >= metadata[0].length) && !selected(state, 1, metadata[0].length)) hide(0, metadata[0].length, new RenderWidget('metadata', metadata[0], 0, true, documentId), true); }
@@ -298,12 +339,18 @@ export function markdownLivePreview(documentId: string) {
       if (name === 'Table' && node.to - node.from > 24000 && node.from >= span.from) decorations.push(Decoration.widget({ widget: new TableSourceNoticeWidget(), block: true, side: -1 }).range(node.from));
       if (name === 'Image' && !active && node.to - node.from <= 24000) { hide(node.from, node.to, new RenderWidget('image', text(), node.from, false, documentId)); return false; }
       if (name === 'HTMLTag' && node.to - node.from <= 24000 && /^<img\b/i.test(text()) && !active) { hide(node.from, node.to, new RenderWidget('image', text(), node.from, false, documentId)); return false; }
+      if (name === 'HTMLTag' && node.to - node.from <= 24000) {
+        let parent = node.parent;
+        while (parent?.parent && parent.name !== 'Paragraph' && !/Heading\d$/.test(parent.name)) parent = parent.parent;
+        const key = parent ? parent.from + ':' + parent.to : 'root', tags = htmlGroups.get(key) ?? [];
+        tags.push({ node, source: text() }); htmlGroups.set(key, tags);
+      }
       // CommonMark treats same-line <audio ...></audio> as inline HTML inside
       // a paragraph rather than HTMLBlock. Typora-style standalone players
       // still need the same sanitized, resource-resolved block projection.
       if (name === 'Paragraph' && !active && node.to - node.from <= 65536 && !(reveal && reveal.from <= node.from && reveal.to >= node.to) && standaloneMedia(text())) { hide(node.from, node.to, new RenderWidget('html', text(), node.from, true, documentId), true); return false; }
       if (name === 'HTMLBlock' && !active && node.to - node.from <= 65536 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { const source = text(); hide(node.from, node.to, new RenderWidget(standaloneImage(source) ? 'image' : 'html', source, node.from, true, documentId), true); return false; }
-      if (name === 'BlockMath' && node.to - node.from <= 24000) { const first = state.doc.lineAt(node.from), last = state.doc.lineAt(node.to), body = state.sliceDoc(Math.min(first.to + 1, node.to), Math.max(first.to + 1, last.from - 1)); if (last.number > first.number && /^\$\$[ \t]*$/.test(last.text.trim())) { if (!active) hide(node.from, node.to, new RenderWidget('math', body, node.from, true, documentId), true); else { decorations.push(Decoration.mark({ class: 'md-math-source' }).range(node.from, node.to)); decorations.push(Decoration.widget({ widget: new RenderWidget('math', body, node.from, true, documentId), block: true, side: 1 }).range(last.to)); } } return false; }
+      if (name === 'InlineMath' || name === 'BlockMath') { const range = markdownMathRange(node); if (range && node.to - node.from <= 100000) math(node.from, node.to, range.bodyFrom, range.bodyTo, range.block, active, range.parts.map(part => state.sliceDoc(part.from, part.to)).join('\n'), range.parts[Math.min(1, range.parts.length - 1)].from); return false; }
       if (name === 'Link' && node.to - node.from <= 24000) {
         const url = node.getChild('URL'); const marks: SyntaxNode[] = []; for (let child = node.firstChild; child; child = child.nextSibling) if (child.name === 'LinkMark') marks.push(child);
         if (url) decorations.push(Decoration.mark({ class: 'md-link', attributes: { 'data-markdown-link': state.sliceDoc(url.from, url.to) } }).range(node.from, node.to));
@@ -312,25 +359,32 @@ export function markdownLivePreview(documentId: string) {
       }
       if (name === 'FencedCode') {
         const info = node.getChild('CodeInfo'), language = info ? state.sliceDoc(info.from, info.to) : '', first = state.doc.lineAt(node.from), last = state.doc.lineAt(node.to);
+        if (language === 'math' && node.to - node.from <= 100000 && node.getChildren('CodeMark').length === 2) { const parts = node.getChildren('CodeText'); math(node.from, node.to, Math.min(first.to + 1, node.to), Math.max(first.to + 1, last.from - 1), true, active, parts.map(part => state.sliceDoc(part.from, part.to)).join(''), parts[0]?.from); return false; }
         if (['mermaid', 'sequence', 'flow'].includes(language) && !active && node.to - node.from <= 24000) { const body = state.sliceDoc(Math.min(first.to + 1, node.to), Math.max(first.to + 1, last.from - 1)); hide(node.from, node.to, new RenderWidget('diagram', body, node.from, true, documentId, undefined, language as 'mermaid' | 'sequence' | 'flow'), true); return false; }
         for (let line = Math.max(first.number, state.doc.lineAt(span.from).number); line <= Math.min(last.number, state.doc.lineAt(span.to).number); line++) addLine(state.doc.line(line).from, line === first.number ? 'md-fence md-fence-start' : line === last.number ? 'md-fence md-fence-end' : 'md-fence');
       }
     } });
-    // TeX, TOC and Typora highlight syntax are optional Markdown extensions,
-    // kept separate from CommonMark parsing and excluded from code regions.
+    for (const tags of htmlGroups.values()) {
+      const stack: { node: SyntaxNode; source: string; tag: string }[] = [];
+      for (const entry of tags) {
+        const token = /^<(\/?)([a-z]+)\b[^>]*>$/i.exec(entry.source); if (!token) continue;
+        const tag = token[2].toLowerCase();
+        if (tag === 'br' && !token[1]) { if (!selected(state, entry.node.from, entry.node.to)) hide(entry.node.from, entry.node.to, new HtmlBreakWidget()); continue; }
+        if (!inlineHtmlTags.has(tag)) continue;
+        if (!token[1]) { if (!/\/\s*>$/.test(entry.source)) stack.push({ ...entry, tag }); continue; }
+        if (stack.at(-1)?.tag !== tag) { stack.length = 0; continue; }
+        const opening = stack.pop()!, from = opening.node.from, to = entry.node.to;
+        if (entry.node.from > opening.node.to) decorations.push(Decoration.mark({ class: 'md-html-inline md-html-' + tag, attributes: { style: inlineHtmlStyle(opening.source) } }).range(opening.node.to, entry.node.from));
+        if (!selected(state, from, to)) { hide(from, opening.node.to); hide(entry.node.from, to); }
+      }
+    }
+    // Optional text extensions remain bounded to the visible source and never
+    // reinterpret code, equations, or already replaced widgets.
     const inside = (from: number) => excluded(from) || hidden.some(range => from >= range.from && from < range.to);
     for (const span of spans) {
     const source = state.sliceDoc(span.from, span.to);
-    const math = /(^[ \t]*\$\$[^\n]*\n[\s\S]*?\n[ \t]*\$\$[ \t]*(?=\n|$))|(?<![\\$])\$(?!\$|\s)([^\n$]*?\S)\$(?!\$)/gm;
-    for (const match of source.matchAll(math)) {
-      const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue;
-      const block = !!match[1], tex = block ? match[0].replace(/^[ \t]*\$\$[^\n]*\n/, '').replace(/\n[ \t]*\$\$[ \t]*$/, '') : match[2];
-      if (!selected(state, from, to)) hide(from, to, new RenderWidget('math', tex, from, block, documentId), block);
-      else { decorations.push(Decoration.mark({ class: 'md-math-source' }).range(from, to)); if (block) decorations.push(Decoration.widget({ widget: new RenderWidget('math', tex, from, true, documentId), block: true, side: 1 }).range(state.doc.lineAt(to).to)); }
-    }
     for (const match of source.matchAll(/^\[toc\][ \t]*$/gim)) { const from = span.from + match.index!, to = from + match[0].length; if (!inside(from) && !selected(state, from, to)) hide(from, to, new RenderWidget('toc', '', from, true, documentId, state.doc), true); }
     for (const match of source.matchAll(/^ {0,3}>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/gim)) addLine(span.from + match.index!, 'md-callout md-callout-' + match[1].toLowerCase());
-    for (const match of source.matchAll(/<(u|sub|sup)>([^\n]*?)<\/\1>/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: match[1] === 'u' ? 'md-underline' : match[1] === 'sub' ? 'md-sub' : 'md-super' }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + match[1].length + 2); hide(to - match[1].length - 3, to); } }
     for (const match of source.matchAll(/\[\^([^\]\n]+)\](?!:)/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: 'md-footnote-reference', attributes: { 'data-markdown-footnote': match[1] } }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + 2); hide(to - 1, to); } }
     for (const match of source.matchAll(/:([a-z0-9_+\-]+):/g)) { const from = span.from + match.index!, to = from + match[0].length, emoji = markdownEmoji(match[1]); if (emoji && !inside(from) && !selected(state, from, to)) hide(from, to, new PrefixWidget(emoji)); }
     }

@@ -24,12 +24,15 @@ import { resolveAll } from 'micromark-util-resolve-all';
 import type { Construct, Event, Extension, Resolver, State, Token, Tokenizer, TokenType } from 'micromark-util-types';
 import type { Extension as FromMarkdownExtension } from 'mdast-util-from-markdown';
 import type { Processor } from 'unified';
+import { GFM, parser } from '@lezer/markdown';
+import { markdownMathRange, typoraMarkdownSyntax, type MarkdownMathRange } from '../../../../../packages/markdown/src/syntax';
 
 declare module 'micromark-util-types' {
   interface TokenTypeMap {
     avHighlight: 'avHighlight'; avHighlightSequence: 'avHighlightSequence'; avHighlightTemporary: 'avHighlightTemporary'; avHighlightText: 'avHighlightText';
     avSub: 'avSub'; avSubSequence: 'avSubSequence'; avSubTemporary: 'avSubTemporary'; avSubText: 'avSubText';
     avSuper: 'avSuper'; avSuperSequence: 'avSuperSequence'; avSuperTemporary: 'avSuperTemporary'; avSuperText: 'avSuperText';
+    avMathInline: 'avMathInline'; avMathBlock: 'avMathBlock'; avMathData: 'avMathData';
   }
 }
 declare module 'unified' {
@@ -86,5 +89,44 @@ export function typoraInlineSyntax(this: Processor) {
   }
   const data = this.data();
   (data.micromarkExtensions ??= []).push(...syntax);
+  (data.fromMarkdownExtensions ??= []).push(fromMarkdown);
+}
+
+/** Export consumes exactly the formulas recognized by the editor grammar.
+ * Micromark still owns paragraph/list/code/HTML parsing; no source replacement
+ * can accidentally turn an HTML attribute or a code example into a formula. */
+export function typoraMathSyntax(this: Processor, options: { source: string }) {
+  const ranges = new Map<number, MarkdownMathRange>();
+  parser.configure([GFM, typoraMarkdownSyntax]).parse(options.source).iterate({ enter(node) {
+    const range = markdownMathRange(node.node);
+    if (range) { ranges.set(range.from, range); return false; }
+  } });
+  const construct = (block: boolean): Construct => ({ name: block ? 'avMathBlock' : 'avMathInline', concrete: block, tokenize(effects, ok, nok) {
+    let range: MarkdownMathRange;
+    const type = block ? 'avMathBlock' : 'avMathInline';
+    const consume: State = code => {
+      if (this.now().offset >= range.to) { effects.exit('avMathData'); effects.exit(type); return ok(code); }
+      if (code === null) return nok(code);
+      if (block && (code === -3 || code === -4 || code === -5)) { effects.exit('avMathData'); if (this.interrupt) { effects.exit(type); return ok(code); } effects.enter('lineEnding'); effects.consume(code); effects.exit('lineEnding'); effects.enter('avMathData'); return consume; }
+      effects.consume(code); return consume;
+    };
+    return code => {
+      const found = ranges.get(this.now().offset);
+      if (!found || found.block !== block) return nok(code);
+      range = found; effects.enter(type); effects.enter('avMathData'); return consume(code);
+    };
+  } });
+  const inline = construct(false), block = construct(true), syntax: Extension = { text: { 36: inline, 92: inline }, flow: { 36: block, 92: block } };
+  const fromMarkdown: FromMarkdownExtension = { enter: {}, exit: {} };
+  for (const [type, display] of [['avMathInline', false], ['avMathBlock', true]] as const) {
+    fromMarkdown.enter![type] = function (token) {
+      const range = ranges.get(token.start.offset)!, value = range.parts.map(part => options.source.slice(part.from, part.to)).join('\n').trim();
+      const code = { type: 'element' as const, tagName: 'code', properties: { className: ['language-math', display ? 'math-display' : 'math-inline'] }, children: [{ type: 'text' as const, value }] };
+      this.enter(display ? { type: 'paragraph', children: [], data: { hName: 'pre', hChildren: [code] } } : { type: 'inlineCode', value, data: { hName: 'code', hProperties: code.properties, hChildren: code.children } }, token);
+    };
+    fromMarkdown.exit![type] = function (token) { this.exit(token); };
+  }
+  const data = this.data();
+  (data.micromarkExtensions ??= []).push(syntax);
   (data.fromMarkdownExtensions ??= []).push(fromMarkdown);
 }

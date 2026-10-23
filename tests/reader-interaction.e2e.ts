@@ -43,7 +43,7 @@ const until = async (check: () => Promise<boolean>, label: string) => {
   throw new Error(`等待失败：${label}`);
 };
 const currentZoom = async (viewId: string) => (await state()).views.find(view => view.id === viewId)?.zoom ?? 1;
-const selectTextWithMouse = async (target: Locator, needle: string) => {
+const selectTextWithMouse = async (target: Locator, needle: string, dragExisting = false) => {
   await target.evaluate((node, text) => {
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
     let leaf: Node | null;
@@ -51,7 +51,7 @@ const selectTextWithMouse = async (target: Locator, needle: string) => {
     throw new Error('Missing visible selection text: ' + text);
   }, needle);
   await main.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-  const points = await target.evaluate((node, text) => {
+  const points = await target.evaluate((node, { text, dragExisting }) => {
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
     let leaf: Node | null;
     while ((leaf = walker.nextNode())) {
@@ -60,16 +60,26 @@ const selectTextWithMouse = async (target: Locator, needle: string) => {
       const range = document.createRange(); range.setStart(leaf, from); range.setEnd(leaf, from + 1);
       const first = range.getBoundingClientRect(); range.setStart(leaf, from + text.length - 1); range.setEnd(leaf, from + text.length);
       const last = range.getBoundingClientRect();
-      return { start: { x: first.left + .2, y: first.top + first.height / 2 }, end: { x: last.right - .2, y: last.top + last.height / 2 } };
+      // Start outside an existing native range, so this selects new text
+      // rather than starting Chromium's drag-and-drop of the old selection.
+      return { start: { x: first.left + (dragExisting ? .2 : -.2), y: first.top + first.height / 2 }, end: { x: last.right - .2, y: last.top + last.height / 2 } };
     }
     throw new Error('Selection text disappeared after layout: ' + text);
-  }, needle);
+  }, { text: needle, dragExisting });
+  await main.evaluate(() => { const taskWindow=window as Window & { readerDragDown?: unknown }; taskWindow.readerDragDown=undefined; document.addEventListener('pointerdown',event=>{const node=event.target as Element;taskWindow.readerDragDown={tag:node.tagName,className:node.getAttribute('class'),reader:!!node.closest('.document-content'),toolbar:!!node.closest('.selection-tools'),x:event.clientX,y:event.clientY,buttons:event.buttons};},{capture:true,once:true}); });
   await main.mouse.move(points.start.x, points.start.y); await main.mouse.down();
   try {
     await main.mouse.move(points.end.x, points.end.y, { steps: 4 });
-    assert.equal(await main.locator('.selection-tools:not([inert])').count(), 0, 'selection tools never intercept an unfinished mouse drag');
+    const liveTools=await main.locator('.selection-tools:not([inert])').count();
+    if(liveTools)await writeFile(join(evidence,'drag-toolbar-failure.json'),JSON.stringify(await main.evaluate(()=>({down:(window as Window & {readerDragDown?:unknown}).readerDragDown,selection:String(getSelection()),tools:[...document.querySelectorAll<HTMLElement>('.selection-tools')].map(node=>({inert:node.inert,phase:node.dataset.motionPhase,interacting:node.dataset.selectionInteracting,rect:node.getBoundingClientRect().toJSON()}))})),null,2));
+    assert.equal(liveTools, 0, 'selection tools never intercept an unfinished mouse drag');
   } finally { await main.mouse.up(); }
 };
+const selectionAppearance = (target: Locator) => target.evaluate(node => {
+  const selected = getComputedStyle(node, '::selection'), canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+  const context = canvas.getContext('2d')!; context.fillStyle = selected.backgroundColor; context.fillRect(0, 0, 1, 1);
+  return { ink: getComputedStyle(node).color, selectedInk: selected.color, fill: selected.backgroundColor, alpha: context.getImageData(0, 0, 1, 1).data[3] / 255 };
+});
 const commitZoom = async (target: Page, percent: number) => { const input = target.getByRole('spinbutton', { name: '正文缩放比例', exact: true }); await input.fill(String(percent)); await input.press('Enter'); };
 const toolbarState = (target: Page) => invoke<{ viewId: string; zoom?: number; backdropSample?: { sourceContentsId: number; layoutRevision: number } }>(target, 'toolbar-state');
 const activate = async (viewId: string) => { await invoke(main, 'activate', { viewId }); await until(async () => (await state()).activeViewId === viewId, 'active reading view'); };
@@ -153,8 +163,10 @@ try {
   const authoringSource = '---\ntitle: "Authoring"\nauthor: "Original"\n---\n\n# Authoring workflow\n\n[TOC]\n\nPlain text. Footnote[^check]. Emoji :rocket:.\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\nInline $x^2$ formula.\n\n$$\na^2+b^2=c^2\n$$\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```sequence\nAlice->Bob: Hello\nNote right of Bob: A note\nBob-->Alice: Reply\n```\n\n```flow\nst=>start: Start\nop=>operation: Action\ne=>end: End\nst->op->e\n```\n\n[^check]: Footnote content.\n\n<div><strong>Safe embedded HTML</strong><script>window.unsafeMarkdown=true</script></div>\n';
   const embeddedImage='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6eFQAAAAASUVORK5CYII=';
   const authoringInline = '\nInline extensions ==**nested bold** and *nested italic*==, ~sub~, ~**nested sub**~, ^super^, ^*nested super*^.\n\nEscaped \\==literal highlight== and entity &#61;&#61;entity highlight==; `==literal code== ~code~ ^code^`.\n\n- [ ] Outer task\n  - [x] Nested task\n';
+  const authoringMath = '\nParenthesized formula \\(\\frac{1}{2}\\) in prose.\n\n$$\\frac{a}{b}$$\n\n\\[\n\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}\n\\]\n\n```math\n\\sum_{i=1}^{n} i\n```\n\n```latex\n\\frac{code}{literal} $unrendered$\n```\n\n```tex\n\\sqrt{literal}\n```\n\nCurrency $5 and $10 and $20. Escaped \\$literal.\n';
+  const authoringHtml = '\nInline HTML <span style="color:#c7254e" onclick="window.unsafeMarkdown=true">Tinted <strong>HTML strong</strong> and <em>HTML emphasis</em></span> with <kbd>Ctrl</kbd><br>after break.\n\n<details open><summary>HTML details</summary><p>Details content.</p></details>\n';
   const localImageName='local image#%.png'; await writeFile(join(directory,localImageName),Buffer.from(embeddedImage.split(',')[1],'base64'));
-  const authoringPath = join(directory, 'authoring-workflow.md'); await writeFile(authoringPath, authoringSource+authoringInline+'\n![Embedded fixture]('+embeddedImage+')\n\n![Local special filename]('+encodeURIComponent(localImageName)+')\n\nFootnote with colon[^a:b].\n\n[^a:b]: Colon footnote.\n');
+  const authoringPath = join(directory, 'authoring-workflow.md'); await writeFile(authoringPath, authoringSource+authoringInline+authoringMath+authoringHtml+'\n![Embedded fixture]('+embeddedImage+')\n\n![Local special filename]('+encodeURIComponent(localImageName)+')\n\nFootnote with colon[^a:b].\n\n[^a:b]: Colon footnote.\n');
   const authoring = await invoke<ViewInfo>(main, 'open', { uri: authoringPath, windowId: 'main' });
   await until(async () => await main.locator('[data-markdown-view=' + JSON.stringify(authoring.id) + ']').count() === 1, 'new source editor activates');
   const authoredText = async () => (await state()).documents.find(item => item.id === authoring.documentId)!.model.text!;
@@ -164,7 +176,13 @@ try {
   await tools.getByRole('button', { name: '粗体', exact: true }).click();
   await until(async () => (await authoredText()).endsWith('**Selected**'), 'sidebar preserves source selection and applies bold');
   const changeMode = async (mode: string) => { const button = main.getByRole('button', { name: mode, exact: true }); if (!await button.isVisible()) await main.getByRole('button', { name: '更多导航工具', exact: true }).click(); await button.click(); };
+  await main.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+  const livePaper = await sourceEditor.boundingBox(); assert.ok(livePaper);
   await changeMode('源码'); await main.locator('.markdown-editor:not(.markdown-live)').waitFor();
+  await main.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+  const sourcePaper = await sourceEditor.boundingBox(); assert.ok(sourcePaper);
+  assert.ok(Math.abs(sourcePaper.width - livePaper.width) < 1 && Math.abs(sourcePaper.x - livePaper.x) < 1, 'source and reading modes retain the same centered paper width and horizontal position');
+  results.markdownPaperLayout = { live: { x: livePaper.x, width: livePaper.width }, source: { x: sourcePaper.x, width: sourcePaper.width } };
   await tools.getByRole('button', { name: '撤销', exact: true }).click();
   await until(async () => (await authoredText()).endsWith('Selected') && !(await authoredText()).endsWith('**Selected**'), 'live/source modes keep one undo history');
   await tools.getByRole('button', { name: '重做', exact: true }).click(); await until(async () => (await authoredText()).endsWith('**Selected**'), 'source mode redo restores formatting');
@@ -180,6 +198,31 @@ try {
   await sourceEditor.locator('.cm-search button[name="close"]').click();
   const revealPreview = async (from: number) => { await main.evaluate(input => window.dispatchEvent(new CustomEvent('agentviewer:markdown-navigate', { detail: { ...input, select: false } })), { viewId: authoring.id, from }); };
   await revealPreview((await authoredText()).indexOf('Inline $')); await sourceEditor.locator('.md-render-math svg').first().waitFor({ timeout: 45000 });
+  const beforeFormulaPreview = await authoredText();
+  for (const [source, selector] of [['Parenthesized formula', 'span.md-render-math [data-mml-node="mfrac"]'], ['$$\\frac{a}{b}$$', 'div.md-render-math [data-mml-node="mfrac"]'], ['\\begin{pmatrix}', 'div.md-render-math [data-mml-node="mtable"]'], ['```math', 'div.md-render-math [data-mml-node="munderover"]']]) {
+    await revealPreview((await authoredText()).indexOf(source));
+    await sourceEditor.locator(selector).first().waitFor({ timeout: 45000 });
+    assert.equal(await sourceEditor.locator('.md-render-math [data-mml-node="merror"]').count(), 0, 'extended math is laid out by the real MathJax worker rather than rendered as an error');
+  }
+  const mathRailOpen = await main.getByRole('button', { name: 'Markdown工具', exact: true }).getAttribute('aria-pressed') === 'true';
+  if (mathRailOpen) { await main.getByRole('button', { name: 'Markdown工具', exact: true }).click(); await tools.waitFor({ state: 'hidden' }); }
+  await revealPreview((await authoredText()).indexOf('\\begin{pmatrix}'));
+  await sourceEditor.locator('div.md-render-math:has([data-mml-node="mtable"])').first().click();
+  await sourceEditor.locator('.md-math-editor').filter({ hasText: '\\begin{pmatrix}' }).waitFor();
+  await sourceEditor.locator('div.md-render-math [data-mml-node="mtable"]').first().waitFor();
+  await main.screenshot({ path: join(evidence, 'markdown-math-editing.png'), scale: 'css' });
+  if (mathRailOpen) { await main.getByRole('button', { name: 'Markdown工具', exact: true }).click(); await tools.waitFor({ state: 'visible' }); }
+  await revealPreview((await authoredText()).indexOf('```latex'));
+  await sourceEditor.locator('.md-fence').filter({ hasText: '\\frac{code}{literal} $unrendered$' }).waitFor();
+  await revealPreview((await authoredText()).indexOf('```tex'));
+  await sourceEditor.locator('.md-fence').filter({ hasText: '\\sqrt{literal}' }).waitFor();
+  await revealPreview((await authoredText()).indexOf('Parenthesized formula'));
+  await sourceEditor.locator('span.md-render-math:has([data-mml-node="mfrac"])').first().click();
+  await sourceEditor.locator('.md-math-source').filter({ hasText: '\\(\\frac{1}{2}\\)' }).waitFor();
+  await changeMode('源码'); await revealPreview((await authoredText()).indexOf('Parenthesized formula'));
+  await sourceEditor.locator('.cm-line').filter({ hasText: 'Parenthesized formula \\(\\frac{1}{2}\\) in prose.' }).waitFor();
+  await changeMode('阅读');
+  assert.equal(await authoredText(), beforeFormulaPreview, 'rendering LaTeX extensions and literal TeX code never rewrites the Markdown source');
   for (const language of ['mermaid', 'sequence', 'flow']) { await revealPreview((await authoredText()).indexOf('```' + language)); const diagram = sourceEditor.locator('[data-diagram-language=' + JSON.stringify(language) + ']'); await diagram.locator('svg').waitFor({ timeout: 45000 }); }
   await revealPreview(0);
   await sourceEditor.getByLabel('文档信息 author', { exact: true }).fill('"Updated"'); await sourceEditor.getByLabel('文档信息 author', { exact: true }).press('Enter');
@@ -193,6 +236,24 @@ try {
   await sourceEditor.locator('.md-sub .md-strong').filter({ hasText: 'nested sub' }).waitFor(); await sourceEditor.locator('.md-super .md-emphasis').filter({ hasText: 'nested super' }).waitFor();
   assert.equal(await sourceEditor.locator('.md-highlight').filter({ hasText: 'literal highlight' }).count(), 0, 'escaped highlight stays literal in the live editor');
   assert.equal(await sourceEditor.locator('.md-highlight').filter({ hasText: 'entity highlight' }).count(), 0, 'entity-decoded equals do not create live delimiters');
+  const beforeInlineHtml = await authoredText(); await revealPreview(beforeInlineHtml.indexOf('Inline HTML'));
+  const tintedHtml = sourceEditor.locator('.md-html-span').filter({ hasText: 'Tinted ' }).first(); await tintedHtml.waitFor();
+  assert.equal(await tintedHtml.evaluate(node => getComputedStyle(node).color), 'rgb(199, 37, 78)', 'inline HTML projects an allowed color into the editable Markdown surface');
+  await sourceEditor.locator('.md-html-strong').filter({ hasText: 'HTML strong' }).waitFor(); await sourceEditor.locator('.md-html-em').filter({ hasText: 'HTML emphasis' }).waitFor();
+  await sourceEditor.locator('.md-html-kbd').filter({ hasText: 'Ctrl' }).waitFor();
+  assert.equal(await sourceEditor.locator('.md-html-inline[onclick]').count(), 0, 'HTML event handlers are never attached to editor decorations');
+  const inlineBreak = await sourceEditor.locator('.cm-line').filter({ hasText: 'Inline HTML' }).evaluate(node => {
+    const positions: Record<string, number> = {}, walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let leaf: Node | null;
+    while ((leaf = walker.nextNode())) for (const needle of ['Ctrl', 'after break.']) { const from = leaf.textContent!.indexOf(needle); if (from < 0) continue; const range = document.createRange(); range.setStart(leaf, from); range.setEnd(leaf, from + needle.length); positions[needle] = range.getBoundingClientRect().top; }
+    return { before: positions.Ctrl, after: positions['after break.'] };
+  });
+  assert.ok(inlineBreak.after > inlineBreak.before, 'inline HTML br produces an actual line break rather than a visible tag');
+  await sourceEditor.locator('.md-html-kbd').filter({ hasText: 'Ctrl' }).click();
+  await sourceEditor.locator('.cm-line').filter({ hasText: '<kbd>Ctrl</kbd>' }).waitFor();
+  await revealPreview((await authoredText()).indexOf('<details open>')); const htmlDetails = sourceEditor.locator('.md-render-html details'); await htmlDetails.waitFor();
+  assert.equal(await htmlDetails.getAttribute('open'), ''); await htmlDetails.locator('summary').click(); assert.equal(await htmlDetails.getAttribute('open'), null); await htmlDetails.locator('summary').click();
+  assert.equal(await main.evaluate(() => (window as Window & { unsafeMarkdown?: boolean }).unsafeMarkdown), undefined, 'supported HTML tags retain interactivity without executing source events or scripts');
+  assert.equal(await authoredText(), beforeInlineHtml, 'revealing HTML tags and toggling details keep the original source byte-for-byte');
   await revealPreview((await authoredText()).indexOf('- [ ] Outer task')); await until(async () => await sourceEditor.locator('.md-task-checkbox').count() === 2, 'nested GFM tasks produce both actual checkboxes');
   assert.equal(await sourceEditor.locator('.md-task-checkbox').nth(0).isChecked(), false); assert.equal(await sourceEditor.locator('.md-task-checkbox').nth(1).isChecked(), true);
   const localLiveImage=sourceEditor.getByAltText('Local special filename',{exact:true});await localLiveImage.scrollIntoViewIfNeeded();await until(async()=>localLiveImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'relative local image with spaces/hash/percent decodes in live mode');await localLiveImage.evaluate(image=>(image as HTMLImageElement).decode());
@@ -201,6 +262,14 @@ try {
   const exportContents = await main.evaluate(html => { const document = new DOMParser().parseFromString(html, 'text/html'); return { svg: document.querySelectorAll('svg').length, footnote: document.body.textContent!.includes('Edited footnote.'), script: document.querySelectorAll('script').length, toc: document.querySelectorAll('.av-toc a').length, html: document.body.textContent!.includes('Safe embedded HTML'), emoji: document.body.textContent!.includes('🚀'), nestedHighlight: [...document.querySelectorAll('mark')].some(mark => mark.querySelector('strong')?.textContent === 'nested bold' && mark.querySelector('em')?.textContent === 'nested italic'), sub: [...document.querySelectorAll('sub')].some(node => node.textContent === 'sub'), nestedSub: document.querySelector('sub strong')?.textContent === 'nested sub', super: [...document.querySelectorAll('sup')].some(node => node.textContent === 'super'), nestedSuper: document.querySelector('sup em')?.textContent === 'nested super', literalEscapes: document.body.textContent!.includes('==literal highlight==') && document.body.textContent!.includes('==entity highlight=='), literalCode: [...document.querySelectorAll('code')].some(node => node.textContent === '==literal code== ~code~ ^code^'), nestedTasks: document.querySelectorAll('li.task-list-item li.task-list-item input[checked]').length }; }, exported);
   assert.ok(exportContents.svg >= 5, 'frozen full source exports both formulas and all three diagram languages'); assert.equal(exportContents.script, 0); assert.equal(exportContents.footnote, true); assert.ok(exportContents.toc >= 1); assert.equal(exportContents.html, true); assert.equal(exportContents.emoji, true);
   assert.equal(exportContents.nestedHighlight, true); assert.equal(exportContents.sub, true); assert.equal(exportContents.nestedSub, true); assert.equal(exportContents.super, true); assert.equal(exportContents.nestedSuper, true); assert.equal(exportContents.literalEscapes, true); assert.equal(exportContents.literalCode, true); assert.equal(exportContents.nestedTasks, 1, 'export retains nested GFM tasks and inline syntax without flattening their children');
+  const extendedExport = await main.evaluate(html => {
+    const output = new DOMParser().parseFromString(html, 'text/html');
+    return { formulas: output.querySelectorAll('.av-math,.av-math-block').length, fractions: output.querySelectorAll('[data-mml-node="mfrac"]').length, matrices: output.querySelectorAll('[data-mml-node="mtable"]').length, sum: output.querySelectorAll('[data-mml-node="munderover"]').length, formulaErrors: output.querySelectorAll('[data-mml-node="merror"],.av-render-error').length, latexCode: output.querySelector('code.language-latex')?.textContent?.trim(), texCode: output.querySelector('code.language-tex')?.textContent?.trim(), currency: output.body.textContent!.includes('$5 and $10 and $20'), escapedDollar: output.body.textContent!.includes('$literal'), htmlColor: [...output.querySelectorAll('span')].find(node => node.textContent === 'Tinted HTML strong and HTML emphasis')?.style.color, htmlStrong: [...output.querySelectorAll('strong')].some(node => node.textContent === 'HTML strong'), htmlEm: [...output.querySelectorAll('em')].some(node => node.textContent === 'HTML emphasis'), htmlBreak: output.querySelector('kbd')?.nextElementSibling?.tagName === 'BR', details: output.querySelector('details summary')?.textContent, eventHandlers: output.querySelectorAll('[onclick],[onerror]').length };
+  }, exported);
+  assert.equal(extendedExport.formulas, 6, 'full-source export recognizes only the six actual math constructs, including the math fence');
+  assert.ok(extendedExport.fractions >= 2 && extendedExport.matrices >= 1 && extendedExport.sum >= 1, 'extended math exports real fraction, matrix and operator SVG layout');
+  assert.equal(extendedExport.formulaErrors, 0); assert.equal(extendedExport.latexCode, '\\frac{code}{literal} $unrendered$'); assert.equal(extendedExport.texCode, '\\sqrt{literal}'); assert.equal(extendedExport.currency, true); assert.equal(extendedExport.escapedDollar, true);
+  assert.equal(extendedExport.htmlColor, 'rgb(199, 37, 78)'); assert.equal(extendedExport.htmlStrong, true); assert.equal(extendedExport.htmlEm, true); assert.equal(extendedExport.htmlBreak, true); assert.equal(extendedExport.details, 'HTML details'); assert.equal(extendedExport.eventHandlers, 0, 'HTML export retains supported presentation and removes source event handlers');
   assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html,'text/html').querySelector('img[alt="Embedded fixture"]')?.getAttribute('src'),exported),embeddedImage,'embedded PNG survives full-source export and backend image validation');
   assert.equal(await main.evaluate(html => new DOMParser().parseFromString(html,'text/html').querySelector('img[alt="Local special filename"]')?.getAttribute('src'),exported),embeddedImage,'relative local image becomes a self-contained data URI in full-source export');
   await writeFile(join(evidence, 'markdown-export.html'), exported);
@@ -265,11 +334,36 @@ try {
     assert.ok(from >= 0, 'preview navigation has a source position');
     await splitPreview.evaluate(async (node, input) => {
       const module = await import(input.url);
-      const Editor = Object.values(module).find((value: any) => typeof value?.findFromDOM === 'function') as { findFromDOM(node: Element): { dispatch(input: unknown): void }; scrollIntoView(from: number, options: { y: string }): unknown };
+      const Editor = Object.values(module).find((value: any) => typeof value?.findFromDOM === 'function') as { findFromDOM(node: Element): { dispatch(input: unknown): void; requestMeasure(): void; domAtPos(position: number): { node: Node; offset: number }; coordsAtPos(position: number): { top: number; bottom: number } | null }; scrollIntoView(from: number, options: { y: string }): unknown };
       if (!Editor) throw new Error('Missing public EditorView.findFromDOM');
-      Editor.findFromDOM(node.querySelector('.cm-content')!)!.dispatch({ effects: Editor.scrollIntoView(input.from, { y: 'center' }) });
+      const content = node.querySelector<HTMLElement>('.cm-content')!;
+      // The focused source editor otherwise keeps its own caret visible in
+      // this shared scroller while the readonly mirror is being positioned.
+      content.focus({ preventScroll: true });
+      const view = Editor.findFromDOM(content)!;
+      view.dispatch({ effects: Editor.scrollIntoView(input.from, { y: 'center' }) });
+      // Both editors share the document scroller. Let CM mount the target;
+      // callers then verify the actual widget after its worker has rendered.
+      view.requestMeasure();
+      await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
     }, { url: codeMirrorUrl, from });
   };
+  // Rendered SVG has no exact source caret. Wait for real worker output and
+  // measure that element after lazy diagrams have changed the shared layout.
+  const visiblePreview = async (target: Locator) => {
+    await target.waitFor({ timeout: 45000 }); await target.scrollIntoViewIfNeeded();
+    const box = await target.boundingBox(), viewport = await splitPreview.locator('xpath=ancestor::*[contains(@class,"document-content")]').boundingBox();
+    assert.ok(box && viewport && box.y + box.height > viewport.y && box.y < viewport.y + viewport.height, 'actual preview content intersects the reading viewport');
+  };
+  const beforeReadonlyFormats = await authoredText();
+  for (const [source, selector] of [['Parenthesized formula', 'span.md-render-math [data-mml-node="mfrac"]'], ['\\begin{pmatrix}', 'div.md-render-math [data-mml-node="mtable"]'], ['```math', 'div.md-render-math [data-mml-node="munderover"]']]) {
+    await revealSplitPreview((await authoredText()).indexOf(source)); await visiblePreview(splitPreview.locator(selector).first());
+  }
+  await revealSplitPreview((await authoredText()).indexOf('Inline HTML'));
+  const readonlyHtml = splitPreview.locator('.md-html-span').filter({ hasText: 'Tinted ' }).first(); await visiblePreview(readonlyHtml);
+  assert.equal(await readonlyHtml.evaluate(node => getComputedStyle(node).color), 'rgb(199, 37, 78)'); await splitPreview.locator('.md-html-strong').filter({ hasText: 'HTML strong' }).waitFor();
+  await revealSplitPreview((await authoredText()).indexOf('<details open>')); await visiblePreview(splitPreview.locator('.md-render-html details summary').filter({ hasText: 'HTML details' }));
+  assert.equal(await authoredText(), beforeReadonlyFormats, 'readonly split uses the same math and HTML projections without changing source');
   await revealSplitPreview((await authoredText()).indexOf('![Local special filename]'));
   const localSplitImage=splitPreview.getByAltText('Local special filename',{exact:true});await localSplitImage.scrollIntoViewIfNeeded();await until(async()=>localSplitImage.evaluate(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth===1),'same local image decodes in the virtual split preview');await localSplitImage.evaluate(image=>(image as HTMLImageElement).decode());
   await revealSplitPreview((await authoredText()).indexOf('| Name |')); await splitPreview.locator('.md-table-widget').waitFor();
@@ -280,6 +374,10 @@ try {
   await splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first().scrollIntoViewIfNeeded();
   await selectTextWithMouse(splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first(), 'Plain text.');
   await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === 'Plain text.' && context.selection.locator?.from === previewFrom && context.selection.locator?.to === previewFrom + 'Plain text.'.length; }, 'preview reports the true UTF16 source range without stale source selection overwriting it');
+  const lightSelection = await selectionAppearance(splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first());
+  assert.equal(lightSelection.selectedInk, lightSelection.ink, 'selection preserves the document text color instead of inverting it');
+  assert.ok(lightSelection.alpha > 0 && lightSelection.alpha < .5, 'selection uses a visible translucent light fill');
+  results.markdownSelectionAppearance = { light: lightSelection };
   const floatingSelection = main.getByRole('toolbar', { name: '选区工具', exact: true });
   console.log('Markdown full exports and split source mapping: PASS; checking floating toolbar history');
   await floatingSelection.getByRole('button', { name: '加粗选区', exact: true }).click(); await until(async () => (await authoredText()).includes('**Plain text.**'), 'real floating toolbar formats the single source document');
@@ -303,6 +401,10 @@ try {
     await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return !(await authoredText()).includes('**Plain text.**') && context.quality === 'confirmed' && context.selection.text === 'Footnote'; }, 'late undo acknowledgement preserves the newer preview range');
     assert.equal(await main.evaluate(() => window.getSelection()?.toString()), 'Footnote', 'native Range survives Core/preview synchronization');
   }
+  await floatingSelection.waitFor({ state: 'visible' });
+  const beforeNativeDrag = await authoredText();
+  await selectTextWithMouse(splitPreview, 'Footnote', true);
+  assert.equal(await authoredText(), beforeNativeDrag, 'dragging an existing native selection keeps the readonly source intact');
   console.log('Floating toolbar keyboard/sidebar/navigation undo and redo: PASS');
   for (const [selector, visibleText, sourceText] of [['.md-table-widget td', 'Changed|cell', 'Changed\\|cell'], ['.md-render-metadata dd span', '"Updated"', '"Updated"'], ['.md-render-footnote span', 'Colon footnote.', 'Colon footnote.']]) {
     const from = (await authoredText()).indexOf(sourceText); assert.ok(from >= 0); await revealSplitPreview(from);
@@ -311,7 +413,7 @@ try {
     await until(async () => { const context = await invoke<ReadingContext>(main, 'context', { viewId: authoring.id }); return context.selection.text === sourceText && context.selection.locator?.from === from && context.selection.locator?.to === from + sourceText.length; }, 'readonly widget maps its exact source range: ' + visibleText);
   }
   await changeMode('阅读');
-  results.markdownAuthoring = { sidebarSelection: true, sharedModeHistory: true, tableCellAndRow: true, focus: true, typewriter: true, replacePanel: true, formulaWorker: true, diagramLanguages: ['mermaid', 'sequence', 'flow'], sourceStatistics: true, frontmatter: true, footnotes: true, exported: exportContents, exportedFiles };
+  results.markdownAuthoring = { sidebarSelection: true, sharedModeHistory: true, tableCellAndRow: true, focus: true, typewriter: true, replacePanel: true, formulaWorker: true, diagramLanguages: ['mermaid', 'sequence', 'flow'], sourceStatistics: true, frontmatter: true, footnotes: true, extendedFormats: { sourcePreserved: true, live: true, readonlySplit: true, export: extendedExport }, exported: exportContents, exportedFiles };
   await main.screenshot({ path: join(evidence, 'markdown-authoring.png'), scale: 'css' });
   const unsaved = await invoke<ViewInfo>(main, 'create-text', { title: 'Unsaved image fixture.md', text: '# Unsaved image fixture\n\nImage follows.\n\n', windowId: 'main' });
   console.log('Checking unsaved backed image paste, consecutive resize, split, export and save');
@@ -376,6 +478,67 @@ try {
     const resource=await invoke<{url:string}>(main,'markdown-resource',{documentId:converted.documentId,path:convertedText.match(/(?:<|\(|src=")([^<>"\s()]+\.assets-[^<>"\s()]+)(?:>|"|\))/)![1]});assert.ok(resource.url.startsWith('data:image/png;base64,'));
   }
   results.markdownPandoc={bundled:true,formats:['docx','odt','epub','rtf','latex'],roundtripImages:true};
+  const htmlOption = (label: string) => main.locator('.cm-tooltip-autocomplete [role="option"]').filter({ has: main.locator('.cm-completionLabel').filter({ hasText: new RegExp('^' + label + '$') }) });
+  const htmlRailOpen = await main.getByRole('button', { name: 'Markdown工具', exact: true }).getAttribute('aria-pressed') === 'true';
+  if (htmlRailOpen) { await main.getByRole('button', { name: 'Markdown工具', exact: true }).click(); await tools.waitFor({ state: 'hidden' }); }
+  const htmlTag = await invoke<ViewInfo>(main, 'create-text', { title: 'HTML tag completion.md', text: '', windowId: 'main' });
+  const htmlTagInput = main.locator('[data-markdown-view=' + JSON.stringify(htmlTag.id) + '] .cm-content');
+  const htmlTagText = async () => (await state()).documents.find(item => item.id === htmlTag.documentId)!.model.text!;
+  await htmlTagInput.focus(); await main.keyboard.type('<st'); await htmlOption('strong').waitFor();
+  await main.screenshot({ path: join(evidence, 'markdown-html-completion.png'), scale: 'css' });
+  await htmlOption('strong').click(); await until(async () => await htmlTagText() === '<strong></strong>', 'choosing an HTML tag completes its matching close');
+  await main.keyboard.insertText('inner'); await until(async () => await htmlTagText() === '<strong>inner</strong>', 'paired HTML tag completion puts the caret inside its contents');
+  if (htmlRailOpen) { await main.getByRole('button', { name: 'Markdown工具', exact: true }).click(); await tools.waitFor({ state: 'visible' }); }
+  const closingTag = await invoke<ViewInfo>(main, 'create-text', { title: 'HTML closing completion.md', text: '<strong>text</st', windowId: 'main' });
+  const closingInput = main.locator('[data-markdown-view=' + JSON.stringify(closingTag.id) + '] .cm-content');
+  await closingInput.focus(); await main.keyboard.press('Control+End'); await main.keyboard.press('Control+Space'); await htmlOption('strong').click();
+  await until(async () => (await state()).documents.find(item => item.id === closingTag.documentId)!.model.text === '<strong>text</strong>', 'an explicit completion resolves an existing HTML closing tag');
+  const htmlAttribute = await invoke<ViewInfo>(main, 'create-text', { title: 'HTML attribute completion.md', text: '<span st', windowId: 'main' });
+  const attributeInput = main.locator('[data-markdown-view=' + JSON.stringify(htmlAttribute.id) + '] .cm-content');
+  const attributeText = async () => (await state()).documents.find(item => item.id === htmlAttribute.documentId)!.model.text!;
+  await attributeInput.focus(); await main.keyboard.press('Control+End'); await main.keyboard.press('Control+Space'); await htmlOption('style').click();
+  await until(async () => await attributeText() === '<span style', 'HTML attribute completion inserts the requested attribute name');
+  await main.keyboard.insertText('="color:#c7254e">Tinted</span>');
+  await until(async () => await attributeText() === '<span style="color:#c7254e">Tinted</span>', 'completed HTML attributes remain editable with their original value');
+  const htmlVoid = await invoke<ViewInfo>(main, 'create-text', { title: 'HTML void completion.md', text: '', windowId: 'main' });
+  const voidInput = main.locator('[data-markdown-view=' + JSON.stringify(htmlVoid.id) + '] .cm-content');
+  await voidInput.focus(); await main.keyboard.type('<br'); await htmlOption('br').click();
+  await until(async () => (await state()).documents.find(item => item.id === htmlVoid.documentId)!.model.text === '<br>', 'void HTML completion does not invent an invalid closing tag');
+  const completionProof: string[] = [];
+  for (const [opening, completed] of [['$$', '$$\n\n$$'], ['\\[', '\\[\n\n\\]'], ['```math', '```math\n\n```']] as const) {
+    const document = await invoke<ViewInfo>(main, 'create-text', { title: 'Block completion.md', text: '', windowId: 'main' });
+    const input = main.locator('[data-markdown-view=' + JSON.stringify(document.id) + '] .cm-content');
+    const source = async () => (await state()).documents.find(item => item.id === document.documentId)!.model.text!;
+    await input.focus(); await main.keyboard.type(opening);
+    await until(async () => await source() === opening, 'typing an explicit block opener preserves its exact delimiter: ' + opening);
+    await main.keyboard.press('Enter');
+    await until(async () => await source() === completed, 'Enter completes a source-preserving block: ' + opening);
+    await main.keyboard.insertText('x');
+    await until(async () => await source() === completed.replace('\n\n', '\nx\n'), 'completed block places the caret on its inside line: ' + opening);
+    await main.keyboard.press('Control+z'); await until(async () => await source() === completed, 'body input undoes separately from block completion: ' + opening);
+    await main.keyboard.press('Control+z'); await until(async () => await source() === opening, 'one ordinary undo removes the complete Enter skeleton: ' + opening);
+    completionProof.push(opening);
+  }
+  const existingBlock = await invoke<ViewInfo>(main, 'create-text', { title: 'Existing closer.md', text: '$$\nx\n$$', windowId: 'main' });
+  const existingInput = main.locator('[data-markdown-view=' + JSON.stringify(existingBlock.id) + '] .cm-content');
+  const existingText = async () => (await state()).documents.find(item => item.id === existingBlock.documentId)!.model.text!;
+  await existingInput.focus(); await main.keyboard.press('Control+Home'); await main.keyboard.press('End'); await main.keyboard.press('Enter');
+  await until(async () => await existingText() === '$$\n\nx\n$$', 'Enter in a block with a real closing delimiter does not duplicate its closer');
+  const disabledBlock = await invoke<ViewInfo>(main, 'create-text', { title: 'Disabled completion.md', text: '$$', windowId: 'main' });
+  const disabledInput = main.locator('[data-markdown-view=' + JSON.stringify(disabledBlock.id) + '] .cm-content');
+  // The per-editor preference is toggled on the editor under test, rather than
+  // assuming the previous document's state applies to newly opened documents.
+  if (await main.getByRole('button', { name: 'Markdown工具', exact: true }).getAttribute('aria-pressed') !== 'true') await main.getByRole('button', { name: 'Markdown工具', exact: true }).click();
+  await tools.waitFor({ state: 'visible' });
+  await until(async () => await tools.getByRole('button', { name: '自动配对', exact: true }).getAttribute('aria-pressed') === 'true', 'new Markdown editor starts with automatic pairs enabled');
+  await tools.getByRole('button', { name: '自动配对', exact: true }).click();
+  await until(async () => await tools.getByRole('button', { name: '自动配对', exact: true }).getAttribute('aria-pressed') === 'false', 'disabled block-completion preference reaches its source editor');
+  await disabledInput.focus(); await main.keyboard.press('Control+End'); await main.keyboard.press('Enter');
+  await until(async () => (await state()).documents.find(item => item.id === disabledBlock.documentId)!.model.text === '$$\n', 'disabled automatic pairs retain ordinary Enter without inserting a closer');
+  await disabledInput.focus(); await main.keyboard.press('Control+a'); await main.keyboard.type('<st'); await htmlOption('strong').click();
+  await until(async () => (await state()).documents.find(item => item.id === disabledBlock.documentId)!.model.text === '<strong>', 'disabled automatic pairs keep HTML completion available without adding a matching close');
+  results.markdownBlockCompletion = { opening: completionProof, insideCaret: true, isolatedUndo: true, existingCloser: true, disabled: true };
+  results.markdownHtmlCompletion = { typedTag: true, matchingClose: true, insideCaret: true, explicitClosingTag: true, attribute: 'style', voidTag: 'br', disabledPairStillCompletes: true };
   const hugeLineSource = 'x'.repeat(256 * 1024), hugeLine = await invoke<ViewInfo>(main, 'create-text', { title: 'Huge line input.md', text: hugeLineSource, windowId: 'main' });
   const hugeEditor = main.locator('[data-markdown-view=' + JSON.stringify(hugeLine.id) + '] .cm-content'), hugeText = async () => (await state()).documents.find(item => item.id === hugeLine.documentId)!.model.text!;
   await hugeEditor.focus(); await main.keyboard.press('Control+End'); await main.keyboard.insertText('(');
@@ -513,6 +676,24 @@ try {
     await settings.locator(`html[data-theme="${color}"]`).waitFor();
     await settings.locator('.settings-main').evaluate(element => { element.scrollTop = 0; });
     await settings.waitForTimeout(300); await settings.screenshot({ path: join(evidence, `settings-${color}.png`), scale: 'css' });
+    if (color === 'dark') {
+      const beforeDark = await state(), previousView = beforeDark.activeViewId, previousMode = beforeDark.views.find(view => view.id === authoring.id)!.mode;
+      await activate(authoring.id); await main.locator('html[data-theme="dark"]').waitFor();
+      await changeMode('分栏'); await splitPreview.waitFor(); await revealSplitPreview((await authoredText()).indexOf('Plain text.'));
+      const darkParagraph = splitPreview.locator('.cm-line').filter({ hasText: 'Plain text.' }).first(); await darkParagraph.scrollIntoViewIfNeeded();
+      await selectTextWithMouse(darkParagraph, 'Plain text.');
+      await until(async () => (await invoke<ReadingContext>(main, 'context', { viewId: authoring.id })).selection.text === 'Plain text.', 'dark selection is an actual browser selection in the readonly preview');
+      const darkSelection = await selectionAppearance(darkParagraph);
+      assert.equal(darkSelection.selectedInk, darkSelection.ink, 'dark selection preserves the document text color');
+      assert.ok(darkSelection.alpha > 0 && darkSelection.alpha < .5, 'dark selection also uses a visible translucent fill');
+      results.markdownSelectionAppearance = { light: lightSelection, dark: darkSelection };
+      const darkRailOpen = await main.getByRole('button', { name: 'Markdown工具', exact: true }).getAttribute('aria-pressed') === 'true';
+      if (darkRailOpen) { await main.getByRole('button', { name: 'Markdown工具', exact: true }).click(); await tools.waitFor({ state: 'hidden' }); }
+      await main.screenshot({ path: join(evidence, 'markdown-preview-dark.png'), scale: 'css' });
+      if (darkRailOpen) { await main.getByRole('button', { name: 'Markdown工具', exact: true }).click(); await tools.waitFor({ state: 'visible' }); }
+      if (previousMode !== 'split') await changeMode(previousMode === 'read' ? '阅读' : '源码');
+      if (previousView && previousView !== authoring.id) await activate(previousView);
+    }
   }
   results.settings = { themeClick, themeDrag, themeKeyboard, switchBefore: beforeSwitch.revision, switchAfter: afterSwitch.revision, switchBox, sourceSwitch, compactLayout, globalUndo: true, nativeSelects: 0 };
   assert.deepEqual(errors, [], 'reader and settings retain valid renderer behavior');

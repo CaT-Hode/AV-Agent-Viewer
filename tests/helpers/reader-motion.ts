@@ -184,7 +184,9 @@ export async function verifyReaderMotion(main: Page, directory: string, evidence
       const tick = (now) => {
         const e = document.querySelector('.document-content'), t = document.querySelector('.selection-tools'), row = t?.querySelector('.selection-tool-row');
         w.readerMotionSamples.push({ t: now - start, top: e.scrollTop, elastic: Number(e.dataset.scrollElastic || 0), phase: t?.dataset.motionPhase, inert: t?.inert, opacity: row ? Number(getComputedStyle(row).opacity) : null });
-        if (now - start < 850) requestAnimationFrame(tick); else w.readerMotionSampling = false;
+        // Capture the terminal frame as well as the motion. A slow layout
+        // frame can leave a subpixel spring tail just beyond the 850ms sample.
+        if (now - start < 850 || e.hasAttribute('data-scroll-animating') && now - start < 2000) requestAnimationFrame(tick); else w.readerMotionSampling = false;
       }; requestAnimationFrame(tick);
     })()`);
     await action(); await main.waitForFunction(() => !(window as any).readerMotionSampling);

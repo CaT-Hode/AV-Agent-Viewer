@@ -25,7 +25,9 @@ export function useSelectionToolbarMotion(node: RefObject<HTMLDivElement | null>
       // Fade the retained pose instead of making it instantly invisible.
       if (!position) { element.dataset.selectionOccluded = 'true'; element.inert = true; return; }
       delete element.dataset.selectionOccluded;
-      element.inert = false;
+      // Geometry must not undo a gesture or presence lock between React
+      // commits. The retained surface can still receive a final spring tick.
+      element.inert = element.dataset.selectionInteracting === 'true' || element.dataset.motionPhase === 'exit' || element.getAttribute('aria-hidden') === 'true';
       const styles = { left: position.x + 'px', top: position.y + 'px', maxWidth: position.width + 'px' };
       for (const [property, value] of Object.entries(styles)) {
         const key = property as keyof typeof styles, css = element.style[key], last = painted.get(property);

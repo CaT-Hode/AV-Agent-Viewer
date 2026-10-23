@@ -5,7 +5,7 @@ Markdown以[Typora Windows](https://support.typora.io/Quick-Start/)、[语法](h
 | 模块 | 当前实现 | 当前限制 |
 | --- | --- | --- |
 | Markdown编辑 | 单源CodeMirror实时/源码/分栏，选区/历史、块ref与精确范围修改 | 分栏只读；未知语法保留源码；巨段仍有双解析长尾 |
-| Markdown结构 | GFM、任务、脚注、TOC、YAML、可视表格、代码、MathJax、Mermaid、旧flow/sequence | 表格超过24000字符使用源码；语言包按需加载 |
+| Markdown结构 | GFM、任务、脚注、TOC、YAML、可视表格、代码、美元/括号数学、math围栏、HTML行内样式/折叠块、Mermaid、旧flow/sequence | 表格超过24000字符使用源码；tex/latex围栏为代码；非完整TeX引擎 |
 | Markdown工作区 | 文件树/快速打开/搜索、大纲/统计/替换、专注/打字机/拼写/配对、主题/快捷键 | 文本内容扫描为主；未证明所有Typora行为一致 |
 | 资源/转换 | 本地媒体Range、图片粘贴/拖入/尺寸/相对资产/显式上传；HTML/PDF/PNG与Pandoc五格式 | 受资源授权及已安装转换引擎限制；不自动上传 |
 | HTML | 净化预览、源节点与文本/结构/白名单属性修改 | 排除脚本/活动表单；不提供任意网页富文本编辑 |

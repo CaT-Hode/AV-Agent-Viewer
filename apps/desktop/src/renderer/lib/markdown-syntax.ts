@@ -6,8 +6,8 @@ import { typoraMarkdownSyntax as blocks } from '../../../../../packages/markdown
 // scan instead of calling every Markdown/GFM token parser for each code unit.
 // Keep every CommonMark/GFM trigger, including bare URL prefixes and possible
 // email starts before @; the original parser still decides their semantics.
-const tokens = /[\\&`<*_!\[\]~@=^]| {2,}\n|www\.|https?:\/\/|mailto:|xmpp:/g;
-const longTokens = /[\\&`<*_!\[\]~@=^\n]/g;
+const tokens = /[\\&`<*_!\[\]~@=^$]| {2,}\n|www\.|https?:\/\/|mailto:|xmpp:/g;
+const longTokens = /[\\&`<*_!\[\]~@=^$\n]/g;
 const urlTokens = /www\.|https?:\/\/|mailto:|xmpp:/g;
 const urlPositions = new WeakMap<object, number>();
 const emailPositions = new WeakMap<object, number>();
@@ -65,5 +65,5 @@ export const typoraMarkdownSyntax: MarkdownConfig = {
     // local part, so find @ independently of the next syntax punctuation.
     if (email >= 0) end = Math.min(end, Math.max(from, email - 100));
     return end > from ? context.offset + end : -1;
-  } }, inlineDelimiter('Highlight', 61, 2), inlineDelimiter('Subscript', 126, 1), inlineDelimiter('Superscript', 94, 1)],
+  } }, ...(blocks.parseInline ?? []), inlineDelimiter('Highlight', 61, 2), inlineDelimiter('Subscript', 126, 1), inlineDelimiter('Superscript', 94, 1)],
 };

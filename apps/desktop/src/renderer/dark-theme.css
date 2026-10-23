@@ -17,13 +17,14 @@
   --accent-soft: #333333;
   --chrome: #1d1d1d;
   --shadow: 0 16px 44px #00000050;
+  --selection-fill:rgb(255 255 255 / 14%);
   color: var(--ink);
   background: var(--paper);
   accent-color: #a3a3a3;
   scrollbar-color: #4a4a4a transparent;
 }
 :root[data-theme="dark"] * { scrollbar-width: thin; scrollbar-color: #4a4a4a transparent; }
-:root[data-theme="dark"] ::selection { background: #4a4a4a; color: #f5f5f5; }
+:root[data-theme="dark"] ::selection { background:var(--selection-fill);color:inherit;text-shadow:none; }
 :root[data-theme="dark"] input::placeholder,
 :root[data-theme="dark"] textarea::placeholder { color: #8a8a8a; opacity: 1; }
 :root[data-theme="dark"] :is(button,input,select,textarea):focus-visible { outline: 2px solid #c9c9c9; outline-offset: 3px; }
@@ -114,7 +115,7 @@
 :root[data-theme="dark"] .source-editor .cm-gutters { color: #909090; background: #262626; }
 :root[data-theme="dark"] .source-editor :is(.cm-activeLine,.cm-activeLineGutter) { background: #ffffff15; }
 :root[data-theme="dark"] .source-editor .cm-cursor { border-color: #e0e0e0; }
-:root[data-theme="dark"] .source-editor .cm-selectionBackground { background: #4a4a4a !important; }
+:root[data-theme="dark"] .source-editor .cm-selectionBackground { background:var(--selection-fill) !important; }
 :root[data-theme="dark"] .prose a { color: #cfcfcf; }
 :root[data-theme="dark"][data-document-background="paper"] { --reading-canvas: radial-gradient(ellipse at 84% 10%,#3a363270,transparent 50%),#262626; }
 :root[data-theme="dark"][data-document-background="mist"] { --reading-canvas: radial-gradient(ellipse at 14% 7%,#3a444675,transparent 55%),#242424; }

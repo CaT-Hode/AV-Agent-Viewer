@@ -90,7 +90,8 @@ export function SelectionTools({native=false}:{native?:boolean}) {
       };
       void call<Record<string,unknown>>('toolbar-state',{backdropPatches:true}).then(receive);return window.agentViewer?.onSelectionTool(receive);
     }
-    const selected=async(event:Event)=>{const data=(event as CustomEvent<{viewId:string;revision:number;selection:ReadingContext['selection']}>).detail;
+    let pointerSelecting=false,pendingSelection:Event|undefined,pendingRange:Range|undefined;
+    const selected=async(event:Event)=>{if(pointerSelecting){pendingSelection=event;const live=window.getSelection();pendingRange=live?.rangeCount?live.getRangeAt(0).cloneRange():undefined;return;}const data=(event as CustomEvent<{viewId:string;revision:number;selection:ReadingContext['selection']}>).detail;
       engineSelection.current=undefined;
       if(!data?.selection.rect || data.selection.kind==='none'){clear();return;}
       const key=JSON.stringify([data.viewId,data.revision,data.selection.kind,data.selection.text,data.selection.locator]);
@@ -118,11 +119,32 @@ export function SelectionTools({native=false}:{native?:boolean}) {
       }catch(cause){if(seq===sequence.current)setError(String(cause));}
     };
     const engineReady=(event:Event)=>{const data=(event as CustomEvent<OfficeSelectionToolsEvent>).detail;if(!data)return;if(!data.visible){if(engineSelection.current?.viewId===data.viewId)clear(false);return;}if(!data.state||!data.rect||!data.viewport)return;const same=engineSelection.current?.viewId===data.viewId&&engineSelection.current.lease===data.lease;engineSelection.current={viewId:data.viewId,lease:data.lease,state:data.state,rect:data.rect,viewport:data.viewport};tracked.current=undefined;setRect(data.rect);setViewport(data.viewport);setState(data.state);if(!same){sequence.current++;identity.current=data.lease;setInput(undefined);setError('');}};
-    const dismiss=(event:Event)=>{if(toolbar.current?.contains(event.target as Node)||(event.target instanceof Element&&event.target.closest('.reader-panel-resize,.activity-rail,.ai-rail,.selection-translation-bubble')))return;setSelecting(event instanceof PointerEvent&&event.button===0&&event.target instanceof Element&&!!event.target.closest('.document-content'));clear();};
+    const dismiss=(event:PointerEvent)=>{
+      const target=event.target as Element;
+      if(target.closest?.('.selection-tools,.reader-panel-resize,.activity-rail,.ai-rail,.selection-translation-bubble'))return;
+      // Presence can retain the old DOM after the live child ref is cleared.
+      // Lock that painted surface too, before any spring callback can run.
+      const painted=document.querySelector<HTMLElement>('.selection-tools');
+      if(painted){painted.dataset.selectionInteracting='true';painted.inert=true;}
+      pointerSelecting=event.button===0&&!!target.closest?.('.document-content');pendingSelection=undefined;pendingRange=undefined;setSelecting(pointerSelecting);clear();
+    };
     // Native selections publish intermediate ranges during a drag. A toolbar
     // appearing over that range can intercept the remaining mouse movement.
-    const finishSelection=()=>setSelecting(false);
-    document.addEventListener('pointerup',finishSelection,true);document.addEventListener('pointercancel',finishSelection,true);window.addEventListener('blur',finishSelection);
+    const finishSelection=(event:Event)=>{
+      if(event.type==='blur'&&event.target!==window)return;
+      if(!pointerSelecting)return;
+      const painted=document.querySelector<HTMLElement>('.selection-tools');if(painted)delete painted.dataset.selectionInteracting;
+      pointerSelecting=false;setSelecting(false);
+      const pending=pendingSelection,saved=pendingRange;pendingSelection=undefined;pendingRange=undefined;
+      if(event.type!=='pointerup'&&event.type!=='mouseup'){clear();return;}
+      // Intermediate native ranges do not need IPC or a new glass surface.
+      // Only publish the final range, after the gesture can no longer hit it.
+      const live=window.getSelection(),range=live?.rangeCount?live.getRangeAt(0):undefined;
+      if(pending&&(!saved||range&&range.startContainer===saved.startContainer&&range.startOffset===saved.startOffset&&range.endContainer===saved.endContainer&&range.endOffset===saved.endOffset))void selected(pending);
+    };
+    // Chromium cancels the pointer stream when a native selection drag starts,
+    // before the mouse is released. Keep the lock until its real mouse/drag end.
+    document.addEventListener('pointerup',finishSelection,true);document.addEventListener('mouseup',finishSelection,true);document.addEventListener('dragend',finishSelection,true);window.addEventListener('blur',finishSelection);
     const preserveChromeSelection=(event:MouseEvent)=>{if((tracked.current||engineSelection.current)&&event.target instanceof Element&&event.target.closest('.activity-rail,.ai-rail'))event.preventDefault();};
     let frame=0;
     const follow=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;const target=tracked.current;if(!target||!target.range&&!target.element)return;const node=target.range?.startContainer??target.element;if(!node?.isConnected){clear();return;}const b=target.range?.getBoundingClientRect()??target.element?.getBoundingClientRect();if(!b)return;const next={x:b.x,y:b.y,width:b.width,height:b.height};setRect(next);if(target.element){const clip=clippedReaderViewport(target.element);if(clip)setViewport(clip);}window.dispatchEvent(new CustomEvent('agentviewer:selection-position',{detail:{viewId:target.viewId,revision:target.revision,text:target.text,rect:next}}));});};
@@ -139,7 +161,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     window.addEventListener(READING_MOTION_EVENT,elasticFollow);
     // Kept separate from the other listeners so the elastic animation never
     // outlives this surface's selection lease.
-    const disposeElastic=()=>{window.removeEventListener(READING_MOTION_EVENT,elasticFollow);document.removeEventListener('pointerup',finishSelection,true);document.removeEventListener('pointercancel',finishSelection,true);window.removeEventListener('blur',finishSelection);};
+    const disposeElastic=()=>{window.removeEventListener(READING_MOTION_EVENT,elasticFollow);document.removeEventListener('pointerup',finishSelection,true);document.removeEventListener('mouseup',finishSelection,true);document.removeEventListener('dragend',finishSelection,true);window.removeEventListener('blur',finishSelection);};
 
     window.addEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.addEventListener('agentviewer:selection-tools',selected);window.addEventListener('agentviewer:selection-tools',watchReader);window.addEventListener('agentviewer:selection-open',open);window.addEventListener('agentviewer:selection-clear',clearEvent);document.addEventListener('pointerdown',dismiss,true);document.addEventListener('mousedown',preserveChromeSelection,true);document.addEventListener('scroll',follow,true);document.addEventListener('selectionchange',changed);window.addEventListener('resize',follow);
     return()=>{disposeElastic();size.disconnect();cancelAnimationFrame(frame);window.removeEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-tools',watchReader);window.removeEventListener('agentviewer:selection-open',open);window.removeEventListener('agentviewer:selection-clear',clearEvent);document.removeEventListener('pointerdown',dismiss,true);document.removeEventListener('mousedown',preserveChromeSelection,true);document.removeEventListener('scroll',follow,true);document.removeEventListener('selectionchange',changed);window.removeEventListener('resize',follow);};

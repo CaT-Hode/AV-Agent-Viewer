@@ -1,12 +1,15 @@
 /* The surrounding canvas and the document paper are separate paint surfaces.
    A theme/background preference never changes document bytes or export ink. */
 :root {
+  --selection-fill:rgb(104 136 168 / 18%);
   --document-paper:#fff;
   --document-paper-ink:#24303b;
   --document-paper-muted:#52606d;
   --document-paper-soft:color-mix(in srgb,var(--document-paper-ink) 4%,var(--document-paper));
   --document-paper-rule:color-mix(in srgb,var(--document-paper-ink) 16%,var(--document-paper));
 }
+::selection { background:var(--selection-fill);color:inherit;text-shadow:none; }
+.document-content.format-markdown { --selection-fill:color-mix(in srgb,var(--document-paper-ink) 16%,transparent); }
 :root[data-theme] .document-content.format-markdown article.prose {
   background:var(--document-paper);
   color:var(--document-paper-ink);

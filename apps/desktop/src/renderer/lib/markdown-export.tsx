@@ -1,12 +1,11 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import { renderMarkdownDiagram, renderMarkdownFormula } from './markdown-renderers';
 import { loadMarkdownEmoji, markdownEmoji } from './markdown-emoji';
-import { typoraInlineSyntax } from './markdown-export-syntax';
+import { typoraInlineSyntax, typoraMathSyntax } from './markdown-export-syntax';
 
 type Render = { kind: 'math' | 'diagram'; source: string; block: boolean; language?: 'mermaid' | 'sequence' | 'flow' };
 type MarkdownNode = { type: string; value?: string; children?: MarkdownNode[]; data?: Record<string, unknown> };
@@ -27,7 +26,23 @@ function typoraExtensions() {
     transform(tree as MarkdownNode);
   };
 }
-const printStyle = `:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#fff;color:#202124;font:15px/1.75 "Segoe UI","Microsoft YaHei",sans-serif}article{max-width:980px;margin:0 auto;padding:40px}h1,h2,h3,h4,h5,h6{line-height:1.35;break-after:avoid}h1,h2{border-bottom:1px solid #ddd;padding-bottom:.35em}a{color:#24658d;text-decoration:underline}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f5f6;padding:16px;border-radius:6px}code{font-family:Consolas,monospace;font-size:.9em}p code,li code{background:#f4f5f6;padding:.1em .25em}blockquote{margin-left:0;padding-left:20px;border-left:3px solid #ccc;color:#555}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #ccc;padding:8px;overflow-wrap:anywhere}th{background:#f4f5f6}thead{display:table-header-group}tr,img,svg{break-inside:avoid}img,svg{max-width:100%;height:auto}img{object-fit:contain}hr{border:0;border-top:1px solid #ccc}.av-math-block,.av-diagram{text-align:center;margin:18px 0}.av-toc{border-left:2px solid #ddd;padding:12px 20px}.av-toc a{display:block}.av-render-error{border:1px dashed #aaa;padding:12px;white-space:pre-wrap}mark{background:#ffe681}sup,sub{line-height:0}.task-list-item{list-style:none}input[type=checkbox]{margin-right:.5em}@page{size:A4;margin:18mm 16mm}@media print{article{max-width:none;padding:0}body{font-size:11pt}pre{overflow:visible}a{color:inherit}}`;
+const printStyle = `
+:root{color-scheme:light}*{box-sizing:border-box}
+body{margin:0;background:#fff;color:#28313b;font:16px/1.75 "Segoe UI","Microsoft YaHei",sans-serif}
+article{max-width:1024px;margin:0 auto;padding:44px 56px 100px}
+h1,h2,h3,h4,h5,h6{margin:1.5em 0 .65em;line-height:1.35;font-weight:650;break-after:avoid}
+h1{font-size:2.25em;line-height:1.25}h2{font-size:1.75em}h3{font-size:1.5em}h4{font-size:1.25em}h5,h6{font-size:1em}h6{color:#66717c}
+h1,h2{border-bottom:1px solid #e3e7eb;padding-bottom:.35em}p,ul,ol,blockquote,table{margin:.85em 0}li>ul,li>ol{margin:.25em 0}
+a{color:#386d99;text-decoration:underline;text-underline-offset:3px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f6f8;padding:16px 18px;border:1px solid #e6e9ed;border-radius:8px}
+code,kbd{font-family:"Cascadia Code",Consolas,monospace;font-size:.875em}pre code{line-height:1.65}p code,li code,kbd{background:#f2f4f6;padding:.12em .3em;border-radius:4px}kbd{box-shadow:inset 0 -1px #ccd2d9}
+blockquote{margin-left:0;padding:6px 18px;border-left:3px solid #cbd2da;color:#586673;background:#f8f9fa}
+table{border-collapse:collapse;width:100%;font-size:.9em}th,td{border:1px solid #dce1e6;padding:9px 12px;overflow-wrap:anywhere}th{background:#f2f4f6;font-weight:650}tbody tr:nth-child(even){background:#fafbfc}thead{display:table-header-group}
+tr,img,svg{break-inside:avoid}img,svg{max-width:100%;height:auto}img{object-fit:contain;border-radius:5px}hr{border:0;border-top:1px solid #dce1e6;margin:24px 0}
+.av-math-block,.av-diagram{text-align:center;margin:24px 0}.av-toc{border-left:2px solid #dce1e6;padding:12px 20px}.av-toc a{display:block}.av-render-error{border:1px dashed #aaa;padding:12px;white-space:pre-wrap}
+details{padding:10px 14px;border:1px solid #dce1e6;border-radius:8px}summary{cursor:pointer;font-weight:600}mark{background:#ffe68188}sup,sub{line-height:0}.task-list-item{list-style:none}input[type=checkbox]{margin-right:.5em}
+@page{size:A4;margin:18mm 16mm}@media print{article{max-width:none;padding:0}body{font-size:11pt}pre{overflow:visible}a{color:inherit}}
+`;
 
 /** Export from a frozen source string, never from CodeMirror's virtual DOM.
  * Rendering is intentionally exhaustive here. The result is self-contained for
@@ -37,8 +52,8 @@ export async function renderMarkdownForExport(source: string, documentId: string
   if (/:[a-z0-9_+\-]+:/.test(source)) await loadMarkdownEmoji();
   const renders: Render[] = [];
   const body = source.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/, '');
-  const html = renderToStaticMarkup(<ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath, typoraInlineSyntax, typoraExtensions]} rehypePlugins={[rehypeRaw]} urlTransform={(url, key, node) => url.startsWith('agentviewer-asset:') || key === 'src' && node.tagName === 'img' && url.length <= 32 * 1024 * 1024 * 1.4 && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,/i.test(url) ? url : defaultUrlTransform(url)} components={{
-    code: ({ className, children }) => { const classes = className?.split(/\s+/) ?? [], language = classes.find(name => name.startsWith('language-'))?.slice(9); if (classes.includes('language-math')) { const index = renders.push({ kind: 'math', source: String(children).replace(/\n$/, ''), block: classes.includes('math-display') }) - 1; return <span data-av-render={index} />; } if (language && ['mermaid', 'sequence', 'flow'].includes(language)) { const index = renders.push({ kind: 'diagram', source: String(children).replace(/\n$/, ''), block: true, language: language as 'mermaid' | 'sequence' | 'flow' }) - 1; return <span data-av-render={index} />; } return <code className={className}>{children}</code>; },
+  const html = renderToStaticMarkup(<ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }], [typoraMathSyntax, { source: body }], typoraInlineSyntax, typoraExtensions]} rehypePlugins={[rehypeRaw]} urlTransform={(url, key, node) => url.startsWith('agentviewer-asset:') || key === 'src' && node.tagName === 'img' && url.length <= 32 * 1024 * 1024 * 1.4 && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|svg\+xml);base64,/i.test(url) ? url : defaultUrlTransform(url)} components={{
+    code: ({ className, children }) => { const classes = className?.split(/\s+/) ?? [], language = classes.find(name => name.startsWith('language-'))?.slice(9); if (classes.includes('language-math')) { const index = renders.push({ kind: 'math', source: String(children).replace(/\n$/, ''), block: !classes.includes('math-inline') }) - 1; return <span data-av-render={index} />; } if (language && ['mermaid', 'sequence', 'flow'].includes(language)) { const index = renders.push({ kind: 'diagram', source: String(children).replace(/\n$/, ''), block: true, language: language as 'mermaid' | 'sequence' | 'flow' }) - 1; return <span data-av-render={index} />; } return <code className={className}>{children}</code>; },
   }}>{body}</ReactMarkdown>);
   const parsed = new DOMParser().parseFromString('<article>' + html + '</article>', 'text/html'), article = parsed.querySelector('article')!;
   for (const placeholder of article.querySelectorAll<HTMLElement>('[data-av-render]')) {
