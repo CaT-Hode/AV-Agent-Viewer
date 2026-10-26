@@ -11,7 +11,7 @@ SVG 使用 sRGB、userSpaceOnUse；feImage 尺寸含双侧 overscan，RG 位移�
 ## 性能与延迟
 
 - renderer/lib/layout-frame 先集中读再写；use-selection-toolbar-motion 只在姿态变化时写 DOM，静止不重复写。避免交错读写和重复订阅。
-- LiquidGlassSurface 使用未变形 border-box，几何签名排除纯呈现变量；导航尺寸动画复用纹理。首个表面立即请求；已有纹理的几何替换合并80ms，缓存命中省去生成，不能把它当输入防抖。
+- LiquidGlassSurface 使用未变形 border-box，几何签名排除纯呈现变量；共享布局帧合并通知，不反复重排已排队帧，直接查缓存、无固定等待。未命中交给 worker，新 key、离屏和卸载取消过时消费者，解码前后重验信号。导航尺寸动画复用纹理，结束后下一布局帧更新。
 - liquid-glass-optics 共享任务、取消过时消费者、保护活跃 lease。当前上限64项、解码64MiB、编码8MiB、待办12项；glassOpticsCacheStats 不含全部 GPU 缓存。
 - optics-model 跳过中性内部像素；worker 每8行检查耗时，达到6ms让出消息循环。异常不在 UI 线程重算；看 builds、pngEncodes、generatedPixels 和 pending 判断重建压力。
 - main/backdrop-frame-hub 保留最新页帧；web-toolbar/backdrop-cache 按有效 ROI 和像素对齐采样，同图复用 PNG；发布前重验来源、导航、布局、滚动与缩放，丢弃旧帧。
@@ -22,7 +22,7 @@ SVG 使用 sRGB、userSpaceOnUse；feImage 尺寸含双侧 overscan，RG 位移�
 
 renderer/lib/glass-elasticity 的 stepGlassSpring 对阻尼振子解析步进，覆盖欠/临界/过阻尼，dt限0–64ms；重定向保留值和速度。sampleGlassDragAxis 限定有效采样间隔和释放速度。直接拖动跟随实际位置，松手接续，不从旧目标重播 keyframes。
 
-位置、scale/translate、填充/折射/放大和阴影分通道；只更新当前 host 的光学叶子。显式滑块与委托面板不能叠加。临时 will-change 在静止后恢复，达到容差即停 RAF；卸载撤销帧、监听和请求。
+位置、scale/translate、填充/折射/放大和阴影分通道；只更新当前 host 的光学叶子。变宽按抓取原点补偿镜片位移，与填充对齐。显式滑块与委托面板不能叠加。临时 will-change 在静止后恢复，达到容差即停 RAF；卸载撤销帧、监听和请求。
 
 横向速度压缩 `sy=b×max(.7,1-|vx|/5000)`、`sx=b+1-sy`；b为基础缩放，vx单位px/s。速度平滑并随闲置衰减，原点取抓取位置。高面板按 `min(1,63/height)` 衰减形变，避免整页晃动。这是视觉近似，不是面积守恒。
 

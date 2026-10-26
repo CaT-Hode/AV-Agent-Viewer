@@ -73,7 +73,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
       if (!navigation) for (const property of ['left', 'top', 'width', 'height']) surface.style.removeProperty(property);
       return;
     }
-    let cancelMeasure: (() => void) | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelMeasure: (() => void) | undefined;
     let request: AbortController | undefined, disposed = false, measuredKey = '';
     const media = ['(prefers-reduced-transparency: reduce)', '(prefers-contrast: more)', '(forced-colors: active)'].map(query => matchMedia(query));
     const measure = () => {
@@ -82,10 +82,12 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
       // and layout reads for every intermediate optical texture size.
       if (navigation && host.dataset.navigationResizing === 'true') {
         cancelMeasure?.(); cancelMeasure = undefined;
-        clearTimeout(timer); request?.abort(); request = undefined; measuredKey = '';
+        request?.abort(); request = undefined; measuredKey = '';
         return;
       }
-      cancelMeasure?.();
+      // Keep the queued frame: requeuing on every observer notification can
+      // postpone measurement indefinitely during continuous resize.
+      if (cancelMeasure) return;
       cancelMeasure = scheduleLayoutRead(() => {
         cancelMeasure = undefined;
         if (navigation && host.dataset.navigationResizing === 'true') return;
@@ -95,13 +97,15 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
         // The observed data-glass update schedules the real requested material.
         if (window.agentViewer && !appearance.glass) return;
         if (appearance.glass === 'off' || appearance.contrast === 'high' || appearance.reduceTransparency === 'true' || media.some(query => query.matches)) return () => {
-          clearTimeout(timer); request?.abort(); measuredKey = '';
+          request?.abort(); measuredKey = '';
           setAutomaticFallback(true); setAsset(previous => previous ? undefined : previous);
         };
         const rect = host.getBoundingClientRect();
         // Settings pages can contain many controls below the fold. Their
         // textures must not occupy the worker queue before visible controls.
-        if (rect.bottom < -80 || rect.top > innerHeight + 80 || rect.right < -80 || rect.left > innerWidth + 80) return;
+        if (rect.bottom < -80 || rect.top > innerHeight + 80 || rect.right < -80 || rect.left > innerWidth + 80) return () => {
+          request?.abort(); request = undefined; measuredKey = '';
+        };
         const hostStyle = getComputedStyle(host), style = getComputedStyle(surface);
         const usedSize = (axis: 'width' | 'height') => {
           const used = Number.parseFloat(hostStyle[axis]);
@@ -129,27 +133,22 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
         const key = glassOpticsKey(options);
         const left = `${-Number.parseFloat(hostStyle.borderLeftWidth || '0')}px`, top = `${-Number.parseFloat(hostStyle.borderTopWidth || '0')}px`;
         return () => {
-          // Keep the existing decoded field while geometry is moving. Only
-          // the settled size requests a new field; stale jobs stop in worker.
+          if (disposed) return;
+          // The shared layout frame coalesces geometry changes. Query the
+          // cache in this frame; misses share worker jobs and replace the old
+          // decoded field only after completion. New geometry cancels stale work.
           if (measuredKey !== key) {
-            measuredKey = key; clearTimeout(timer); request?.abort();
-            const generate = () => {
-              if (disposed) return;
-              request = new AbortController(); const signal = request.signal;
-              void requestGlassOptics(options, signal).then(async next => {
-                if (!next) { if (!signal.aborted && !disposed) setAutomaticFallback(true); return; }
-                if (signal.aborted || disposed) { next.release(); return; }
-                try {
-                  await Promise.all([next.optics.map, next.optics.highlight, next.optics.centerMap].filter((url): url is string => !!url).map(async url => { const image = new Image(); image.src = url; await image.decode(); }));
-                } catch { next.release(); if (!signal.aborted && !disposed) setAutomaticFallback(true); return; }
-                if (signal.aborted || disposed) { next.release(); return; }
-                setAutomaticFallback(false); setAsset(next);
-              });
-            };
-            // First presentation and cache hits have no artificial wait. Only
-            // replacement geometry is coalesced while a decoded field is visible.
-            if (root.current?.querySelector('svg')) timer = setTimeout(generate, 80);
-            else generate();
+            measuredKey = key; request?.abort();
+            request = new AbortController(); const signal = request.signal;
+            void requestGlassOptics(options, signal).then(async next => {
+              if (!next) { if (!signal.aborted && !disposed) setAutomaticFallback(true); return; }
+              if (signal.aborted || disposed) { next.release(); return; }
+              try {
+                await Promise.all([next.optics.map, next.optics.highlight, next.optics.centerMap].filter((url): url is string => !!url).map(async url => { const image = new Image(); image.src = url; await image.decode(); }));
+              } catch { next.release(); if (!signal.aborted && !disposed) setAutomaticFallback(true); return; }
+              if (signal.aborted || disposed) { next.release(); return; }
+              setAutomaticFallback(false); setAsset(next);
+            });
           }
           // Absolute positioning covers the border box. All reads for sibling
           // surfaces have finished before these shared-frame writes occur.
@@ -161,7 +160,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
       });
     };
     const size = new ResizeObserver(measure); size.observe(host);
-    const visible = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) measure(); }, { rootMargin: '80px' }); visible.observe(host);
+    const visible = new IntersectionObserver(measure, { rootMargin: '80px' }); visible.observe(host);
     let inlineGeometry = glassGeometryStyleSignature(host.style);
     const appearance = new MutationObserver(records => {
       if (navigation && host.dataset.navigationResizing === 'true') { measure(); return; }
@@ -177,7 +176,7 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-glass', 'data-contrast', 'data-reduce-transparency'] });
     const transition = (event: TransitionEvent) => { if (event.target === host && !['opacity', 'scale', 'translate', 'transform', 'background-color', 'box-shadow'].includes(event.propertyName)) measure(); };
     window.addEventListener('resize', measure); host.addEventListener('transitionend', transition); media.forEach(query => query.addEventListener('change', measure)); measure();
-    return () => { disposed = true; cancelMeasure?.(); clearTimeout(timer); request?.abort(); size.disconnect(); visible.disconnect(); appearance.disconnect(); window.removeEventListener('resize', measure); host.removeEventListener('transitionend', transition); media.forEach(query => query.removeEventListener('change', measure)); };
+    return () => { disposed = true; cancelMeasure?.(); request?.abort(); size.disconnect(); visible.disconnect(); appearance.disconnect(); window.removeEventListener('resize', measure); host.removeEventListener('transitionend', transition); media.forEach(query => query.removeEventListener('change', measure)); };
   }, [refractive, bezelWidth, opticalBlur, strength, glassThickness, refractiveIndex, profile, concave, lensZoom, fallback, navigation, variant]);
 
   const activeOptics = refractive && !fallback && !automaticFallback ? optics : undefined;

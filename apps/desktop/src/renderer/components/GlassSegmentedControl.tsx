@@ -20,7 +20,7 @@ export function GlassSegmentedControl({ label, value, options, onChange, disable
   const suppress = useRef(false), callbacks = useRef({ value, options, onChange, disabled }); callbacks.current = { value, options, onChange, disabled };
   const lensX = useGlassSpringValue(dragging?.x ?? geometry.x, KUBE_GLASS_SPRINGS.switchPosition, dragging !== undefined);
   const expansion = useGlassSpringValue(pressed && animatedMotion(motion) ? 1.45 : 1, KUBE_GLASS_SPRINGS.thumbScale);
-  const widthRatio = useGlassSpringValue((dragging?.width ?? geometry.width) / geometry.width, KUBE_GLASS_SPRINGS.thumbScale);
+  const lensWidth = useGlassSpringValue(dragging?.width ?? geometry.width, KUBE_GLASS_SPRINGS.thumbScale);
   const optionKey = options.map(option => [option.value, option.label, !!option.disabled].join(':')).join('|');
   const getOptions = (): GlassOptionBounds[] => [...(viewport.current?.querySelectorAll<HTMLButtonElement>('[role=radio]') ?? [])].map(button => ({ value: button.dataset.value!, x: button.offsetLeft, width: button.offsetWidth, disabled: button.disabled }));
   const coordinate = (clientX: number) => { const root = viewport.current!; const box = root.getBoundingClientRect(); return glassPointerCoordinate(clientX, { left: box.left, width: box.width, clientWidth: root.clientWidth, scrollLeft: root.scrollLeft }); };
@@ -84,8 +84,8 @@ export function GlassSegmentedControl({ label, value, options, onChange, disable
     onClickCapture={event => { if (suppress.current) { suppress.current = false; event.preventDefault(); event.stopPropagation(); } }}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) cancel(); }}>
     <div ref={viewport} className="glass-segmented-viewport" onScroll={() => { const root = viewport.current!; setGeometry(old => old.scroll === root.scrollLeft ? old : { ...old, scroll: root.scrollLeft }); if (grip.current) updateDrag(grip.current.clientX, grip.current.id); }}>
-      {/* Fill and selected ink change together; only the clear lens travels. */}
-      <span className="glass-segmented-fill" style={{ width: geometry.width, transform: `translateX(${geometry.x}px)` }} aria-hidden="true" />
+      {/* One colored layer follows the same interruptible pose as the clear lens. */}
+      <span className="glass-segmented-fill" style={{ width: lensWidth, transform: `translateX(${lensX}px)` }} aria-hidden="true" />
       {options.map((option, index) => <button role="radio" type="button" disabled={disabled || option.disabled} data-value={option.value} key={option.value} aria-checked={value === option.value} tabIndex={focusValue === option.value ? 0 : -1} title={option.reason ?? option.label}
         onClick={() => choose(option.value)} onKeyDown={event => {
         elastic.bindings.onKeyDown(event);
@@ -94,7 +94,8 @@ export function GlassSegmentedControl({ label, value, options, onChange, disable
         if (next === undefined) return; event.preventDefault(); choose(options[next].value); track.current?.querySelectorAll<HTMLButtonElement>('[role=radio]')[next]?.focus({ preventScroll: true });
       }} onKeyUp={elastic.bindings.onKeyUp}>{option.label}</button>)}
     </div>
+    {/* Width scaling shares the fill's anchor; press expansion keeps its grab origin. */}
     <GlassControlIndicator materialRef={elastic.ref} className="glass-segmented-thumb" variant="slider" opticalScale={SETTINGS_CONTROL_SCALE} quietLighting={!pressed}
-      style={{ width: geometry.width, translate: `${lensX - geometry.scroll}px 0px`, transform: 'none', scale: `${expansion * widthRatio} ${expansion}` }} />
+      style={{ width: geometry.width, translate: `calc(${lensX - geometry.scroll}px + (${lensWidth / geometry.width} - 1) * var(--glass-elastic-origin-x, 50%)) 0px`, transform: 'none', scale: `${expansion * lensWidth / geometry.width} ${expansion}` }} />
   </div>;
 }
