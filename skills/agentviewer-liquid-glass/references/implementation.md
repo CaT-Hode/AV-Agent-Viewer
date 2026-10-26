@@ -2,7 +2,7 @@
 
 ## 可迁移光学核心
 
-将 `assets/` 四份 TS 一起复制到目标源码：`ray-optics.ts` 提供截面、折射与 overscan；`optics-model.ts` 生成圆角 SDF 法线、RG 位移、高光和遮罩；`optics.worker.ts` 执行生成；`optics-cache.ts` 管理共享请求和 lease。它们从项目核心提取，不带设置、IPC 或导航常量。生成依赖浏览器 module Worker、OffscreenCanvas 与 Blob URL；构建器须处理 worker URL，CSP 须允许对应资源。
+将 `assets/` 四份 TS 一起复制：`ray-optics.ts` 提供折射与 overscan，`optics-model.ts` 生成圆角法线、位移、高光及遮罩，`optics.worker.ts` 执行生成，`optics-cache.ts` 管理共享请求和 lease。核心不带设置或 IPC；依赖 module Worker、OffscreenCanvas 和 Blob URL，构建器与 CSP 须支持这些资源。
 
 ```ts
 import { requestGlassOptics, readGlassRadii } from './optics-cache';
@@ -29,6 +29,8 @@ const lease = await requestGlassOptics(options, abort.signal);
 
 独立 WebContents 不共享 DOM backdrop。按实际窗口坐标截取有限 ROI，保留 sourceContentsId、导航身份、布局版本、采样原点与像素密度；丢弃过期回调。移动时更新采样坐标，同像素不重复编码发送。不能用缓存旧帧冒充当前来源。
 
-AgentViewer 源码位于 `apps/desktop/src/`：renderer/components 的 LiquidGlassSurface/NavigationGlass 是应用适配层；renderer/lib 的 layout-frame、floating-hitboxes、use-selection-toolbar-motion 分别负责读写调度、避让、姿态；main/web-toolbar 与 backdrop-frame-hub 处理原生采样。迁移时对照当前源码，不整份复制其应用依赖。
+源码入口在 `apps/desktop/src/`：renderer/components 提供材质与按钮，renderer/lib 负责布局、避让和运动，main/web-toolbar 与 backdrop-frame-hub 处理原生采样。
+
+在技能目录运行 `node scripts/build-buttons.mjs <仓库> --write`，从当前组件、CSS 和 worker 生成离线 `assets/buttons.html`；`--check` 检查一致性。预览复用项目拖动与弹簧，不维护另一套按钮实现；来源文件及指纹随产物记录。
 
 当前项目全局折射模糊上限为 0px，调用方例外须同时指定 blur 与 blurLimit。翻译窗的 70%填充、1px模糊、36px折射边缘、32px圆角属于该窗口预设，不是通用规范。

@@ -15,7 +15,7 @@ description: Build or refine real refractive liquid-glass surfaces in desktop we
 
 ## 材质与交互
 
-前景文字、按钮、输入框与光学背景分层。材质层 `pointer-events:none`；模糊、透明度、折射与弹性形变不作用于整段前景或命中容器。真实折射须有背景几何位移；普通磨砂可作为明确的降级，不把半透明加模糊称为折射。
+前景文字、按钮、输入框与光学背景分层。材质层 `pointer-events:none`；光学滤镜和材质透明度只作用于背景。按钮自身按压缩放沿用项目控制器，不叠加第二套动画。真实折射须有背景几何位移；不可把半透明加模糊称为折射。
 
 以局部 border-box 尺寸和真实圆角构造位移场；屏幕位置只用于背景采样与避让，不能把变换后的尺寸再当局部几何，造成双重缩放和点击错位。
 
@@ -36,4 +36,4 @@ description: Build or refine real refractive liquid-glass surfaces in desktop we
 - 操作 / 图标按钮：原生 button，保留 disabled、focus-visible、图标名称；普通前景按钮共享父级材质，按压即时反馈，不逐个创建折射纹理或叠加控制器。
 - 分段选择按钮：radiogroup、aria-checked 与游走焦点，方向键 / Home / End 跳过禁用项。提交填充与选中文字同步变化，只有透明镜片移动；拖动松开提交一次，消费随后 click，捕获丢失或取消时复位。
 
-[按钮预览](assets/buttons.html) 提供两套版式和点击 / 键盘示例，明确使用磨砂降级。接入真实折射使用光学核心；项目内复用 GlassInteractionHost、GlassSegmentedControl。预览不替代生产弹簧与拖动控制器，原生文字拖动与控件 pointercancel 分别处理。
+[按钮预览](assets/buttons.html) 直接打包当前项目的 GlassInteractionHost、GlassSegmentedControl、LiquidGlassSurface、样式与 worker，启用真实折射，包含拖动、弹簧和键盘操作。按钮外观、参数和手势逻辑不另行实现；原生文字拖动与控件 pointercancel 分别处理。预览可离线打开，生成和校验方法见实现参考。
