@@ -1,39 +1,45 @@
 ---
 name: agentviewer-liquid-glass
-description: Build or refine real refractive liquid-glass surfaces in desktop web and Electron interfaces, including action and segmented buttons, optical layering, texture reuse, motion and floating controls. Use for glass materials and related interaction defects, not a general visual redesign or a native GPU renderer.
+description: Build or refine real refractive liquid glass in desktop web and Electron interfaces, including action/segmented buttons, rendering performance, input latency, interruptible springs and deformation. Use for glass materials and related interactions, not a general redesign or native GPU renderer.
 ---
 
 # AgentViewer 液态玻璃
 
-从 AgentViewer 实际实现提炼真实折射材质与交互机制。保留目标项目的布局、品牌和既有状态层，不为使用玻璃强制增加彩色背景、换框架或重做整站。
+从 AgentViewer 源码提炼材质、交互与优化机制。保留目标项目的布局、品牌和状态层，不为玻璃重做整站或强制换框架。
 
 ## 按任务取用
 
-- 在 AgentViewer 内修改，先查现有 `LiquidGlassSurface`、`NavigationGlass` 和材质样式，复用当前执行路径。
-- 接入其他 DOM/SVG 项目或修改光学字段时，读[实现与接入](references/implementation.md)。`assets/` 提供四份可迁移 TypeScript 光学核心；它们不含完成的 UI 组件、Electron 截图或主题状态。按目标构建器接入 module worker，不强行引入 React。
-- Electron 独立原生视图的背景采样、来源身份与项目预设，按需阅读同一参考中的对应段落。
+- 项目内复用 LiquidGlassSurface、NavigationGlass、GlassInteractionHost、GlassSegmentedControl 和原 CSS 顺序。
+- 性能、延迟、弹性或形变任务，读[实现与优化](references/implementation.md)，先定位输入、布局、纹理、采样或呈现瓶颈。
+- 新 DOM/SVG 项目可取用 assets 的四份 TS 光学核心；核心不带应用设置或 IPC，原生独立视图另接真实采样。
 
-## 材质与交互
+## 材质与几何
 
-前景文字、按钮、输入框与光学背景分层。材质层 `pointer-events:none`；光学滤镜和材质透明度只作用于背景。按钮自身按压缩放沿用项目控制器，不叠加第二套动画。真实折射须有背景几何位移；不可把半透明加模糊称为折射。
+真实折射必须产生背景几何位移。前景控件与光学背景分层，材质 pointer-events:none；滤镜和材质透明度不作用于整段前景。普通按钮自身的按压缩放沿用原控制器，不叠加动画。
 
-以局部 border-box 尺寸和真实圆角构造位移场；屏幕位置只用于背景采样与避让，不能把变换后的尺寸再当局部几何，造成双重缩放和点击错位。
+光学场使用局部 border-box 与真实圆角，屏幕坐标用于采样和避让；不能把已变形尺寸再当局部尺寸，造成双重缩放或命中错位。
 
-几何变化合并处理，worker 生成、解码成功后切换纹理。移动与弹簧帧复用纹理，只更新最终姿态；静止停 RAF，不重复写 style、编码图片或触发 React 更新。过时请求取消，已借出的纹理在使用者释放前不能撤销。
+深色取消重复宿主边框和常亮内白边，保留材质高光；选中填充与前景成对调整。减少动态效果时简化运动，高对比或减少透明度时保留可读状态和原生语义。
 
-拖动从当前姿态接手并保留速度，每个控件只由一个交互控制器驱动。悬浮避让使用实际 hitbox 和所属组；工具栏自身 tooltip 不反过来推走工具栏。只移动明确允许让位的表面。
+## 性能、延迟与运动
 
-退出表面立即 inert，几何刷新不能解锁。原生文字拖动的 `pointercancel` 不等于鼠标松开；保持抑制，等真实 mouseup、dragend 或失焦结束手势。
+控件就绪后，按下反馈不等待纹理重建、截图、IPC 或业务回执；首次光学就绪单独计时。几何集中到同帧先读后写；静止不重复写 style。高频姿态优先命令式写 DOM，避免整树重渲染；位置 hook 的局部帧更新另测成本。
 
-深色去掉重复宿主边框与常亮内白边，高光由材质产生；选中态分别控制底色与前景，避免与当前背景融为一体。减少动态效果时简化运动，减少透明度或高对比偏好下使用可读实底，保留键盘焦点和原控件语义。
+worker 可取消，同几何共享任务和有界缓存；解码后替换，旧 lease 用完再释放。移动与形变复用纹理，尺寸稳定后更新，避免逐帧重建位移图、模糊或截图。只保留最新有效底图，像素不变不重复编码。
+
+弹簧改目标时从当前值和速度接手，直接拖动跟随指针，松手继承有界速度。位置、形变、材质分别调度，每个控件只有一个手势所有者；不要再套 CSS transition 或第二套弹簧。静止停 RAF、恢复临时 will-change；取消和卸载清理资源。
+
+悬浮避让使用真实 hitbox 和所属组，自身 tooltip 不推走工具栏。障碍约束优先于弹性，只让声明可移动或收起的表面让位。退出立即 inert，几何刷新不能解锁。原生文字拖动的 pointercancel 不代表松手；控件取消、丢失捕获和失焦则按原组件回退。
+
+## 两种按钮
+
+- 操作 / 图标按钮共享原导航或选区材质，保留 disabled、焦点和可访问名称，不给每个图标重复生成纹理。
+- 分段选择保留 radiogroup、aria-checked、游走焦点和方向键 / Home / End；填充与文字同步换色，镜片拖动，松开提交一次并消费随后 click。
+
+[离线预览](assets/buttons.html) 直接编译项目原组件、样式、worker 和弹簧；折射失败不显示磨砂替代。生成和校验方法见实现参考。
 
 ## 验证
 
-用文字或棋盘背景检查边缘实际位移及前景清晰度；在目标桌面运行时检查慢拖、快速反向、tooltip 悬浮、退出和重新出现。记录实际帧、样式写入、纹理构建与编码数量；静态截图和 API 耗时不能证明交互延迟。按修改范围验证，不为技能文档更新重跑无关全套 UI 测试。
+分冷/热状态记录排队、布局、生成、解码、采样和呈现。性能任务短交互每组至少100次，报告 P50/P95/最大值、帧间隔和长任务；检查慢拖、快速反向、缩放、取消及真实边缘位移。静止控件100帧核对 style 写入、纹理构建和编码增量，有意动画另计。
 
-## 两种按钮设计
-
-- 操作 / 图标按钮：原生 button，保留 disabled、focus-visible、图标名称；普通前景按钮共享父级材质，按压即时反馈，不逐个创建折射纹理或叠加控制器。
-- 分段选择按钮：radiogroup、aria-checked 与游走焦点，方向键 / Home / End 跳过禁用项。提交填充与选中文字同步变化，只有透明镜片移动；拖动松开提交一次，消费随后 click，捕获丢失或取消时复位。
-
-[按钮预览](assets/buttons.html) 直接打包当前项目的 GlassInteractionHost、GlassSegmentedControl、LiquidGlassSurface、样式与 worker，启用真实折射，包含拖动、弹簧和键盘操作。按钮外观、参数和手势逻辑不另行实现；原生文字拖动与控件 pointercancel 分别处理。预览可离线打开，生成和校验方法见实现参考。
+事件到下一帧只是调度代理；截图和 API 耗时不能证明真实键鼠到屏幕延迟或 FPS。说明证据范围，按改动验证，不为文档更新重跑无关整套 UI 测试。
