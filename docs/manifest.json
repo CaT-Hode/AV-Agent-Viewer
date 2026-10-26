@@ -68,6 +68,13 @@
       ]
     },
     {
+      "name": "液态玻璃技能",
+      "files": [
+        "skills/agentviewer-liquid-glass/SKILL.md",
+        "skills/agentviewer-liquid-glass/references/implementation.md"
+      ]
+    },
+    {
       "name": "创作示例",
       "files": [
         "examples/moon-tide/01-故事大纲.md"

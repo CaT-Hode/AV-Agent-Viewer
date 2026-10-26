@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentViewer · 两种玻璃按钮设计</title>
+<style>
+  * { box-sizing:border-box; }
+  :root { color-scheme:light; font:15px/1.7 system-ui,'Microsoft YaHei',sans-serif; }
+  body { margin:0; padding:48px; color:#243541; background:radial-gradient(ellipse at 12% 5%,#c4e3ed,transparent 55%),#eef1f3; }
+  body[data-theme=dark] { color-scheme:dark; color:#eef3f5; background:radial-gradient(ellipse at 12% 5%,#243b48,transparent 55%),#171d22; }
+  main { max-width:1000px; margin:auto; --ink:#243541; --fill:#ffffff75; --line:#24354118; --selected:#253746; --selected-ink:#fff; --press:#316b9620; }
+  [data-theme=dark] main { --ink:#eef3f5; --fill:#23323c8c; --line:#e5f4ff10; --selected:#eef4f8; --selected-ink:#172b3a; --press:#a9d3f51c; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:32px; margin-bottom:40px; }
+  h1 { margin:0; font-size:26px; font-weight:650; letter-spacing:-.03em; }
+  header p { margin:6px 0 0; opacity:.65; }
+  .designs { display:grid; grid-template-columns:1fr 1fr; gap:28px; }
+  section { min-width:0; padding:28px; border-radius:28px; background:var(--fill); border:1px solid var(--line); box-shadow:0 18px 42px #152e3b0d; }
+  h2 { margin:0 0 6px; font-size:18px; font-weight:650; }
+  section p { min-height:52px; margin:0; opacity:.68; }
+  .stage { min-height:142px; display:flex; align-items:center; justify-content:center; gap:12px; }
+  .material { position:relative; isolation:isolate; border-radius:25px; }
+  .material::before { content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; background:var(--fill); backdrop-filter:blur(8px); pointer-events:none; }
+  /* One shared material, clear native foreground buttons. Production optics
+     replace this explicit frosted fallback via the kernel's independent layer. */
+  .actions { display:flex; align-items:center; gap:8px; padding:7px; }
+  button { font:inherit; cursor:pointer; color:var(--ink); }
+  button:disabled { cursor:default; opacity:.4; }
+  button:focus-visible { outline:2px solid #5b9fca; outline-offset:4px; }
+  .action { position:relative; isolation:isolate; display:inline-flex; align-items:center; justify-content:center; height:38px; padding:0 18px; border:0; border-radius:20px; background:transparent; }
+  .action::before { content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; background:transparent; transition:background 100ms,scale 140ms ease-out; pointer-events:none; }
+  .action:hover:not(:disabled)::before { background:var(--press); }
+  .action:active:not(:disabled)::before { background:var(--press); scale:.9; }
+  .action.primary { color:var(--selected-ink); }
+  .action.primary::before { background:var(--selected); }
+  .action.primary:hover:not(:disabled)::before { background:var(--selected); }
+  .action.icon { width:38px; padding:0; }
+  .action svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; }
+  .segmented { position:relative; display:flex; gap:2px; padding:3px; max-width:100%; border-radius:22px; }
+  .segmented button { position:relative; z-index:2; min-width:65px; padding:7px 16px; border:0; background:transparent; border-radius:19px; white-space:nowrap; }
+  .segmented button[aria-checked=true] { color:var(--selected-ink); }
+  .committed,.lens { position:absolute; left:0; top:3px; height:calc(100% - 6px); border-radius:19px; pointer-events:none; }
+  .committed { z-index:0; background:var(--selected); }
+  .lens { z-index:1; background:linear-gradient(135deg,#ffffff12,#ffffff00); box-shadow:0 3px 12px #152e3b16; transition:translate 220ms cubic-bezier(.2,.8,.2,1),width 220ms cubic-bezier(.2,.8,.2,1); }
+  .note { margin:20px 0 0; font-size:12px; opacity:.58; }
+  output { display:block; min-height:26px; color:var(--ink); text-align:center; font-size:13px; }
+  @media (prefers-reduced-motion:reduce) { *,*::before { transition:none!important; } }
+  @media (prefers-contrast:more),(forced-colors:active) {
+    section,.material::before { background:Canvas; border:1px solid CanvasText; backdrop-filter:none; box-shadow:none; }
+    .action.primary::before,.committed { background:Highlight; }
+    .action.primary,.segmented button[aria-checked=true] { color:HighlightText; }
+    .lens { display:none; }
+  }
+</style>
+<body data-theme="light">
+<main>
+  <header><div><h1>两种玻璃按钮</h1><p>同一套材质，分别处理动作与选择。</p></div><button type="button" class="action" id="theme">切换深浅色</button></header>
+  <div class="designs">
+    <section>
+      <h2>独立操作按钮</h2><p>清楚的主操作与轻量图标操作。按压只改变背景，文字和命中区域保持稳定。</p>
+      <div class="stage"><div class="material actions">
+        <button type="button" class="action primary" id="save">保存文档</button>
+        <button type="button" class="action icon" aria-label="打开设置" id="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg></button>
+        <button type="button" class="action" disabled>不可用</button>
+      </div></div>
+      <output id="action-status" aria-live="polite">等待操作</output>
+    </section>
+    <section>
+      <h2>分段选择按钮</h2><p>提交填充与文字同时换色，独立镜片滑动。支持方向键、Home、End 和禁用项。</p>
+      <div class="stage"><div class="material segmented" role="radiogroup" aria-label="阅读模式" data-value="reading">
+        <span class="committed" aria-hidden="true"></span><span class="lens" data-optics-slot aria-hidden="true"></span>
+        <button type="button" role="radio" aria-checked="true" data-value="reading">阅读</button>
+        <button type="button" role="radio" aria-checked="false" data-value="source" tabindex="-1">源码</button>
+        <button type="button" role="radio" aria-checked="false" data-value="split" tabindex="-1">分栏</button>
+        <button type="button" role="radio" aria-checked="false" data-value="locked" tabindex="-1" disabled>锁定</button>
+      </div></div>
+      <output id="selection-status" aria-live="polite">已选择：阅读</output>
+    </section>
+  </div>
+  <p class="note">独立设计预览使用明确的磨砂降级。真实折射接入同目录光学核心；AgentViewer 内复用现有按钮与 GlassSegmentedControl。此预览展示版式、点击与键盘，完整拖动及弹簧沿用项目控制器。</p>
+</main>
+<script>
+  // A layout/semantics preview, not a competing production interaction engine.
+  document.querySelector('#theme').addEventListener('click',()=>{document.body.dataset.theme=document.body.dataset.theme==='dark'?'light':'dark';});
+  let saves=0;
+  document.querySelector('#save').addEventListener('click',()=>{document.querySelector('#action-status').textContent='已保存 '+(++saves)+' 次';});
+  document.querySelector('#settings').addEventListener('click',()=>{document.querySelector('#action-status').textContent='设置操作已触发';});
+  for(const group of document.querySelectorAll('[role=radiogroup]')) {
+    const buttons=[...group.querySelectorAll('button[role=radio]')],fill=group.querySelector('.committed'),lens=group.querySelector('.lens');
+    const place=(node,button)=>{node.style.width=button.offsetWidth+'px';node.style.translate=button.offsetLeft+'px 0px';};
+    const measure=()=>{const selected=buttons.find(button=>button.getAttribute('aria-checked')==='true');if(selected){place(fill,selected);place(lens,selected);}};
+    const choose=button=>{
+      if(button.disabled||button.getAttribute('aria-checked')==='true')return;
+      group.dataset.value=button.dataset.value;
+      for(const item of buttons){const selected=item===button;item.setAttribute('aria-checked',String(selected));item.tabIndex=selected?0:-1;}
+      measure();document.querySelector('#selection-status').textContent='已选择：'+button.textContent;
+      group.dispatchEvent(new CustomEvent('change',{bubbles:true,detail:{value:button.dataset.value}}));
+    };
+    for(const button of buttons){
+      button.addEventListener('click',()=>choose(button));
+      button.addEventListener('keydown',event=>{
+        const enabled=buttons.filter(item=>!item.disabled),index=enabled.indexOf(button);
+        const next=event.key==='Home'?enabled[0]:event.key==='End'?enabled.at(-1):['ArrowRight','ArrowDown'].includes(event.key)?enabled[(index+1)%enabled.length]:['ArrowLeft','ArrowUp'].includes(event.key)?enabled[(index+enabled.length-1)%enabled.length]:undefined;
+        if(next){event.preventDefault();choose(next);next.focus({preventScroll:true});}
+      });
+    }
+    const size=new ResizeObserver(measure);size.observe(group);buttons.forEach(button=>size.observe(button));measure();
+  }
+</script>
+</body>
+</html>
