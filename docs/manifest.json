@@ -70,8 +70,8 @@
     {
       "name": "液态玻璃技能",
       "files": [
-        "skills/agentviewer-liquid-glass/SKILL.md",
-        "skills/agentviewer-liquid-glass/references/implementation.md"
+        "skills/best-liquid-glass/SKILL.md",
+        "skills/best-liquid-glass/references/implementation.md"
       ]
     },
     {

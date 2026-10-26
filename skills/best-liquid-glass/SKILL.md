@@ -1,9 +1,9 @@
 ---
-name: agentviewer-liquid-glass
+name: best-liquid-glass
 description: Build or refine real refractive liquid glass in desktop web and Electron interfaces, including action/segmented buttons, rendering performance, input latency, interruptible springs and deformation. Use for glass materials and related interactions, not a general redesign or native GPU renderer.
 ---
 
-# AgentViewer 液态玻璃
+# best-liquid-glass
 
 从 AgentViewer 源码提炼材质、交互与优化机制。保留目标项目的布局、品牌和状态层，不为玻璃重做整站或强制换框架。
 

@@ -49,7 +49,7 @@ for (const path of [...sourceFiles].sort()) {
   const absolute = resolve(sourceRoot, path), bytes = (await readFile(absolute, 'utf8')).replaceAll('\r\n', '\n');
   files.push({ path: relative(sourceRoot, absolute).replaceAll('\\', '/'), sha256: createHash('sha256').update(bytes).digest('hex') });
 }
-files.push({ path: 'skills/agentviewer-liquid-glass/assets/button-preview.tsx', sha256: createHash('sha256').update(entrySource).digest('hex') });
+files.push({ path: 'skills/best-liquid-glass/assets/button-preview.tsx', sha256: createHash('sha256').update(entrySource).digest('hex') });
 files.sort((left, right) => left.path.localeCompare(right.path, 'en'));
 const dependencies = [...new Set(inputFiles.filter(path => path.includes('node_modules')).map(path => {
   const parts = path.replaceAll('\\', '/').split('node_modules/').at(-1).split('/');
@@ -74,7 +74,7 @@ const shell = `
 `;
 // Only preview page layout uses the shell. No selector here matches or
 // overrides a source button, optical leaf, segmented lens or spring property.
-const html = `<!doctype html>\n<html lang="zh-CN" data-theme="light" data-glass="standard" data-motion="standard" data-contrast="standard" data-reduce-transparency="false"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentViewer · 项目原生液态玻璃按钮</title><style>${css.replaceAll('</style', '<\\/style')}\n${shell}</style><body><div id="root"></div><script type="application/json" id="agentviewer-button-provenance">${JSON.stringify(provenance).replaceAll('<', '\\u003c')}</script><script type="application/json" id="agentviewer-button-licenses">${JSON.stringify(licenses).replaceAll('<', '\\u003c')}</script><script>${script.replaceAll('</script', '<\\/script')}</script></body></html>\n`;
+const html = `<!doctype html>\n<html lang="zh-CN" data-theme="light" data-glass="standard" data-motion="standard" data-contrast="standard" data-reduce-transparency="false"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>best-liquid-glass · 项目原生液态玻璃按钮</title><style>${css.replaceAll('</style', '<\\/style')}\n${shell}</style><body><div id="root"></div><script type="application/json" id="agentviewer-button-provenance">${JSON.stringify(provenance).replaceAll('<', '\\u003c')}</script><script type="application/json" id="agentviewer-button-licenses">${JSON.stringify(licenses).replaceAll('<', '\\u003c')}</script><script>${script.replaceAll('</script', '<\\/script')}</script></body></html>\n`;
 const destination = join(skillRoot, 'assets/buttons.html');
 if (mode === '--write') await writeFile(destination, html);
 else assert.equal((await readFile(destination, 'utf8')).replaceAll('\r\n', '\n'), html, 'Buttons preview differs from the current renderer sources; inspect and regenerate.');
