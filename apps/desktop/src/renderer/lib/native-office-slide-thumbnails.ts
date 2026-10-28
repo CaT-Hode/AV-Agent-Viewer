@@ -50,7 +50,7 @@ export class OfficeSlideThumbnailController {
   private paused = false;
   private flight = false;
   private visible: number[] = [];
-  private cache = new Map<number, string>();
+  private cache = new Map<number, { key: string; thumbnail: string }>();
   private bytes = 0;
   private failures = new Map<number, string>();
   private attempted = new Set<number>();
@@ -61,7 +61,12 @@ export class OfficeSlideThumbnailController {
   setSource(value: NativeOfficeThumbnailSource | undefined) {
     const next = value ? officeThumbnailSourceKey(value) : '';
     if (next === this.key) return;
-    this.clearPending(); this.generation++; this.key = next; this.source = value && { ...value }; this.cache.clear(); this.bytes = 0; this.failures.clear(); this.attempted.clear(); this.stale = false;
+    const sameGeometry = value && this.source && value.documentId === this.source.documentId && value.sessionId === this.source.sessionId && value.engineEpoch === this.source.engineEpoch && value.geometryKey === this.source.geometryKey;
+    this.clearPending(); this.generation++; this.key = next; this.source = value && { ...value };
+    // Content/appearance refresh keeps images until their replacements arrive.
+    // A changed page order/size must not pair an old index image with a new label.
+    if (!sameGeometry) { this.cache.clear(); this.bytes = 0; }
+    this.failures.clear(); this.attempted.clear(); this.stale = false;
     this.options.changed(); this.pump();
   }
   /** Only call after an owned, freshly completed metadata read. Ordinary props,
@@ -83,7 +88,7 @@ export class OfficeSlideThumbnailController {
     if (clearedPending) this.options.changed(); this.pump();
   }
   setPaused(value: boolean) { const resumed = this.paused && !value; this.paused = value; if (resumed) for (const index of this.visible) if (this.pendingAttempts.has(index)) { const timer = this.pendingTimers.get(index); if (timer) clearTimeout(timer); this.pendingTimers.delete(index); this.pendingAttempts.delete(index); this.failures.delete(index); this.attempted.delete(index); } if (!value) this.pump(); }
-  get(index: number) { return this.cache.get(index); }
+  get(index: number, geometryKey: string | undefined) { return geometryKey === this.source?.geometryKey ? this.cache.get(index)?.thumbnail : undefined; }
   error(index: number) { return this.failures.get(index); }
   get retainedBytes() { return this.bytes; }
   get retainedCount() { return this.cache.size; }
@@ -91,7 +96,7 @@ export class OfficeSlideThumbnailController {
   private clearPending() { for (const timer of this.pendingTimers.values()) clearTimeout(timer); this.pendingTimers.clear(); this.pendingAttempts.clear(); }
   private pump() {
     if (!this.live || this.paused || this.flight || this.stale || !this.source) return;
-    const index = this.visible.find(index => !this.cache.has(index) && !this.failures.has(index) && !this.attempted.has(index));
+    const index = this.visible.find(index => this.cache.get(index)?.key !== this.key && !this.failures.has(index) && !this.attempted.has(index));
     if (index === undefined) return;
     const generation = this.generation, source = { ...this.source }, key = this.key;
     this.flight = true; this.attempted.add(index);
@@ -102,8 +107,9 @@ export class OfficeSlideThumbnailController {
         if (!officeSlideReplyOwned(response.state, { ...source, viewId: this.options.viewId }) || officeThumbnailSourceKey(parseOfficeThumbnailSource(response.data?.source)) !== key || !Array.isArray(response.data?.slides) || response.data.slides.length !== 1 || response.data.slides[0].index !== index || !validOfficeThumbnail(response.data.slides[0].thumbnail)) throw new Error('Office 缩略图回执目标无效。');
         const thumbnail = response.data.slides[0].thumbnail;
         if (thumbnail.length > this.limits.bytes) throw new Error('Office 缩略图超过缓存限制。');
-        this.cache.set(index, thumbnail); this.bytes += thumbnail.length;
-        while (this.cache.size > this.limits.count || this.bytes > this.limits.bytes) { const oldest = [...this.cache.keys()].find(index => !this.visible.includes(index)) ?? this.cache.keys().next().value!; this.bytes -= this.cache.get(oldest)!.length; this.cache.delete(oldest); }
+        this.bytes -= this.cache.get(index)?.thumbnail.length ?? 0;
+        this.cache.set(index, { key, thumbnail }); this.bytes += thumbnail.length;
+        while (this.cache.size > this.limits.count || this.bytes > this.limits.bytes) { const oldest = [...this.cache.keys()].find(index => !this.visible.includes(index)) ?? this.cache.keys().next().value!; this.bytes -= this.cache.get(oldest)!.thumbnail.length; this.cache.delete(oldest); }
         this.options.changed();
       } catch (cause) {
         if (!this.live || generation !== this.generation) return;

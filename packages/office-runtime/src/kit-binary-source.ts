@@ -29,7 +29,7 @@ def kit_transport_fail():
             except:pass
 
 def kit_utf16_units(text):
-    # Python len counts Unicode scalars; the legacy Node reader counts UTF-16
+    # Python len counts Unicode scalars; the Node startup reader counts UTF-16
     # units. The C regex only visits astral matches, without making another
     # full UTF-16 copy of a large base64 document/capture control payload.
     return len(text)+sum(1 for unused in KIT_ASTRAL_PATTERN.finditer(text))
@@ -88,8 +88,8 @@ def kit_emit(value,method=None):
         if kit_transport_failed or mode in ['failed','negotiating']:return False
         try:
             if mode=='binary-v2':header,metadata,bodies=kit_binary_frame(value,method)
-            elif mode in ['pending','legacy']:
-                if mode=='pending' and value.get('type') not in ['diagnostic','startup-error']:raise ValueError('OFFICE_KIT_PREAUTH_MESSAGE')
+            elif mode=='pending':
+                if value.get('type') not in ['diagnostic','startup-error']:raise ValueError('OFFICE_KIT_PREAUTH_MESSAGE')
                 metadata=kit_json_bytes(value);header=None;bodies=[]
             else:raise ValueError('OFFICE_KIT_TRANSPORT_MODE')
             with output_lock:
@@ -108,7 +108,7 @@ def kit_emit_reply(request,result):
 
 def kit_pixel_data(buffer):
     data=bytes(buffer)
-    return data if kit_transport_mode=='binary-v2' else base64.b64encode(data).decode('ascii')
+    return data
 
 def kit_negotiate_transport(connection,token):
     global rpc,kit_rpc_reader,kit_transport_mode

@@ -1,10 +1,9 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, copyFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
 
 export async function buildOfficeKitAdapter() {
   if (process.platform !== 'win32') return;
@@ -16,11 +15,11 @@ export async function buildOfficeKitAdapter() {
   const vcvars = join(installation, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat');
   if (!installation || !existsSync(vcvars)) throw new Error('Windows embedded Office build needs MSVC x64 Build Tools.');
   const source = join(root, 'packages', 'office-runtime', 'native', 'office-kit-windows.cpp');
-  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-  const sourceHash = sha(await readFile(source)), options = '/LD /O2 /EHsc /W4 /WX /guard:cf', destination = join(output, 'office-kit-windows.dll'), manifest = join(output, 'office-kit-windows.build.json');
+  const options = '/LD /O2 /EHsc /W4 /WX /guard:cf', destination = join(output, 'office-kit-windows.dll'), manifest = join(output, 'office-kit-windows.build.json');
   if (existsSync(destination) && existsSync(manifest)) {
     const cached = JSON.parse(await readFile(manifest, 'utf8'));
-    if (cached.sourceHash === sourceHash && cached.options === options && cached.vcvarsHash === sha(await readFile(vcvars)) && cached.binaryHash === sha(await readFile(destination))) return;
+    const [sourceInfo, compilerInfo, binaryInfo] = await Promise.all([stat(source), stat(vcvars), stat(destination)]);
+    if (cached.options === options && binaryInfo.mtimeMs >= sourceInfo.mtimeMs && binaryInfo.mtimeMs >= compilerInfo.mtimeMs) return;
   }
   const temp = await mkdtemp(join(tmpdir(), 'agentviewer-kit-build-'));
   const binary = join(temp, 'office-kit-windows.dll');
@@ -30,9 +29,8 @@ export async function buildOfficeKitAdapter() {
   await writeFile(batch, `@echo off\r\nsetlocal DisableDelayedExpansion\r\ncall ${quote(vcvars)} >nul\r\nif errorlevel 1 exit /b 1\r\ncl /nologo ${options} ${quote(source)} /Fo${quote(join(temp, 'adapter.obj'))} /link /OUT:${quote(binary)} /IMPLIB:${quote(join(temp, 'adapter.lib'))} /PDB:${quote(join(temp, 'adapter.pdb'))}\r\nexit /b %errorlevel%\r\n`, 'utf8');
   const compiled = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', batch], { cwd: temp, encoding: 'utf8', windowsHide: true });
   if (compiled.status !== 0) throw new Error(`Office adapter compilation failed:\n${compiled.stdout}\n${compiled.stderr}`);
-  const binaryHash = sha(await readFile(binary));
-  if (!existsSync(destination) || sha(await readFile(destination)) !== binaryHash) await copyFile(binary, destination);
-  await writeFile(manifest, JSON.stringify({ sourceHash, options, vcvarsHash: sha(await readFile(vcvars)), binaryHash }, null, 2));
+  await copyFile(binary, destination);
+  await writeFile(manifest, JSON.stringify({ options }, null, 2));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await buildOfficeKitAdapter();

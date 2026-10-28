@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 import type { Writable } from 'node:stream';
@@ -10,7 +10,6 @@ import { libreOfficeExecutable } from '../../engines/src/index';
 import type { Rect, Actor, NativeOfficeQuery, NativeOfficeExecuteRequest, NativeOfficeExecution, UNOProperty, NativeOfficeNavigateTarget, NativeOfficeExportFormat, NativeOfficeInputRequest, NativeOfficeSnapshotReuse } from '../../contracts/src/index';
 import { browserActionSchema } from '../../contracts/src/index';
 import { nativeOfficeCommandPolicy } from '../../contracts/src/native-office-policy';
-import { nativeOfficeWorkerSource } from './worker-source';
 import { officeKitWorkerSource } from './kit-worker-source';
 import type { OfficeSurfaceState, OfficeSurfaceLayoutRequest, OfficeSurfaceTilesRequest, OfficeSurfaceTilesReply, OfficeSurfaceInputRequest, OfficeSurfaceInputReply, OfficeSurfaceWindowPaintRequest, OfficeSurfaceWindowPaintReply, OfficeSurfaceWindowInputRequest, OfficeSurfaceWindowCloseRequest, OfficeSurfaceWindowIdentity, OfficeSurfaceWindowControlsReply, OfficeSurfaceWindowActionRequest, OfficeSurfaceWindowActionReply } from '../../contracts/src/office-surface';
 import { NativeOfficeProtocolReader, validateNativeOfficeDispatch, validateNativeOfficeLayout } from './protocol';
@@ -35,11 +34,6 @@ export interface NativeOfficeObservation { state: NativeOfficeState; unchanged: 
 /** Private main-process optimization; neither this identity nor its state is accepted over IPC/MCP. */
 export interface NativeOfficeHostObservation extends NativeOfficeObservation { receipt?: object }
 interface ConfirmedObservation extends NativeOfficeObservation { confirmed?: ObservationReceipt }
-export interface NativeOfficeWorkerOptions extends NativeOfficeRuntimeOptions {
-  /** Test seam. Production always uses the bundled Python process. */
-  createWorker?: (python: string, args: string[]) => ChildProcessWithoutNullStreams;
-}
-
 /** One dedicated LibreOffice process, one writable model per document, separate controllers per view. */
 export class NativeOfficeRuntime extends EventEmitter {
   private worker?: ChildProcessWithoutNullStreams;
@@ -55,8 +49,7 @@ export class NativeOfficeRuntime extends EventEmitter {
   private rpc?: Writable;
   private kitSocket?: Socket;
   private kitServer?: Server;
-  private kitTransport: 'legacy' | 'authenticating' | 'binary' | 'failed' = 'legacy';
-  private pendingKitReady?: { type: 'ready'; engineEpoch: string };
+  private kitTransport: 'authenticating' | 'binary' | 'failed' = 'authenticating';
   private binaryReader?: NativeOfficeBinaryProtocolReader;
   private retiredPixels = new Map<string, { method: string; expires: number }>();
   private appearance: NativeOfficeAppearance;
@@ -77,7 +70,7 @@ export class NativeOfficeRuntime extends EventEmitter {
   /** Stage boundaries yield to real work. An already executing LO call is never aborted. */
   async warmup(sources: OfficeWarmupSource[] = [], shouldContinue: () => boolean = () => true) {
     await this.start();
-    if (!sources.length || this.options.backend !== 'kit' || this.warmupFlight) return this.warmupFlight;
+    if (!sources.length || this.warmupFlight) return this.warmupFlight;
     const generation = this.activityGeneration, idle = () => !this.closed && !this.sessions.size && !this.pending.size && generation === this.activityGeneration && shouldContinue();
     const flight = (async () => {
       for (const source of sources.slice(0, 3)) {
@@ -106,7 +99,7 @@ export class NativeOfficeRuntime extends EventEmitter {
     trace.stages.push({ stage, atMs: Math.round((performance.now() - trace.startedAt) * 100) / 100, ...(durationMs !== undefined && Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs: Math.round(durationMs * 100) / 100 } : {}) });
   }
   readonly workerDirectory: string;
-  constructor(readonly options: NativeOfficeWorkerOptions) {
+  constructor(readonly options: NativeOfficeRuntimeOptions) {
     super(); this.workerDirectory = join(resolve(options.dataDir), 'native-office', randomUUID());
     this.appearance = validateNativeOfficeAppearance(options.appearance ?? { theme: 'light', canvasColor: 0xf7f5f2 });
   }
@@ -116,44 +109,39 @@ export class NativeOfficeRuntime extends EventEmitter {
     const startupStarted = performance.now();
     this.startupStartedAt = startupStarted;
     this.starting = (async () => {
-      if (process.platform !== 'win32' && !this.options.createWorker) throw new NativeOfficeError('NATIVE_PLATFORM_UNSUPPORTED', '完整原生 Office 编辑器目前支持 Windows。');
+      if (process.platform !== 'win32') throw new NativeOfficeError('NATIVE_PLATFORM_UNSUPPORTED', '完整原生 Office 编辑器目前支持 Windows。');
       const executable = this.options.sofficePath ?? libreOfficeExecutable(this.options.appRoot)?.path;
       if (!executable) throw new NativeOfficeError('NATIVE_ENGINE_UNAVAILABLE', '找不到内置 Office 引擎。');
-      const kit = this.options.backend === 'kit';
       const program = dirname(resolve(executable));
-      const pythonCores = kit && existsSync(program) ? readdirSync(program,{withFileTypes:true}).filter(entry=>entry.isDirectory()&&/^python-core(?:-\d[\d.]*)?$/.test(entry.name)).map(entry=>join(program,entry.name)) : [];
-      if (kit && !this.options.pythonPath && pythonCores.length !== 1) throw new NativeOfficeError('NATIVE_UNO_UNAVAILABLE', '内置 Office Python 版本目录无法唯一确认。');
-      const python = this.options.pythonPath ?? (kit ? join(pythonCores[0], 'bin', 'python.exe') : join(program, 'python.exe'));
-      if (!this.options.createWorker && (!existsSync(python) || !existsSync(join(program, 'pyuno.pyd')))) throw new NativeOfficeError('NATIVE_UNO_UNAVAILABLE', '内置 Office Python/UNO 桥接不可用。');
+      const pythonCores = existsSync(program) ? readdirSync(program,{withFileTypes:true}).filter(entry=>entry.isDirectory()&&/^python-core(?:-\d[\d.]*)?$/.test(entry.name)).map(entry=>join(program,entry.name)) : [];
+      if (!this.options.pythonPath && pythonCores.length !== 1) throw new NativeOfficeError('NATIVE_UNO_UNAVAILABLE', '内置 Office Python 版本目录无法唯一确认。');
+      const python = this.options.pythonPath ?? join(pythonCores[0], 'bin', 'python.exe');
+      if (!existsSync(python) || !existsSync(join(program, 'pyuno.pyd'))) throw new NativeOfficeError('NATIVE_UNO_UNAVAILABLE', '内置 Office Python/UNO 桥接不可用。');
       await mkdir(this.workerDirectory, { recursive: true });
-      const workerFile = join(this.workerDirectory, 'office-worker.py'); await writeFile(workerFile, kit ? officeKitWorkerSource : nativeOfficeWorkerSource, 'utf8');
       const readiness = new Promise<void>((resolveReady, reject) => { this.readyResolve = resolveReady; this.readyReject = reject; });
       const reader = new NativeOfficeProtocolReader(value => this.receive(value));
       const startupAppearance = { ...this.appearance };
-      const args = kit ? [] : ['-u', workerFile, this.workerDirectory, program, JSON.stringify(startupAppearance)];
       const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
-      if (kit) {
-        // Windows VCL and Python share the worker CRT descriptors. Explicit
-        // JSONL flushes provide immediate replies without changing CRT mode.
-        delete env.PYTHONUNBUFFERED;
-        const adapterPath = this.options.adapterPath ?? join(this.options.appRoot, 'dist', 'main', 'office-kit-windows.dll');
-        if (!existsSync(adapterPath)) throw new NativeOfficeError('OFFICE_KIT_ADAPTER_UNAVAILABLE', '内嵌 Office 绘制适配器缺失，请修复应用安装。');
-        this.kitTransport = 'authenticating';
-        const endpoint = await this.createKitEndpoint();
-        Object.assign(env, { PYTHONHOME: dirname(dirname(python)), PYTHONPATH: program, PYTHONDONTWRITEBYTECODE:'1', PATH: program + ';' + (process.env.PATH ?? ''), AGENTVIEWER_OFFICE_KIT_CONFIG: JSON.stringify({ directory: this.workerDirectory, program, appearance: startupAppearance, adapterPath, bootstrapSeedPath:this.options.bootstrapSeedPath ?? join(dirname(adapterPath),'office-kit-bootstrap'), rpc: endpoint }) });
-      }
-      const worker = this.options.createWorker?.(python, args) ?? spawn(python, args, { windowsHide: true, stdio: 'pipe', env });
+      // Windows VCL and Python share the worker CRT descriptors. Explicit
+      // startup JSONL flushes do not change the CRT descriptor mode.
+      delete env.PYTHONUNBUFFERED;
+      const adapterPath = this.options.adapterPath ?? join(this.options.appRoot, 'dist', 'main', 'office-kit-windows.dll');
+      if (!existsSync(adapterPath)) throw new NativeOfficeError('OFFICE_KIT_ADAPTER_UNAVAILABLE', '内嵌 Office 绘制适配器缺失，请修复应用安装。');
+      this.kitTransport = 'authenticating';
+      const endpoint = await this.createKitEndpoint();
+      Object.assign(env, { PYTHONHOME: dirname(dirname(python)), PYTHONPATH: program, PYTHONDONTWRITEBYTECODE:'1', PATH: program + ';' + (process.env.PATH ?? ''), AGENTVIEWER_OFFICE_KIT_CONFIG: JSON.stringify({ directory: this.workerDirectory, program, appearance: startupAppearance, adapterPath, bootstrapSeedPath:this.options.bootstrapSeedPath ?? join(dirname(adapterPath),'office-kit-bootstrap'), rpc: endpoint }) });
+      const worker = spawn(python, [], { windowsHide: true, stdio: 'pipe', env });
       this.worker = worker; worker.stdout.setEncoding('utf8'); worker.stdout.on('data', chunk => {
         // v2 has one ordered authority for every event/reply. A late stdout
         // line must never settle an RPC ahead of its socket attachment body.
         if (this.kitTransport === 'binary' || this.kitTransport === 'failed') return;
         try { reader.feed(String(chunk)); } catch (error) { this.readyReject?.(error); this.failPending(error); }
       });
-      if (kit) worker.stdin.end(officeKitWorkerSource); else this.rpc = worker.stdin;
+      worker.stdin.end(officeKitWorkerSource);
       // Drain errors without placing user document text or local profile paths in normal logs.
       worker.stderr.on('data', () => { this.emit('diagnostic', { code: 'NATIVE_WORKER_STDERR' }); });
       worker.once('error', () => { const error = new NativeOfficeError('NATIVE_WORKER_FAILED', '原生编辑器桥接未能启动。'); this.readyReject?.(error); this.failPending(error); });
-      worker.once('exit', () => { reader.clear(); this.pendingKitReady = undefined; this.binaryReader?.clear(); this.retiredPixels.clear(); this.closed = true; this.kitServer?.close(); this.kitSocket?.destroy(); const error = new NativeOfficeError('NATIVE_WORKER_EXITED', '原生编辑器桥接已经退出。'); this.readyReject?.(error); this.failPending(error); this.emit('exit'); });
+      worker.once('exit', () => { reader.clear(); this.binaryReader?.clear(); this.retiredPixels.clear(); this.closed = true; this.kitServer?.close(); this.kitSocket?.destroy(); const error = new NativeOfficeError('NATIVE_WORKER_EXITED', '原生编辑器桥接已经退出。'); this.readyReject?.(error); this.failPending(error); this.emit('exit'); });
       const timer = setTimeout(() => { this.uncertain = true; this.readyReject?.(new NativeOfficeError('NATIVE_STARTUP_TIMEOUT', '原生编辑器启动超时，专用恢复目录已保留。')); }, this.options.requestTimeoutMs ?? 120000);
       try { await readiness; if (!this.rpc) throw new NativeOfficeError('OFFICE_KIT_NOT_AUTHENTICATED', '内嵌 Office 连接未能确认。'); this.appliedAppearance = startupAppearance; } finally { clearTimeout(timer); this.kitServer?.close(); this.readyResolve = undefined; this.readyReject = undefined; }
     })().finally(() => { this.startupMilliseconds = performance.now() - startupStarted; });
@@ -174,19 +162,13 @@ export class NativeOfficeRuntime extends EventEmitter {
         let message: any; try { message = JSON.parse(Buffer.concat(fragments, length).toString('utf8')); } catch { fragments = []; socket.destroy(); return; }
         fragments = [];
         if (message?.type !== 'auth' || message.token !== token || this.kitSocket) { socket.destroy(); return; }
-        const legacy = message.protocolVersion === undefined && message.capabilities === undefined;
         const binary = message.protocolVersion === 2 && Array.isArray(message.capabilities) && message.capabilities.includes('binary-tiles');
-        if (!legacy && !binary) {
+        if (!binary) {
           socket.destroy(); this.failKitTransport(new NativeOfficeError('NATIVE_PROTOCOL_ERROR', '原生编辑器连接协议版本无效。')); return;
         }
         this.kitSocket = socket; this.rpc = socket; socket.setNoDelay(true); server.close();
-        this.kitTransport = binary ? 'binary' : 'legacy';
-        // Older workers use separate stdout/socket channels. Their ready line
-        // may beat authentication; release it only after legacy is confirmed.
-        const earlyReady = this.pendingKitReady; this.pendingKitReady = undefined;
-        if (legacy && earlyReady) this.receive(earlyReady);
-        if (binary) {
-          const reader = new NativeOfficeBinaryProtocolReader({
+        this.kitTransport = 'binary';
+        const reader = new NativeOfficeBinaryProtocolReader({
             resolveRequest: id => {
               const pending = this.pending.get(id);
               if (pending) return { method: pending.method };
@@ -195,19 +177,14 @@ export class NativeOfficeRuntime extends EventEmitter {
               this.retiredPixels.delete(id); return undefined;
             },
             receive: value => this.receive(value, 'socket'),
-          });
-          this.binaryReader = reader;
-          const consume = (data: Buffer) => { try { reader.feed(data); } catch (error) { this.failKitTransport(error); } };
-          socket.on('data', consume);
-          socket.on('end', () => { try { reader.finish(); } catch (error) { this.failKitTransport(error); } });
-          // The Buffer reader is installed before ACK. Preserve even a coalesced
-          // auth tail rather than losing it through the old JSONL handshake.
-          socket.write('{"type":"auth-ack","protocolVersion":2}\n', error => { if (error) this.failKitTransport(error); });
-          if (end + 1 < chunk.length) consume(chunk.subarray(end + 1));
-        } else if (end + 1 < chunk.length) {
-          // Legacy worker output belongs to stdout, never this request socket.
-          this.failKitTransport(new NativeOfficeError('NATIVE_PROTOCOL_ERROR', '原生编辑器连接协议无效。'));
-        }
+        });
+        this.binaryReader = reader;
+        const consume = (data: Buffer) => { try { reader.feed(data); } catch (error) { this.failKitTransport(error); } };
+        socket.on('data', consume);
+        socket.on('end', () => { try { reader.finish(); } catch (error) { this.failKitTransport(error); } });
+        // Install the Buffer reader before ACK, preserving a coalesced auth tail.
+        socket.write('{"type":"auth-ack","protocolVersion":2}\n', error => { if (error) this.failKitTransport(error); });
+        if (end + 1 < chunk.length) consume(chunk.subarray(end + 1));
         socket.on('error', () => this.failKitTransport(new NativeOfficeError('NATIVE_CONNECTION_LOST', '内嵌 Office 连接已中断。')));
         socket.on('close', () => {
           this.binaryReader?.clear();
@@ -224,7 +201,7 @@ export class NativeOfficeRuntime extends EventEmitter {
   }
   private failKitTransport(error: unknown) {
     if (this.kitTransport === 'failed' || this.closed) return;
-    this.kitTransport = 'failed'; this.pendingKitReady = undefined; this.binaryReader?.clear(); this.retiredPixels.clear();
+    this.kitTransport = 'failed'; this.binaryReader?.clear(); this.retiredPixels.clear();
     this.rpc = undefined; this.readyReject?.(error); this.failPending(error);
     this.kitSocket?.destroy();
   }
@@ -245,7 +222,6 @@ export class NativeOfficeRuntime extends EventEmitter {
     }
     if (message.type === 'diagnostic' && typeof message.code === 'string' && /^OFFICE_KIT_(?:DLL|ADAPTER|BOOTSTRAP|HOOK|UI_RESOURCE|UNO)/.test(message.code) && this.startupStages.length < 64) this.startupStages.push({ code: message.code, atMs: performance.now() - this.startupStartedAt, ...(Number.isFinite(message.elapsedMs) ? { elapsedMs: message.elapsedMs } : {}) });
     if (message.type === 'ready') {
-      if (this.kitTransport === 'authenticating') { this.pendingKitReady = { type: 'ready', engineEpoch: String(message.engineEpoch) }; return; }
       if (this.engineEpoch && this.engineEpoch !== String(message.engineEpoch)) this.clearObservations(); this.engineEpoch = String(message.engineEpoch); this.readyResolve?.(); return;
     }
     if (message.type === 'startup-error') { this.readyReject?.(new NativeOfficeError('NATIVE_STARTUP_FAILED', '原生编辑器启动失败。')); return; }
@@ -332,7 +308,6 @@ export class NativeOfficeRuntime extends EventEmitter {
     return { state: host.state, unchanged: result.unchanged, receipt: host.identity };
   }
   private observeStateInside(sessionId: string, viewId: string): Promise<ConfirmedObservation> {
-    if (this.options.backend !== 'kit') return this.state(sessionId, viewId).then(state => ({ state, unchanged: false }));
     const key = JSON.stringify([sessionId, viewId]);
     // Two observers must not issue the same old receipt concurrently and then
     // replace each other's newer acknowledged state when their promises settle.
@@ -403,15 +378,9 @@ export class NativeOfficeRuntime extends EventEmitter {
       else wanted.push(command);
     }
     if (wanted.length) {
-      if (this.options.backend !== 'kit') {
-        // Older HWND workers retain their established single-command protocol.
-        const results = await Promise.all(wanted.map(command => this.commandStatus(sessionId, viewId, command)));
-        for (const result of results) local.set(result.command, result);
-      } else {
-        const result = await this.request<{ sessionId: string; viewId: string; engineEpoch: string; engineRevision: number; selectionEpoch: number; commands: NativeOfficeCommandStatus[] }>('commandStatuses', { sessionId, viewId, commands: wanted });
-        if (result?.sessionId !== sessionId || result.viewId !== viewId || result.engineEpoch !== this.engineEpoch || !Number.isSafeInteger(result.engineRevision) || result.engineRevision < 0 || !Number.isSafeInteger(result.selectionEpoch) || result.selectionEpoch < 0 || !Array.isArray(result.commands) || result.commands.length !== wanted.length || result.commands.some((status, index) => status?.command !== wanted[index] || typeof status.available !== 'boolean' || typeof status.enabled !== 'boolean' || status.state != null && !['string','number','boolean'].includes(typeof status.state) || typeof status.state === 'number' && !Number.isFinite(status.state))) throw new NativeOfficeError('INVALID_NATIVE_COMMAND_STATUS', '原生命令状态回执的身份或内容无效。');
-        for (const status of result.commands) local.set(status.command, status);
-      }
+      const result = await this.request<{ sessionId: string; viewId: string; engineEpoch: string; engineRevision: number; selectionEpoch: number; commands: NativeOfficeCommandStatus[] }>('commandStatuses', { sessionId, viewId, commands: wanted });
+      if (result?.sessionId !== sessionId || result.viewId !== viewId || result.engineEpoch !== this.engineEpoch || !Number.isSafeInteger(result.engineRevision) || result.engineRevision < 0 || !Number.isSafeInteger(result.selectionEpoch) || result.selectionEpoch < 0 || !Array.isArray(result.commands) || result.commands.length !== wanted.length || result.commands.some((status, index) => status?.command !== wanted[index] || typeof status.available !== 'boolean' || typeof status.enabled !== 'boolean' || status.state != null && !['string','number','boolean'].includes(typeof status.state) || typeof status.state === 'number' && !Number.isFinite(status.state))) throw new NativeOfficeError('INVALID_NATIVE_COMMAND_STATUS', '原生命令状态回执的身份或内容无效。');
+      for (const status of result.commands) local.set(status.command, status);
     }
     return commands.map(command => local.get(command)!);
   }
@@ -429,11 +398,6 @@ export class NativeOfficeRuntime extends EventEmitter {
   }
   async inspect(sessionId: string, viewId: string, request: { target?: import('../../contracts/src/native-office').NativeOfficeQuery; commands?: string[] }): Promise<import('../../contracts/src/native-office').NativeOfficeInspection> {
     if (request.commands && (request.commands.length > 50 || request.commands.some(command => !/^\.uno:[A-Za-z][A-Za-z0-9_]{0,99}$/.test(command)))) throw new NativeOfficeError('INVALID_NATIVE_COMMAND', '原生命令名称或查询数量无效。');
-    if (this.options.backend !== 'kit') {
-      const before = await this.state(sessionId, viewId), data = request.target ? await this.query(sessionId, viewId, request.target) : undefined, commands = request.commands ? await this.commandStatuses(sessionId, viewId, request.commands) : undefined, state = await this.state(sessionId, viewId);
-      if (before.engineEpoch !== state.engineEpoch || before.engineRevision !== state.engineRevision || before.selectionEpoch !== state.selectionEpoch) throw new NativeOfficeError('SELECTION_CHANGED', '读取期间选区已变化，请重新读取。');
-      return { state, data, commands };
-    }
     const result = await this.request<import('../../contracts/src/native-office').NativeOfficeInspection>('inspect', { sessionId, viewId, ...request });
     if (!result?.state || result.state.sessionId !== sessionId || result.state.viewId !== viewId || result.state.engineEpoch !== this.engineEpoch || !Number.isSafeInteger(result.state.engineRevision) || !Number.isSafeInteger(result.state.selectionEpoch) || request.commands && (!Array.isArray(result.commands) || result.commands.length !== request.commands.length || result.commands.some((item, index) => item.command !== request.commands![index]))) throw new NativeOfficeError('INVALID_NATIVE_OBSERVATION', '原生属性回执身份与选区未能确认。');
     return result;
@@ -449,10 +413,6 @@ export class NativeOfficeRuntime extends EventEmitter {
     const result = await this.request<any>('exportCopy', { sessionId, ...value }); const bytes = decodeNativeOfficeBytes(result.bytes); const hash = createHash('sha256').update(bytes).digest('hex');
     if (!result.stable || result.engineRevisionBefore !== result.engineRevisionAfter || hash !== result.sha256) throw new NativeOfficeError('SNAPSHOT_BUSY', '原生导出版本不一致。');
     return { ...result, bytes, format: value.format, sha256: hash } as { bytes: Uint8Array; format: NativeOfficeExportFormat; state: NativeOfficeState; engineRevisionBefore: number; engineRevisionAfter: number; stable: boolean; sha256: string };
-  }
-  setOverlayOwner(value: { sessionId: string; viewId?: string; hwnd: string }) {
-    if (!/^[1-9]\d{0,19}$/.test(value.hwnd)) return Promise.reject(new NativeOfficeError('INVALID_NATIVE_OVERLAY', '原生浮层身份无效。'));
-    return this.request<void>('overlayOwner', value);
   }
   detachView(sessionId: string, viewId: string) { this.clearObservations(); return this.request<void>('detachView', { sessionId, viewId }).finally(() => { this.clearObservations(); this.commandCatalogs.delete(sessionId + ':' + viewId); }); }
   zoom(sessionId: string, viewId: string, factor: number) {
@@ -474,21 +434,14 @@ export class NativeOfficeRuntime extends EventEmitter {
   surfaceLayout(sessionId: string, value: OfficeSurfaceLayoutRequest) { return this.request<OfficeSurfaceState>('surfaceLayout', { sessionId, ...value }); }
   /** The trusted display host enables semantic projection only after real pixels were presented. */
   async enableContextProjection(sessionId: string, viewId: string) {
-    if (this.options.backend !== 'kit') return;
     return this.request<{ sessionId: string; viewId: string; engineEpoch: string; enabled: true }>('enableContextProjection', { sessionId, viewId });
   }
-  async surfaceTiles(sessionId: string, value: OfficeSurfaceTilesRequest): Promise<OfficeSurfaceTilesReply> {
-    const result = await this.request<any>('surfaceTiles', { sessionId, ...value });
-    return { ...result, tiles: result.tiles.map((tile: any) => ({ ...tile, data: this.binaryReader ? tile.data : decodeNativeOfficeBytes(tile.data) })) };
-  }
+  surfaceTiles(sessionId: string, value: OfficeSurfaceTilesRequest) { return this.request<OfficeSurfaceTilesReply>('surfaceTiles', { sessionId, ...value }); }
   surfaceInput(sessionId: string, value: OfficeSurfaceInputRequest) {
     const event = value.event.kind === 'paste' ? { ...value.event, items: value.event.items.map(item => ({ ...item, data: Buffer.from(item.data).toString('base64') })) } : value.event;
     return this.request<OfficeSurfaceInputReply>('surfaceInput', { sessionId, ...value, event }, true);
   }
-  async surfaceWindowPaint(value: OfficeSurfaceWindowPaintRequest): Promise<OfficeSurfaceWindowPaintReply> {
-    const result = await this.request<any>('surfaceWindowPaint', value);
-    return { ...result, tile: { ...result.tile, data: this.binaryReader ? result.tile.data : decodeNativeOfficeBytes(result.tile.data) } };
-  }
+  surfaceWindowPaint(value: OfficeSurfaceWindowPaintRequest) { return this.request<OfficeSurfaceWindowPaintReply>('surfaceWindowPaint', value); }
   surfaceWindowInput(value: OfficeSurfaceWindowInputRequest) {
     const event = value.event.kind === 'paste' ? { ...value.event, items: value.event.items.map(item => ({ ...item, data: Buffer.from(item.data).toString('base64') })) } : value.event;
     return this.request<OfficeSurfaceInputReply>('surfaceWindowInput', { ...value, event }, true);

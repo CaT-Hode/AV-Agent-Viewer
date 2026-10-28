@@ -9,7 +9,6 @@
     "dist/mcp/**",
     "assets/agentviewer.ico",
     "docs/licenses/**",
-    "tests/fixtures/interaction.html",
     "package.json"
   ],
   "extraResources": [

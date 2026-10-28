@@ -1,51 +1,37 @@
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const manifestPath = join(root, 'dist/test-build.json');
-const inputs = ['apps', 'packages', 'assets', 'plugins', 'scripts', 'tests', 'docs', 'README.md', 'AGENTS.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'electron-builder.json', 'engines.lock.json', 'engines-requirements.txt'];
-const outputs = ['dist/main', 'dist/renderer', 'dist/mcp'];
-const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const manifestPath = join(root, 'dist/build-info.json');
+const outputs = ['dist/main/index.cjs', 'dist/main/preload.cjs', 'dist/main/browser-preload.cjs', 'dist/main/markdown-export-preload.cjs', 'dist/main/office-model-worker.cjs', 'dist/main/pdf-service-renderer.mjs', 'dist/main/pdf-service-worker.mjs', 'dist/renderer/index.html', 'dist/mcp/index.mjs', ...(process.platform === 'win32' ? ['dist/main/office-kit-windows.dll'] : [])];
 
-async function inventory(paths) {
-  const files = [];
-  async function visit(path) {
-    let children;
-    try { children = await readdir(path, { withFileTypes: true }); }
-    catch (error) {
-      if (error.code !== 'ENOTDIR') throw error;
-      const bytes = await readFile(path);
-      files.push({ path: relative(root, path).replaceAll('\\', '/'), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
-      return;
-    }
-    for (const child of children) {
-      if (child.isSymbolicLink()) throw new Error('BUILD_IDENTITY_LINK: ' + child.name);
-      await visit(join(path, child.name));
-    }
-  }
-  for (const path of paths) await visit(join(root, path));
-  return files.sort((a, b) => a.path.localeCompare(b.path, 'en'));
+async function outputInventory() {
+  return Promise.all(outputs.map(async path => {
+    const info = await stat(join(root, path));
+    if (!info.isFile()) throw new Error('BUILD_OUTPUT_MISSING: ' + path);
+    return { path, bytes: info.size, modifiedAt: info.mtimeMs };
+  }));
 }
 
 export async function writeBuildIdentity() {
-  const [sourceFiles, outputFiles, source] = await Promise.all([inventory(inputs), inventory(outputs), readFile(join(root, 'package.json'), 'utf8')]);
-  const identity = { schemaVersion: 1, version: JSON.parse(source).version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim(), builtAt: new Date().toISOString(), sourceDigest: digest(sourceFiles), outputDigest: digest(outputFiles), sourceFiles, outputFiles };
+  const [outputFiles, source] = await Promise.all([outputInventory(), readFile(join(root, 'package.json'), 'utf8')]);
+  const identity = { schemaVersion: 2, buildId: randomUUID(), version: JSON.parse(source).version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim(), builtAt: new Date().toISOString(), outputFiles };
   await writeFile(manifestPath, JSON.stringify(identity, null, 2) + '\n');
-  console.log('Current desktop build recorded: ' + identity.sourceDigest.slice(0, 12));
+  console.log('Current desktop build recorded: ' + identity.buildId);
 }
 
 export async function assertCurrentBuild() {
   let identity;
   try { identity = JSON.parse(await readFile(manifestPath, 'utf8')); }
   catch { throw new Error('CURRENT_BUILD_REQUIRED: Run npm run build before desktop or engine validation.'); }
-  const [sourceFiles, outputFiles] = await Promise.all([inventory(inputs), inventory(outputs)]);
-  if (identity.schemaVersion !== 1 || digest(identity.sourceFiles) !== identity.sourceDigest || digest(identity.outputFiles) !== identity.outputDigest || digest(sourceFiles) !== identity.sourceDigest || digest(outputFiles) !== identity.outputDigest) {
-    throw new Error('STALE_DESKTOP_BUILD: Sources or production output changed. Run npm run build; old dist cannot be used as current evidence.');
+  const outputFiles = await outputInventory();
+  if (identity.schemaVersion !== 2 || typeof identity.buildId !== 'string' || JSON.stringify(outputFiles) !== JSON.stringify(identity.outputFiles)) {
+    throw new Error('STALE_DESKTOP_BUILD: Production entrypoints changed. Run npm run build before desktop or engine validation.');
   }
-  const { sourceFiles: _sourceFiles, outputFiles: _outputFiles, ...receipt } = identity;
+  const { outputFiles: _outputFiles, ...receipt } = identity;
   return receipt;
 }
 

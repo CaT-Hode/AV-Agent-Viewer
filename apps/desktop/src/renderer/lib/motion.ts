@@ -9,8 +9,9 @@ let observer: MutationObserver | undefined;
 const media = typeof window === 'undefined' ? undefined : window.matchMedia('(prefers-reduced-motion: reduce)');
 const notify = () => listeners.forEach(listener => listener());
 if (typeof document !== 'undefined') {
-  document.addEventListener('pointerdown', () => { input = 'pointer'; document.documentElement.dataset.motionInput = input; notify(); }, true);
-  document.addEventListener('keydown', () => { input = 'keyboard'; document.documentElement.dataset.motionInput = input; notify(); }, true);
+  const receiveInput = (next: Input) => { if (input === next) return; input = next; document.documentElement.dataset.motionInput = input; notify(); };
+  document.addEventListener('pointerdown', () => receiveInput('pointer'), true);
+  document.addEventListener('keydown', () => receiveInput('keyboard'), true);
 }
 export function motionSnapshot() { return `${resolveMotionMode(typeof document === 'undefined' ? undefined : document.documentElement.dataset.motion, media?.matches)}:${input}`; }
 function subscribe(listener: () => void) {

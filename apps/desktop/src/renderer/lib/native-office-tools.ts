@@ -92,6 +92,8 @@ export function nativeOfficeToolCandidates(format: NativeOfficeFormat, category:
   return groups[format][category] ?? [];
 }
 export function nativeOfficeStatusKey(state: NativeOfficeState) { return JSON.stringify([state.documentId, state.viewId, state.sessionId, state.engineEpoch, state.engineRevision, state.selectionEpoch ?? null, nativeOfficeInteractionBlocked(state), state.inputState?.editing, state.textHistory]); }
+/** A style draft belongs to content and selection, not a transient input flight. */
+export function nativeOfficeStyleSourceKey(state: NativeOfficeState) { return JSON.stringify([state.documentId, state.viewId, state.sessionId, state.engineEpoch, state.engineRevision, state.selectionEpoch ?? null, state.inputState?.editing, state.textHistory]); }
 export function nativeOfficeOwnedState(state: NativeOfficeState | undefined, identity: { documentId: string; viewId: string; format?: NativeOfficeFormat }): state is NativeOfficeState {
   return !!state && state.documentId === identity.documentId && state.viewId === identity.viewId && (!identity.format || state.format === identity.format);
 }
@@ -140,11 +142,11 @@ export type NativeOfficeToolController = { viewId: string; documentId: string; e
 /** Capture a versioned native selection and never retry a dispatched mutation automatically. */
 export function createNativeOfficeToolController(identity: { documentId: string; viewId: string }, options: { current(): NativeOfficeState | undefined; request: NativeOfficeRequest; accept(state: NativeOfficeState): void; beforeAction?(): Promise<NativeOfficeState | void>; makeKey?(): string }) {
   let active = true, pending = false;
-  const current = () => {
+  const current = (allowInFlight = false) => {
     const state = options.current();
     if (!active || !nativeOfficeOwnedState(state, identity)) throw new Error('当前 Office 视图已变化。');
     if (state.status && state.status !== 'ready') throw new Error('文档引擎未就绪。');
-    if (nativeOfficeInteractionBlocked(state)) throw new Error('请先完成中文输入或关闭原生对话框。');
+    if (nativeOfficeInteractionBlocked(state) && !(allowInFlight && state.inputState?.inFlight && !state.inputState.composing && !state.inputState.modal)) throw new Error('请先完成中文输入或关闭原生对话框。');
     return state;
   };
   const unchanged = (before: NativeOfficeState) => {
@@ -161,12 +163,14 @@ export function createNativeOfficeToolController(identity: { documentId: string;
     if (pending) throw new Error('上一条 Office 操作仍在处理中。');
     pending = true;
     try {
-      if (source && (!nativeOfficeOwnedState(source, identity) || nativeOfficeStatusKey(source) !== nativeOfficeStatusKey(current()))) throw new Error('属性来源的内容或选区已变化，请重新读取。');
+      const prepareStyle = action === 'style' && !!options.beforeAction;
+      if (source && (!nativeOfficeOwnedState(source, identity) || nativeOfficeStyleSourceKey(source) !== nativeOfficeStyleSourceKey(current(prepareStyle)))) throw new Error('属性来源的内容或选区已变化，请重新读取。');
       if (options.beforeAction) {
-        const original = current(), prepared = await options.beforeAction();
+        const original = current(prepareStyle), prepared = await options.beforeAction();
         if (prepared) {
           if (!nativeOfficeOwnedState(prepared, identity) || prepared.sessionId !== original.sessionId || prepared.engineEpoch !== original.engineEpoch || prepared.engineRevision < original.engineRevision || prepared.selectionEpoch !== original.selectionEpoch) throw new Error('提交草稿时选区或原生会话已变化，请重新执行。');
-          const latest = current();
+          if (nativeOfficeInteractionBlocked(prepared)) throw new Error('请先完成中文输入或关闭原生对话框。');
+          const latest = current(prepareStyle);
           if (latest.sessionId !== original.sessionId || latest.engineEpoch !== original.engineEpoch || latest.selectionEpoch !== original.selectionEpoch) throw new Error('提交草稿时选区或原生会话已变化，请重新执行。');
           if (prepared.engineRevision >= latest.engineRevision) options.accept(prepared);
         }
@@ -177,7 +181,7 @@ export function createNativeOfficeToolController(identity: { documentId: string;
       if (action === 'style') {
         const fresh = await options.request<NativeOfficeState>('office-status', { viewId: identity.viewId });
         unchanged(before);
-        if (!nativeOfficeOwnedState(fresh, identity) || nativeOfficeStatusKey(fresh) !== nativeOfficeStatusKey(before) || !source || nativeOfficeStatusKey(fresh) !== nativeOfficeStatusKey(source)) throw new Error('属性来源的内容或选区已变化，请重新读取。');
+        if (!nativeOfficeOwnedState(fresh, identity) || nativeOfficeStatusKey(fresh) !== nativeOfficeStatusKey(before) || !source || nativeOfficeStyleSourceKey(fresh) !== nativeOfficeStyleSourceKey(source)) throw new Error('属性来源的内容或选区已变化，请重新读取。');
         if (fresh.selectionEpoch === undefined) throw new Error('引擎尚未确认属性目标的选区版本。');
         options.accept(fresh);
       }

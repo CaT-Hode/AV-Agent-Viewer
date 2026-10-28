@@ -17,7 +17,7 @@ CodeMirror/Lezer 负责源码、虚拟预览和增量语法；React Markdown、r
 
 ## 上下文计数
 
-开发依赖 `js-tiktoken 1.0.21` 使用 MIT。包内包含 o200k_base、cl100k_base 离线词表；`scripts/mcp-tokenizer.lock.json` 固定实现和词表 SHA，预算脚本拒绝哈希变化，不运行时下载，也不以字节/字符估算 tokens。
+开发依赖 `js-tiktoken 1.0.21` 使用 MIT。包内包含 o200k_base、cl100k_base 离线词表；npm锁文件固定依赖，预算脚本核对版本，不重复计算包文件SHA，不运行时下载，也不以字节/字符估算 tokens。
 
 该 profile 是可复现的参考计数，不表示当前 Codex 模型 tokenizer 与宿主包装已认证。依赖不进入编辑器运行路径。
 

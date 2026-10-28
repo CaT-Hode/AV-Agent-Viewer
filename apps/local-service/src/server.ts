@@ -67,7 +67,6 @@ export async function startServer(core: ViewerCore, root: string, directory: str
     core.on('change', write); req.on('close', () => core.off('change', write));
   });
   app.post('/internal/command', async (req, res, next) => { try { const { method, args = {} } = req.body; if (typeof method !== 'string' || !args || typeof args !== 'object' || Array.isArray(args)) throw new ViewerError('INVALID_ARGUMENT', '需要 method 和对象类型 args。'); res.json(await dispatch(core, method, args, 'human')); } catch (e) { next(e); } });
-  app.use('/fixtures', express.static(join(root, 'tests/fixtures')));
   app.use(express.static(join(root, 'dist/renderer')));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { const code = error instanceof ViewerError ? error.code : error instanceof ZodError ? 'INVALID_ARGUMENT' : 'INTERNAL_ERROR'; const message = error instanceof Error ? error.message : String(error); res.status(code === 'INTERNAL_ERROR' ? 500 : 400).json({ error: { code, message } }); });
   const server = await new Promise<Server>((resolveServer, reject) => { const s = app.listen(port, '127.0.0.1', () => resolveServer(s)); s.on('error', reject); });

@@ -34,6 +34,6 @@ AI 已支持冻结证据集合、分块分析、覆盖报告和有界任务结�
 
 MCP 预算使用固定离线 tokenizer，检查每格式基础+全部高级闭包，并防止跨格式泄露。Codex 宿主包装、实际刷新与历史保留须另行认证，参考计数不冒充模型真实用量。
 
-常驻测试总预算50，扩展既有职责。按用户要求停止输入验收；既有自动 composition 与局部计时不能证明系统输入法、整体 P95 或任意 Office 文件保真。当前结果以[测试记录](../tests/README.md)和[性能证据](performance/README.md)为准。
+完整回归的旧清单与配套代码已删除，按实际改动选择必要验收。临时代码通过后删除，保留当前构建的结果。系统输入法、整体P95、任意Office保真及宿主MCP认证须各有证据。见[验收约定](verification.md)与[性能证据](performance/README.md)。
 
 [架构](architecture.md) · [能力矩阵](editing/refactor.md) · [MCP](automation/mcp.md)

@@ -8,19 +8,21 @@ export function usePresence(show: boolean, { duration: base = 180, identity, key
   const [state, setState] = useState<PresenceState>({ present: show, phase: show ? 'enter' : 'exit', identity });
   const generation = useRef(0);
   useLayoutEffect(() => {
-    let first = 0, second = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    let frame = 0, timer: ReturnType<typeof setTimeout> | undefined;
     const current = ++generation.current;
     setState(old => presenceTarget(old, show, identity, duration === 0));
     if (duration && show) {
-      first = requestAnimationFrame(() => { second = requestAnimationFrame(() => {
+      // The enter pose is committed by this layout effect. Open on the next
+      // frame, without an extra blank frame before the transition begins.
+      frame = requestAnimationFrame(() => {
         if (current === generation.current) setState({ present: true, phase: 'open', identity });
-      }); });
+      });
     } else if (duration && !show) {
       timer = setTimeout(() => {
         if (current === generation.current) setState({ present: false, phase: 'exit', identity });
       }, duration);
     }
-    return () => { generation.current++; cancelAnimationFrame(first); cancelAnimationFrame(second); clearTimeout(timer); };
+    return () => { generation.current++; cancelAnimationFrame(frame); clearTimeout(timer); };
   }, [show, identity, duration]);
   const { present, phase } = presencePresentation(state, show, identity, duration === 0);
   return { present, duration, props: {

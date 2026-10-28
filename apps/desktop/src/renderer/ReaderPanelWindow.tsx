@@ -3,7 +3,7 @@ import './selection-translation.css';
 import './translation-card.css';
 
 type Backdrop = { image?: string; rect?: { x: number; y: number; width: number; height: number } };
-/** Bootstrap only: business components are portalled by the owning App. */
+/** Webpage overlay bootstrap: components are portalled by the owning App. */
 export function ReaderPanelWindow() {
   const translation = new URLSearchParams(location.hash.split('?')[1]).get('side') === 'translation';
   const [backdrop, setBackdrop] = useState<Backdrop>({});

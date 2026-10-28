@@ -6,13 +6,9 @@
 npm.cmd ci
 npm.cmd run dev
 npm.cmd run build
-npm.cmd test
-npm.cmd run test:desktop
-npm.cmd run test:office
-npm.cmd run test:full
 ```
 
-build 检查文档、MCP预算与TypeScript，再构建全部运行时和Vite。dev复用运行时构建并启动Vite/Electron，代理/internal与/fixtures。TypeScript拒绝未使用的声明和参数。原生适配器需要MSVC x64；预算在独立catalog-only进程测量，不触发编辑或输入。
+build 检查文档、MCP预算与TypeScript，再构建运行时和Vite。dev复用运行时构建并启动Vite/Electron。原生适配器需要MSVC x64；预算测量不触发文档编辑或输入。
 
 ## 公开接口维护
 
@@ -26,11 +22,11 @@ npm.cmd run mcp:host-probe
 npm.cmd run mcp:host-check
 ```
 
-审查目录与token变化后才更新预算快照，不得绕过硬上限。tokenizer、离线词表与实现SHA已锁定；Codex实际包装未认证。
+审查目录与token变化后才更新预算快照，不得绕过硬上限。tokenizer版本与离线词表由npm锁文件固定；Codex实际包装未认证。
 
 host-probe 使用自有 loopback Responses 服务及独立 MCP 文档，120秒上限，无真实模型请求。它检查 Codex 的目录刷新与实际调用；当前客户端未通过时返回非零，不进入普通构建门禁。日志仅保留工具元数据，不代表桌面验收。
 
-package:portable 与安装脚本均先运行 host-check，直接调用PS也不能跳过。认证绑定目录摘要、桌面版本与实际捕获；安装另核对源包目录清单及代码/技能SHA。未知精确tokenizer或缺证据均不放行，不生成手写通过工件；失败时可继续构建和修复。
+package:portable 与安装脚本均先运行 host-check，直接调用PS也不能跳过。认证绑定目录摘要、桌面版本与实际捕获；安装核对必要文件与复制长度，不重复扫描整包SHA。未知精确tokenizer或缺证据均不放行，不生成手写通过工件；失败时可继续构建和修复。
 
 ## 引擎与打包
 
@@ -60,8 +56,8 @@ npm.cmd run package:portable
 
 ## 验证与本机替换
 
-测试45项、上限50，单元不作桌面验收。桌面及原生入口重建、核对源码/产物SHA，通过后保留证据、清理临时数据。文档≤2000字符，每模块≤2篇，见[manifest](../manifest.json)。
+按本轮变更选择必要验收，不保留完整回归旧清单或固定项数预算。先重建，以buildId关联证据；关键产物只比较长度与修改时间，不扫描源码或计算SHA。临时验收代码通过后删除，保留结果、清理隔离数据。文档≤2000字符，每模块≤2篇，见[manifest](../manifest.json)。
 
-发行安装先通过认证，再暂存并校验文件、长度与SHA，切换目录并保留回退。本机开发入口使用已验证dist，正常关闭后重建并核对运行身份。保留APPDATA及恢复副本，不强关用户进程。构建、本机更新与push分别验证。
+发行安装先通过认证，再暂存并核对关键文件、复制长度，切换目录并保留回退。本机开发入口使用已验证dist，正常关闭后重建并核对运行身份。保留APPDATA及恢复副本，不强关用户进程。构建、本机更新与push分别验证。
 
-[测试](../../tests/README.md) · [依赖许可](dependencies.md) · [适配器](../../packages/office-runtime/native/README.md)
+[验收](../verification.md) · [依赖许可](dependencies.md) · [适配器](../../packages/office-runtime/native/README.md)

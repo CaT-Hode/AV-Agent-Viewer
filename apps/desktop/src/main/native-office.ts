@@ -1,4 +1,4 @@
-import { BrowserWindow, nativeImage } from 'electron';
+import { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { NativeOfficeRuntime } from '../../../../packages/office-runtime/src/index';
@@ -6,7 +6,6 @@ import type { OfficeAuthoringExecuteRequest, OfficeAuthoringQuery, OfficeAuthori
 import type { NativeOfficeAppearance } from '../../../../packages/office-runtime/src/appearance';
 import type { NativeOfficeDriver, NativeOfficeState, NativeOfficeFormat, NativeOfficeNavigateTarget, NativeOfficeExportFormat, Rect, NativeOfficeQuery, NativeOfficeExecuteRequest, NativeOfficeSnapshotReuse, BrowserAction } from '../../../../packages/contracts/src/index';
 import { normalizeViewZoom, type ViewerCore } from '../../../../packages/document-core/src/index';
-import type { NativeBackdropSource } from './web-toolbar';
 import { OFFICE_SURFACE_METHODS, isOfficeSurfaceState } from '../../../../packages/contracts/src/office-surface';
 import { validateOfficeSurfaceRequest } from '../../../../packages/office-runtime/src/surface-protocol';
 import { ViewerError } from '../../../../packages/contracts/src/index';
@@ -14,7 +13,7 @@ import { OfficeDisplayLeases, withdrawnOfficeDisplayState, type OfficeDisplayTic
 
 type Layout = { owner: BrowserWindow; bounds: Rect; visible: boolean; displayGeneration?: number; surfaceLayoutRevision?: number };
 type HostedView = { sessionId: string; state?: NativeOfficeState; layout?: Layout; firstTileAt?: number; nativeTileSource?: { sessionId: string; engineEpoch: string } };
-type ObservationKeys = { receipt: object; source: NativeOfficeState; entry: object; layout: Layout; owner: BrowserWindow; display: OfficeDisplayTicket<BrowserWindow>; focused: boolean; zoomIntent?: object; publication?: string; overlay?: string };
+type ObservationKeys = { receipt: object; source: NativeOfficeState; entry: object; layout: Layout; owner: BrowserWindow; display: OfficeDisplayTicket<BrowserWindow>; focused: boolean; zoomIntent?: object; publication?: string };
 /** Only the trusted main process translates document views into native HWNDs. */
 export class NativeOfficeHost implements NativeOfficeDriver {
   readonly runtime: NativeOfficeRuntime;
@@ -25,10 +24,8 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   private polling = false;
   private workerExited = false;
   private unavailableSessions = new Set<string>();
-  private versions = new Map<string,{key:string;version:number}>();
   private settled = new Map<string,{revision:number;since:number}>();
   private published = new Map<string, { key: string; heartbeatAt: number }>();
-  private overlayStates = new Map<string, string>();
   private observationKeys = new Map<string, ObservationKeys>();
   /** Latest user zoom per view. Layouts carrying an older zoom are stale. */
   private zoomIntents = new Map<string, { factor: number; sequence: number }>();
@@ -37,8 +34,8 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   private watchers = new Map<BrowserWindow,()=>void>();
   private timer: ReturnType<typeof setInterval>;
   get exited() { return this.workerExited; }
-  constructor(private core: ViewerCore, appRoot: string, dataDir: string, private windowFor: (viewId: string) => BrowserWindow | undefined, private changed: (owner: BrowserWindow, viewId: string) => void, appearance?: NativeOfficeAppearance) {
-    this.runtime = new NativeOfficeRuntime({ appRoot, dataDir, appearance, backend: 'kit' });
+  constructor(private core: ViewerCore, appRoot: string, dataDir: string, private windowFor: (viewId: string) => BrowserWindow | undefined, appearance?: NativeOfficeAppearance) {
+    this.runtime = new NativeOfficeRuntime({ appRoot, dataDir, appearance });
     this.runtime.on('surface', (event: any) => {
       const viewId = event.viewId ?? event.state?.viewId, entry = this.views.get(viewId), owner = entry?.layout?.owner;
       if (!entry || this.unavailableSessions.has(entry.sessionId) || !owner || owner.isDestroyed() || owner.webContents.isDestroyed() || (event.sessionId ?? event.state?.sessionId) !== entry.sessionId) return;
@@ -55,18 +52,17 @@ export class NativeOfficeHost implements NativeOfficeDriver {
       for(const [viewId,entry] of this.views)if(entry.sessionId===event.sessionId){
         this.observationKeys.delete(viewId);
         if(entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};
-        if(entry.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,viewId);
       }
     });
-    this.runtime.on('exit',()=>{this.workerExited=true;this.observationKeys.clear();for(const sessionId of this.documents.values())this.core.failNativeOfficeSession(sessionId);for(const [viewId,entry] of this.views){if(entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};if(entry.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,viewId);}});
+    this.runtime.on('exit',()=>{this.workerExited=true;this.observationKeys.clear();for(const sessionId of this.documents.values())this.core.failNativeOfficeSession(sessionId);for(const entry of this.views.values())if(entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};});
     this.core.on('change',(event:{type:string;data:{sessionId?:string;viewId?:string;recovery?:boolean}})=>{
       if(event.type==='view.closed'&&event.data.viewId){this.displays.remove(event.data.viewId);this.zoomIntents.delete(event.data.viewId);this.observationKeys.delete(event.data.viewId);}
       if(event.type==='office.closed'&&event.data.recovery&&event.data.sessionId){
         const sessionId=event.data.sessionId;
         for(const [documentId,id] of this.documents)if(id===sessionId)this.documents.delete(documentId);
-        for(const [viewId,entry] of this.views)if(entry.sessionId===sessionId){this.views.delete(viewId);this.layouts.delete(viewId);this.versions.delete(viewId);this.observationKeys.delete(viewId);if(entry.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,viewId);}
+        for(const [viewId,entry] of this.views)if(entry.sessionId===sessionId){this.views.delete(viewId);this.layouts.delete(viewId);this.observationKeys.delete(viewId);}
       }
-      if(event.type==='view.closed'&&event.data.viewId&&this.workerExited){this.views.delete(event.data.viewId);this.layouts.delete(event.data.viewId);this.versions.delete(event.data.viewId);}
+      if(event.type==='view.closed'&&event.data.viewId&&this.workerExited){this.views.delete(event.data.viewId);this.layouts.delete(event.data.viewId);}
     });
     this.runtime.on('application-action',(event:{sessionId?:string;viewId?:string;action?:string})=>{
       const entry=event.viewId?this.views.get(event.viewId):undefined,owner=entry?.layout?.owner;
@@ -92,7 +88,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     const layout = this.layouts.get(ticket.viewId), entry = this.views.get(ticket.viewId);
     if (layout) this.layouts.set(ticket.viewId, { ...layout, visible: false });
     if (entry?.layout) entry.layout = { ...entry.layout, visible: false };
-    this.published.delete(ticket.viewId); this.overlayStates.delete(ticket.viewId); this.observationKeys.delete(ticket.viewId);
+    this.published.delete(ticket.viewId); this.observationKeys.delete(ticket.viewId);
     if (entry?.state) {
       entry.state = withdrawnOfficeDisplayState(entry.state); this.core.updateNativeOfficeState(entry.state);
       if (this.core.views.has(ticket.viewId)) {
@@ -100,7 +96,6 @@ export class NativeOfficeHost implements NativeOfficeDriver {
         catch (error) { if (!(error instanceof ViewerError) || !['NATIVE_SESSION_EXPIRED','STALE_NATIVE_QUERY','TARGET_NOT_FOUND'].includes(error.code)) throw error; }
       }
     }
-    if (!ticket.owner.isDestroyed()) this.changed(ticket.owner, ticket.viewId);
     // A display release never starts or awaits the native core. If it already
     // exists, serialize hide behind earlier layout writes and before a remount.
     if (!entry || entry.state?.status === 'failed' || this.workerExited) return;
@@ -207,7 +202,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     }
     return state;
   }
-  async setAppearance(appearance: NativeOfficeAppearance) { this.observationKeys.clear(); await this.runtime.setAppearance(appearance); this.versions.clear(); this.overlayStates.clear(); await this.poll(); }
+  async setAppearance(appearance: NativeOfficeAppearance) { this.observationKeys.clear(); await this.runtime.setAppearance(appearance); await this.poll(); }
   async open(request: {documentId:string;viewId:string;format:NativeOfficeFormat;bytes:Uint8Array;revision:number}) {
     const sessionId = this.documents.get(request.documentId) ?? randomUUID(), layout = this.layoutFor(request.viewId);
     // A slow import must never flash above a tab the user has already left.
@@ -319,8 +314,6 @@ export class NativeOfficeHost implements NativeOfficeDriver {
       const entry = this.authoringController(request.sessionId, request.viewId), ticket = this.displays.current(request.viewId);
       const result = await this.runtime.authoringExecute(request);
       const state = this.accept(result.state, ticket, this.displays.current(request.viewId) !== ticket, undefined, entry);
-      const owner = entry.layout?.owner;
-      if (this.views.get(request.viewId) === entry && owner && !owner.isDestroyed() && !owner.webContents.isDestroyed()) this.changed(owner, request.viewId);
       return { ...result, state };
     });
   }
@@ -335,7 +328,6 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   async input(request:{sessionId:string;viewId:string;expectedEngineEpoch:string;expectedEngineRevision:number;expectedLayoutRevision?:number;action:BrowserAction;idempotencyKey:string}) {
     if (!this.displayVisible(request.viewId)) throw new ViewerError('NATIVE_VIEW_HIDDEN', 'Office 页面已离开当前显示区域，请先显示目标页面。');
     const captured = this.displays.current(request.viewId), entry = this.views.get(request.viewId), result=await this.runtime.input(request), state=this.accept(this.displayState(result.state, !!captured && !this.displays.active(captured)), captured, false, undefined, entry);
-    const owner=this.views.get(request.viewId)?.layout?.owner;if(owner&&!owner.isDestroyed())this.changed(owner,request.viewId);
     return { ...result, state };
   }
   async captureNative(sessionId:string,viewId:string,rect?:Rect) {if (!this.displayVisible(viewId)) throw new ViewerError('NATIVE_VIEW_HIDDEN', 'Office 页面当前不可见，不能提供当前显示区域截图。');const ticket=this.displays.current(viewId),result=await this.runtime.capture(sessionId,viewId,rect);if(!this.displayVisible(viewId)||this.displays.current(viewId)!==ticket)throw new ViewerError('NATIVE_VIEW_HIDDEN','截图期间 Office 显示目标已变化。');return result;}
@@ -343,21 +335,17 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   async exportCopy(sessionId:string,request:{format:NativeOfficeExportFormat;expectedEngineEpoch:string;expectedEngineRevision:number}) {const result=await this.runtime.exportCopy(sessionId,request);return {...result,state:this.displayState(result.state)};}
   async detachView(sessionId:string,viewId:string) {
     const entry=this.views.get(viewId),layout=this.layouts.get(viewId);
-    this.views.delete(viewId);this.layouts.delete(viewId);this.published.delete(viewId);this.overlayStates.delete(viewId);this.observationKeys.delete(viewId);
-    if(entry?.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,viewId);
+    this.views.delete(viewId);this.layouts.delete(viewId);this.published.delete(viewId);this.observationKeys.delete(viewId);
     try{if(!this.workerExited)await this.runtime.detachView(sessionId,viewId);}
-    catch(error){if(entry){if(this.unavailableSessions.has(sessionId)&&entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};this.views.set(viewId,entry);}if(layout)this.layouts.set(viewId,layout);if(entry?.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,viewId);throw error;}
-    this.versions.delete(viewId);
+    catch(error){if(entry){if(this.unavailableSessions.has(sessionId)&&entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};this.views.set(viewId,entry);}if(layout)this.layouts.set(viewId,layout);throw error;}
   }
   async undo(request:{sessionId:string;viewId:string;expectedEngineEpoch:string;expectedEngineRevision:number;undoToken:string}) { const result=await this.runtime.undo(request);return {...result,state:this.displayState(result.state)}; }
   ackSaved(sessionId:string,saved:{engineEpoch:string;engineRevision:number;hash:string}) { return this.runtime.ackSaved(sessionId,saved); }
   async close(sessionId:string) {
     const closing=[...this.views].filter(([,entry])=>entry.sessionId===sessionId);
-    // Reparent trusted overlays before Windows destroys the dock's owned HWNDs.
-    for(const [id] of closing){this.views.delete(id);this.published.delete(id);this.overlayStates.delete(id);this.observationKeys.delete(id);}
-    for(const [id,entry] of closing)if(entry.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,id);
+    for(const [id] of closing){this.views.delete(id);this.published.delete(id);this.observationKeys.delete(id);}
     try{if(!this.workerExited)await this.runtime.close(sessionId,{discard:true});}
-    catch(error){for(const [id,entry] of closing){if(this.unavailableSessions.has(sessionId)&&entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};this.views.set(id,entry);if(entry.layout&&!entry.layout.owner.isDestroyed())this.changed(entry.layout.owner,id);}throw error;}
+    catch(error){for(const [id,entry] of closing){if(this.unavailableSessions.has(sessionId)&&entry.state)entry.state={...entry.state,status:'failed',visible:false,nativeGeometry:false,visibleTextReady:false};this.views.set(id,entry);}throw error;}
     for(const [id,value] of this.documents)if(value===sessionId)this.documents.delete(id);
   }
   async layoutWindow(owner:BrowserWindow, requested:{viewId:string;bounds:Rect}[]) {
@@ -382,7 +370,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     const valid = new Map(requested.map(value => [value.viewId,value.bounds]));
     for (const [viewId,layout] of this.layouts) if (layout.owner === owner && !valid.has(viewId)) { layout.visible=false; const entry=this.views.get(viewId); if(entry&&entry.state?.status!=='failed') await this.runtime.layout(entry.sessionId,viewId,{ownerHwnd:this.hwnd(owner),ownerViewport:this.ownerViewport(owner),bounds:layout.bounds,visible:false}); }
     for (const [viewId,bounds] of valid) {
-      const view=this.core.getView(viewId); if(this.windowFor(viewId)!==owner)throw new Error('AUTH_SCOPE_DENIED');
+      if(this.windowFor(viewId)!==owner)throw new Error('AUTH_SCOPE_DENIED');
       const layout={owner,bounds,visible:true};this.layouts.set(viewId,layout);
       const entry=this.views.get(viewId);
       if(!entry) await this.core.openNativeOffice(viewId);
@@ -391,7 +379,6 @@ export class NativeOfficeHost implements NativeOfficeDriver {
       layout.visible=!!current;
       opened.layout=this.layouts.get(viewId);
       const state=await this.runtime.layout(opened.sessionId,viewId,{ownerHwnd:this.hwnd(owner),ownerViewport:this.ownerViewport(owner),bounds:current?.bounds??bounds,visible:!!current&&owner.isVisible()&&!owner.isMinimized()});this.accept(state,undefined,false,undefined,opened);
-      this.changed(owner,view.id);
     }
   }
   async closeOwner(owner:BrowserWindow) {
@@ -410,13 +397,6 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     }
   }
   source(viewId:string) { const entry=this.views.get(viewId),layout=this.layouts.get(viewId);if(!entry?.state||entry.state.status==='failed'||!layout||!this.displayVisible(viewId))return; return {entry,layout}; }
-  backdrop(viewId:string):NativeBackdropSource|undefined {const source=this.source(viewId);if(!source||isOfficeSurfaceState(source.entry.state))return;const {entry,layout}=source,state=entry.state!;
-    const key=JSON.stringify([state.engineRevision,state.selectionEpoch,state.visibleText,state.viewport,layout.bounds]);let version=this.versions.get(viewId);if(version?.key!==key){version={key,version:(version?.version??0)+1};this.versions.set(viewId,version);}
-    const revision=state.engineRevision,epoch=state.engineEpoch,sessionId=entry.sessionId;
-    return {bounds:{...layout.bounds},navigationId:epoch+':'+sessionId+':'+viewId,layoutRevision:version!.version,revision,sourceId:state.nativePid??0,capture:async rect=>{const result=await this.capture(viewId,rect);if(result.metadata.engineEpoch!==epoch||result.metadata.engineRevision!==revision||result.metadata.sessionId!==sessionId){void this.poll();throw new Error('STALE_NATIVE_CAPTURE');}return {image:result.image,rect:result.metadata.rect};},attach:window=>this.overlayOwner(viewId,window)};
-  }
-  async capture(viewId:string,rect:Rect) {const entry=this.views.get(viewId);if(!entry)throw new Error('NATIVE_SESSION_EXPIRED');const result=await this.runtime.capture(entry.sessionId,viewId,rect);return {image:nativeImage.createFromBuffer(Buffer.from(result.data,'base64')),metadata:result};}
-  async overlayOwner(viewId:string,window:BrowserWindow) {const entry=this.views.get(viewId);if(!entry)throw new Error('NATIVE_SESSION_EXPIRED'); await this.runtime.setOverlayOwner({sessionId:entry.sessionId,viewId,hwnd:this.hwnd(window)});}
   async poll() {
     if(this.polling)return;this.polling=true;
     try {for(const [viewId,entry] of this.views){const layout=this.layouts.get(viewId),capturedDisplay=this.displays.current(viewId);if(!layout||!this.displayVisible(viewId)||entry.state?.status==='failed'){this.observationKeys.delete(viewId);continue;}
@@ -442,8 +422,6 @@ export class NativeOfficeHost implements NativeOfficeDriver {
       if(!current(state)||!latest||latest.engineRevision!==state.engineRevision||latest.selectionEpoch!==state.selectionEpoch||latest.viewport?.layoutRevision!==state.viewport?.layoutRevision||isOfficeSurfaceState(latest)&&isOfficeSurfaceState(state)&&(latest.layoutRevision!==state.layoutRevision||latest.eventSequence!==state.eventSequence)||latestMetadata?.engineRevision!==state.engineRevision)continue;
       try { this.core.updateNativeOfficeContextForHost(state); }
       catch(error) { if(error instanceof ViewerError&&['NATIVE_SESSION_EXPIRED','STALE_NATIVE_QUERY','TARGET_NOT_FOUND'].includes(error.code))continue;throw error; }
-      const cached=this.observationKeyRecord(state,observed.receipt),key=cached?(cached.overlay??=JSON.stringify([state.engineEpoch,state.engineRevision,state.selectionEpoch,state.viewport,state.visible,state.nativeGeometry,state.visibleText])):JSON.stringify([state.engineEpoch,state.engineRevision,state.selectionEpoch,state.viewport,state.visible,state.nativeGeometry,state.visibleText]);
-      if(this.overlayStates.get(viewId)!==key){this.overlayStates.set(viewId,key);this.changed(layout.owner,viewId);}
     }}catch(error){this.core.event('office.error',{error:String(error)});}finally{this.polling=false;}
   }
   async shutdown() {clearInterval(this.timer);for(const docId of this.documents.keys())await this.core.closeNativeOffice(docId);await this.runtime.shutdown({discard:true});}

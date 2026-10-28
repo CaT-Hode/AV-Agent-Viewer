@@ -42,7 +42,7 @@ if (location.hash !== '#/export-worker') {
   import.meta.hot?.dispose(disposeHitboxes);
 }
 declare global { interface Window { __agentViewerRenderingDiagnostics?: () => { glass: ReturnType<typeof glassOpticsCacheStats> } } }
-if (window.agentViewer?.testMode) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats() }) });
+if (import.meta.env.DEV) Object.defineProperty(window, '__agentViewerRenderingDiagnostics', { value: () => ({ glass: glassOpticsCacheStats() }) });
 if (location.hash === '#/export-worker') {
   // A separate renderer owns exhaustive AST/DOM work. It has only a scoped
   // resource bridge, and never mounts the editor or receives service secrets.

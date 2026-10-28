@@ -1,4 +1,4 @@
-import { nativeOfficeWorkerSource } from './worker-source';
+import { officeModelSource } from './worker-source';
 import { nativeOfficeStyleSource } from './native-style-source';
 import { nativeOfficeAppearanceProfileSource, nativeOfficeAppearanceSource } from './appearance-source';
 import { officeKitAbiSource } from './kit-abi-source';
@@ -9,26 +9,8 @@ import { officeKitLocaleResourceSource } from './locale-resource-source';
 import { officeKitBinarySource } from './kit-binary-source';
 import { officeAuthoringSource } from './authoring-source';
 
-/** Trusted shared definitions only: never execute the HWND worker's top level. */
-export const officeKitSharedDefinitions = [
-  'props', 'constant', 'fail', 'refresh_content_dirtiness', 'saved_ack_notification',
-  'Modified', 'SelectionChanged', 'DocumentEvents', 'Status', 'SafeImportInteraction',
-  'ManagedDispatch', 'ManagedInterceptor', 'DispatchCompleted', 'url', 'command_status',
-  'expected', 'letter', 'range_name', 'selected_text_range', 'selection_actions',
-  'ppt_text_parts', 'ppt_text_transaction_target', 'ppt_text_model_range', 'ppt_replace_text', 'ppt_set_shape_text',
-  'replace_selected_text', 'selection_signature', 'update_selection_epoch',
-  'native_text_container_id', 'native_shape_identity', 'native_range_locator', 'selection',
-  'undo_state', 'sheet_by_name', 'checked_range', 'excel_formula_parser', 'set_excel_formula',
-  'set_cell_content', 'excel_cell_formula', 'query_cell_range', 'query', 'slide_thumbnail', 'slide_thumbnail_source', 'slide_thumbnail_pending',
-  'model_parts', 'native_paragraphs', 'paragraph', 'checked_native_paragraphs', 'mapped_sheet',
-  'mapped_slide', 'mapped_shape', 'text_style', 'move_right', 'utf16_index', 'execute_operation',
-  'snapshot_diagnostic', 'reconcile_clone_shape_colors', 'store_snapshot_file', 'snapshot',
-  'acknowledge_saved', 'commands',
-] as const;
-export const officeKitOverriddenDefinitions = ['emit', 'view_for', 'state', 'body_accessibility', 'own_ime_pending', 'snapshot_input_pending', 'view_scale', 'hide_chrome', 'dispatch_command', 'native_input', 'capture', 'close_session', 'open_session', 'layout_view'] as const;
-
 const preamble = String.raw`
-import ast, base64, builtins, ctypes as C, hashlib, io, json, math, os, pathlib, queue, re, socket, struct, symtable, sys, tempfile, threading, time, urllib.parse, uuid, zipfile, zlib
+import base64, builtins, ctypes as C, hashlib, io, json, math, os, pathlib, queue, re, socket, struct, symtable, sys, tempfile, threading, time, urllib.parse, uuid, zipfile, zlib
 import xml.etree.ElementTree as ET
 class KitRequestQueue:
     # Only disposable observations may move around input. Explicit snapshots,
@@ -131,21 +113,6 @@ from com.sun.star.view import XSelectionChangeListener
 from com.sun.star.frame import XStatusListener, XDispatch, XDispatchProviderInterceptor, XDispatchResultListener
 from com.sun.star.document import XDocumentEventListener, XUndoAction
 from com.sun.star.task import XInteractionHandler
-`;
-
-const sharedLoader = String.raw`
-shared_tree=ast.parse(base64.b64decode(SHARED_SOURCE_BASE64).decode('utf-8'))
-shared_nodes={node.name:node for node in shared_tree.body if isinstance(node,(ast.FunctionDef,ast.ClassDef))}
-missing=[name for name in SHARED_DEFINITIONS if name not in shared_nodes]
-if missing:fail('OFFICE_KIT_SHARED_SOURCE_MISMATCH','共享文档命令定义缺失。')
-selected_nodes=[]
-for node in shared_tree.body:
-    if isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in SHARED_DEFINITIONS:selected_nodes.append(node)
-    elif isinstance(node,ast.Assign) and all(isinstance(target,ast.Name) and target.id in ['MANAGED_ACTIONS','FILTERS'] for target in node.targets):selected_nodes.append(node)
-shared_module=ast.fix_missing_locations(ast.Module(body=selected_nodes,type_ignores=[]))
-shared_text=ast.unparse(shared_module)
-exec(compile(shared_module,'<trusted-office-model-definitions>','exec'),globals())
-del shared_tree,shared_nodes,selected_nodes,shared_module
 `;
 
 const surface = String.raw`
@@ -1258,14 +1225,13 @@ def handle_request(request):
         finally:session['operationActor']=None
     if method=='zoom':view['zoom']=args['factor'];view['layoutRevision']+=1;return state(session,view)
     if method=='ackSaved':return {'accepted':acknowledge_saved(session,args),'state':state(session,view)}
-    if method=='overlayOwner':return None
     if method=='detachView':
         detach_kit_view(session,view);return None
     if method=='close':close_session(session,args.get('discard',False));return {'closed':True}
     fail('NATIVE_METHOD_UNSUPPORTED','Office 内置接口不存在。')
 
 def verify_shared_globals():
-    tables=symtable.symtable(shared_text,'<trusted-office-model-definitions>','exec').get_children();missing=set()
+    tables=symtable.symtable(SHARED_SOURCE,'<trusted-office-model-definitions>','exec').get_children();missing=set()
     def visit(table):
         for symbol in table.get_symbols():
             if symbol.is_global() and symbol.is_referenced() and symbol.get_name() not in globals() and not hasattr(builtins,symbol.get_name()):missing.add(symbol.get_name())
@@ -1351,7 +1317,6 @@ finally:
 `;
 
 export const officeKitWorkerSource = preamble
-  + '\nSHARED_SOURCE_BASE64=' + JSON.stringify(Buffer.from(nativeOfficeWorkerSource).toString('base64'))
-  + '\nSHARED_DEFINITIONS=' + JSON.stringify(officeKitSharedDefinitions)
-  + '\n' + sharedLoader + '\n' + nativeOfficeStyleSource + '\n' + nativeOfficeAppearanceSource + '\n' + officeAuthoringSource
+  + '\nSHARED_SOURCE=' + JSON.stringify(officeModelSource)
+  + '\n' + officeModelSource + '\n' + nativeOfficeStyleSource + '\n' + nativeOfficeAppearanceSource + '\n' + officeAuthoringSource
   + '\n' + officeKitAbiSource + '\n' + surface + '\n' + inputAndModel + '\n' + officeKitDialogSource + '\n' + lifecycle;

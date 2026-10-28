@@ -55,9 +55,9 @@
       ]
     },
     {
-      "name": "测试",
+      "name": "验收",
       "files": [
-        "tests/README.md"
+        "docs/verification.md"
       ]
     },
     {
@@ -72,6 +72,13 @@
       "files": [
         "skills/best-liquid-glass/SKILL.md",
         "skills/best-liquid-glass/references/implementation.md"
+      ]
+    },
+    {
+      "name": "Windows GPU 桌面玻璃",
+      "files": [
+        "skills/best-liquid-glass/references/desktop-sampling.md",
+        "skills/best-liquid-glass/references/desktop-integration.md"
       ]
     },
     {

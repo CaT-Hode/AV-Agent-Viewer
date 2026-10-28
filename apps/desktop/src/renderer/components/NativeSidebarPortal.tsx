@@ -8,9 +8,10 @@ type Attributes = Record<string, unknown> & { style?: CSSProperties };
 type Props = Attributes & { enabled: boolean; viewId?: string; side: 'left' | 'right'; children: ReactElement<Attributes> };
 
 /** One React tree owns tools and editor transactions. The same-origin window
- * only hosts its DOM above a WebContentsView / native HWND; it runs no App. */
+ * only hosts its DOM above a WebContentsView; it runs no App. */
 export function NativeSidebarPortal({ enabled, viewId, side, children, ...presence }: Props) {
-  const [container, setContainer] = useState<HTMLElement>();
+  const [host, setHost] = useState<{ viewId: string; side: Props['side']; container: HTMLElement }>();
+  const container = desktop && enabled && host && host.viewId === viewId && host.side === side && !host.container.ownerDocument.defaultView?.closed ? host.container : undefined;
   const anchor = useRef<HTMLDivElement>(null), height = useRef<number | undefined>(undefined);
   const syncHeight = useCallback((value: number) => {
     if (!Number.isFinite(value) || value <= 0) return;
@@ -47,7 +48,7 @@ export function NativeSidebarPortal({ enabled, viewId, side, children, ...presen
     return () => observer.disconnect();
   }, [container]);
   useLayoutEffect(() => {
-    if (!desktop || !enabled || !viewId) { setContainer(undefined); return; }
+    if (!desktop || !enabled || !viewId) return;
     const url = new URL(location.href); url.hash = '/reader-panel?side=' + side + '&view=' + encodeURIComponent(viewId);
     const popup = window.open(url.toString(), 'agentviewer-reader-panel-' + side + '-' + viewId, 'popup,width=1,height=1');
     if (!popup) return;
@@ -64,12 +65,12 @@ export function NativeSidebarPortal({ enabled, viewId, side, children, ...presen
       if (disposed || popup.closed) return;
       try {
         const target = popup.document.getElementById('reader-panel-content');
-        if (target) { syncAppearance(); setContainer(target); return; }
+        if (target) { syncAppearance(); setHost({ viewId, side, container: target }); return; }
       } catch { /* The child is still opening its exact same-origin route. */ }
       timer = setTimeout(attach, 40);
     };
     attach();
-    return () => { disposed = true; clearTimeout(timer); observer.disconnect(); setContainer(undefined); if (!popup.closed) popup.close(); };
+    return () => { disposed = true; clearTimeout(timer); observer.disconnect(); setHost(undefined); if (!popup.closed) popup.close(); };
   }, [enabled, side, viewId]);
 
   const style = { ...children.props.style, ...presence.style };

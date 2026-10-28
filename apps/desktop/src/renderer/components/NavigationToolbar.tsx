@@ -117,7 +117,13 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     popup.style.maxHeight = Math.max(90,window.innerHeight - box.bottom - 24) + 'px';
   };
   const closeMenu = () => menu.current?.hidePopover();
-  const openMenu = async () => { if (!menu.current || !hasMore) return; await overflowHandler.current?.(true); await new Promise<void>(resolve => requestAnimationFrame(() => { positionMenu(); menu.current?.showPopover(); resolve(); })); };
+  const openMenu = async () => {
+    if (!menu.current || !hasMore) return;
+    // A native Web toolbar needs its enlarged viewport before placing a menu.
+    // The document toolbar already owns its viewport and opens in this event.
+    if (overflowHandler.current) { await overflowHandler.current(true); await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); }
+    positionMenu(); menu.current?.showPopover();
+  };
   useEffect(() => {
     const close = () => closeMenu(), resize = () => { if (menu.current?.matches(':popover-open')) positionMenu(); };
     window.addEventListener('blur',close); window.addEventListener('resize',resize);
@@ -139,9 +145,8 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
   useLayoutEffect(() => {
     if (entered) return;
     if (immediate) { setEntered(true); return; }
-    let second = 0;
-    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => setEntered(true)); });
-    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+    const frame = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(frame);
   }, [entered, immediate]);
   const visualProgress = !entered && !immediate ? 1 : progress;
   const [capsuleBounds, setCapsuleBounds] = useState<NavigationBounds>();

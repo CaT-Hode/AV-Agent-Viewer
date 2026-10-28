@@ -65,14 +65,14 @@ export function TextEditor(props: Props) {
     const flush = (view: EditorView) => {
       if (changeTimer) clearTimeout(changeTimer); changeTimer = undefined;
       if (!localDirty || composing.current || view.composing) return;
-      const started = performance.now();
+      const started = import.meta.env.DEV ? performance.now() : 0;
       const text = serialize(view.state), before = emittedText;
       if (text === before) { localDirty = false; stateChanged(); return; }
       emittedText = text; localDirty = false;
       synchronized = false;
       latest.current.onChange(text, identity.documentId && identity.viewId ? { documentId: identity.documentId, viewId: identity.viewId, baseRevision: sourceRevision, fromText: before } : undefined);
       stateChanged();
-      if (window.agentViewer?.testMode) performance.measure('agentviewer:markdown-flush', { start: started, end: performance.now(), detail: { characters: view.state.doc.length } });
+      if (import.meta.env.DEV) performance.measure('agentviewer:markdown-flush', { start: started, end: performance.now(), detail: { characters: view.state.doc.length } });
     };
     const emit = (view: EditorView, actor: 'human' | 'agent' = 'human') => {
       project(view, actor);

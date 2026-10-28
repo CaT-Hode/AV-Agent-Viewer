@@ -291,7 +291,7 @@ export function markdownLivePreview(documentId: string) {
     },
   });
   const build = (state: EditorState, spans: Span[]) => {
-    const started = performance.now();
+    const started = import.meta.env.DEV ? performance.now() : 0;
     const decorations: Range<Decoration>[] = [], lineStyles = new Map<number, string[]>(), hidden: { from: number; to: number }[] = [];
     const addLine = (position: number, name: string) => { const line = state.doc.lineAt(position).from; const names = lineStyles.get(line) ?? []; if (!names.includes(name)) names.push(name); lineStyles.set(line, names); };
     const hide = (from: number, to: number, widget?: WidgetType, block = false) => { if (to <= from) return; decorations.push(Decoration.replace({ widget, block }).range(from, to)); hidden.push({ from, to }); };
@@ -390,7 +390,7 @@ export function markdownLivePreview(documentId: string) {
     }
     for (const [position, names] of lineStyles) decorations.push(Decoration.line({ class: names.join(' ') }).range(position));
     const result = decorations.sort((a, b) => a.from - b.from || a.value.startSide - b.value.startSide);
-    if (window.agentViewer?.testMode) performance.measure('agentviewer:markdown-preview', { start: started, end: performance.now(), detail: { characters: spans.reduce((sum, span) => sum + span.to - span.from, 0), ranges: spans.length, decorations: result.length } });
+    if (import.meta.env.DEV) performance.measure('agentviewer:markdown-preview', { start: started, end: performance.now(), detail: { characters: spans.reduce((sum, span) => sum + span.to - span.from, 0), ranges: spans.length, decorations: result.length } });
     return result;
   };
   const field = StateField.define<{ decorations: DecorationSet; viewport: Span }>({

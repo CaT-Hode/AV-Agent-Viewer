@@ -27,7 +27,7 @@ function SelectionPanelGlass({ native, backdrop }: { native: boolean; backdrop: 
       if(published.current!==signature){published.current=signature;void call('toolbar-panel',{expanded:true,bounds:next}).catch(()=>{});}
     };
     const observer=new ResizeObserver(measure);observer.observe(host);measure();return()=>observer.disconnect();
-  },[native,backdrop.sample]);
+  },[native]);
   return <LiquidGlassSurface surfaceRef={node} variant="panel" effect="refractive" strength={.55} specularOpacity={.16} backdropImage={native?backdrop.image:undefined} backdropSample={native?backdrop.sample:undefined} bounds={bounds} />;
 }
 export function SelectionTools({native=false}:{native?:boolean}) {
@@ -43,7 +43,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   const sequence=useRef(0),toolbar=useRef<HTMLDivElement>(null),glass=useRef<HTMLDivElement>(null),identity=useRef(''),nativePresentation=useRef(''),presentation=useRef('');
   const tracked=useRef<{viewId:string;revision:number;text:string;range?:Range;element?:Element}|undefined>(undefined);
   const engineSelection=useRef<{viewId:string;lease:string;state:State;rect:Rect;viewport:Rect}|undefined>(undefined);
-  const inputMotion=usePresence(!!input,{duration:110}),errorMotion=usePresence(!!error&&!input,{duration:110});
+  const panelMotion=usePresence(!!input||!!error,{duration:110});
   useLayoutEffect(()=>{
     if(native||!state||!rect){navigationBounds.current=undefined;return;}
     let frame=0;
@@ -167,7 +167,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
     return()=>{disposeElastic();size.disconnect();cancelAnimationFrame(frame);window.removeEventListener(OFFICE_SELECTION_EVENTS.ready,engineReady);window.removeEventListener('agentviewer:selection-tools',selected);window.removeEventListener('agentviewer:selection-tools',watchReader);window.removeEventListener('agentviewer:selection-open',open);window.removeEventListener('agentviewer:selection-clear',clearEvent);document.removeEventListener('pointerdown',dismiss,true);document.removeEventListener('mousedown',preserveChromeSelection,true);document.removeEventListener('scroll',follow,true);document.removeEventListener('selectionchange',changed);window.removeEventListener('resize',follow);};
   },[native]);
   useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape')clear();};document.addEventListener('keydown',escape);return()=>document.removeEventListener('keydown',escape);},[]);
-  useEffect(()=>{if(native)void call('toolbar-panel',{expanded:inputMotion.present||errorMotion.present});},[native,inputMotion.present,errorMotion.present]);
+  useEffect(()=>{if(native)void call('toolbar-panel',{expanded:panelMotion.present});},[native,panelMotion.present]);
   const run=async(tool:Tool,submit=false)=>{
     if(!state||busy)return;if(tool.input&&!submit){setError('');setInput(input?.id===tool.id?undefined:tool);setValue(tool.id==='replace'?state.snapshot.context.selection.text:'');return;}
     const generation=sequence.current,requestId=crypto.randomUUID();
@@ -192,7 +192,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   navigationPlacement.current=!!position;
   if(state)presentation.current=state.snapshot.id;
   const show=!!state&&!!rect&&!selecting&&(native||!!position),left=native?8:undefined,top=native?8:undefined;
-  const nativePanelWidth=native&&(inputMotion.present||errorMotion.present)?Math.max(320,width):undefined;
+  const nativePanelWidth=native&&panelMotion.present?Math.max(320,width):undefined;
   const refreshMotion=useSelectionToolbarMotion(toolbar,!native&&show,identity.current,()=>{
     const element=tracked.current?.element,liveClip=element?.isConnected?clippedReaderViewport(element):undefined,clip=liveClip??safeViewport;
     // Scroll and a running spring can share a frame before React commits the
@@ -209,7 +209,6 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   // soon as placement fails, so the fading toolbar cannot intercept input.
   return <MotionPresence show={show} surface="selection" duration={SELECTION_POPOVER_MOTION_BASE_MS} identity={presentation.current} keyboardImmediate={false}>{state&&rect&&<div ref={toolbar} className="selection-tools" data-selection-snapshot={state.snapshot.id} data-selection-material-ready={opticsReady&&backdropReady} data-paper={!native&&['pdf','docx','pptx','html'].includes(state.snapshot.document.format)||undefined} role="toolbar" aria-label="选区工具" style={{left,top,width:nativePanelWidth,maxWidth:nativePanelWidth?'none':native?'calc(100vw - 16px)':position?.width ?? width}}>
     <div ref={glass} data-navigation-surface={surface} className="selection-tool-icons material-host floating-capsule navigation-capsule" onMouseDown={event=>event.preventDefault()} style={{width,maxWidth:'100%'} as CSSProperties}><NavigationGlass softness="selection" onReady={setOpticsReady} backdropImage={backdrop.image} backdropSample={backdrop.sample} capsuleBounds={glassBounds} onSurface={setSurface} /><div className="selection-tool-row">{state.actions.map(tool=>{const Icon=icons[tool.id]??Pencil;return <button key={tool.id} className={'icon-button '+(input?.id===tool.id?'selected':'')} aria-label={tool.label} aria-expanded={tool.input?input?.id===tool.id:undefined} aria-controls={tool.input?'selection-editor':undefined} title={tool.label} disabled={busy} onMouseDown={e=>e.preventDefault()} onClick={()=>void run(tool)}><Icon size={16}/></button>;})}<button className="icon-button" title="关闭选区工具" aria-label="关闭选区工具" onMouseDown={e=>e.preventDefault()} onClick={()=>clear()}><X size={14}/></button></div></div>
-    <MotionPresence show={!!input} duration={110}>{input&&<form id="selection-editor" className="selection-input material-host" onSubmit={e=>{e.preventDefault();void run(input,true);}}><SelectionPanelGlass native={native} backdrop={backdrop}/><label>{input.label}<textarea autoFocus aria-label={input.label} value={value} onChange={e=>setValue(e.target.value)}/></label><button className="button primary" disabled={busy||!value.trim()}><Send size={14}/>{busy?'处理中…':'应用'}</button>{error&&<p role="alert" className="selection-inline-error">{error}</p>}</form>}</MotionPresence>
-    <MotionPresence show={!!error&&!input} duration={110}>{error&&!input&&<p className="selection-error material-host" role="alert"><SelectionPanelGlass native={native} backdrop={backdrop}/>{error}</p>}</MotionPresence>
+    <MotionPresence show={!!input||!!error} duration={110}>{input?<form id="selection-editor" className="selection-input material-host" onSubmit={e=>{e.preventDefault();void run(input,true);}}><SelectionPanelGlass native={native} backdrop={backdrop}/><label>{input.label}<textarea autoFocus aria-label={input.label} value={value} onChange={e=>setValue(e.target.value)}/></label><button className="button primary" disabled={busy||!value.trim()}><Send size={14}/>{busy?'处理中…':'应用'}</button>{error&&<p role="alert" className="selection-inline-error">{error}</p>}</form>:error?<p className="selection-error material-host" role="alert"><SelectionPanelGlass native={native} backdrop={backdrop}/>{error}</p>:null}</MotionPresence>
   </div>}</MotionPresence>;
 }

@@ -113,8 +113,8 @@
 }
 
 /* ── page-load orchestration ───────────────────────────────────────────────
-   The highest-impact moment: the shell settles top-down, then the rails
-   cascade, then their icons pop in behind them. 1.5s end to end, one curve. */
+   Chrome begins responding as soon as it mounts. Keep the motion curves,
+   without holding interactive controls behind a staged startup sequence. */
 @keyframes chrome-down {
   from { opacity: 0; translate: 0 -100%; }
   to   { opacity: 1; translate: none; }
@@ -136,49 +136,35 @@
   animation: chrome-down 520ms var(--ease-drawer) both;
 }
 .status-bar {
-  animation: fade-in 400ms var(--ease-io) 480ms both;
+  animation: fade-in 400ms var(--ease-io) both;
 }
 .workbench .activity-rail,
 .workbench .ai-rail {
-  animation: rail-in 620ms var(--ease-drawer) 90ms both;
+  animation: rail-in 620ms var(--ease-drawer) both;
 }
 .workbench .format-sidebar {
-  animation: sheet-in 620ms var(--ease-drawer) 160ms both;
+  animation: sheet-in 620ms var(--ease-drawer) both;
 }
 .workbench .reader-panel {
-  animation: fade-in 520ms var(--ease-io) 200ms both;
+  animation: fade-in 520ms var(--ease-io) both;
 }
 .home-sidebar {
-  animation: rail-in 620ms var(--ease-drawer) 90ms both;
+  animation: rail-in 620ms var(--ease-drawer) both;
 }
 .home-main {
-  animation: fade-in 560ms var(--ease-io) 180ms both;
+  animation: fade-in 560ms var(--ease-io) both;
 }
 
-/* Icons pop in behind their rail's entrance. */
+/* Icons respond with their rail, without a separate delayed reveal. */
 .workbench .activity-rail > button,
 .workbench .ai-rail > button {
   animation: icon-pop 480ms var(--ease-spring) both;
 }
-.workbench .activity-rail > button:nth-child(1) { animation-delay: 340ms; }
-.workbench .activity-rail > button:nth-child(2) { animation-delay: 400ms; }
-.workbench .activity-rail > button:nth-child(3) { animation-delay: 460ms; }
-.workbench .ai-rail > button:nth-child(1) { animation-delay: 340ms; }
-.workbench .ai-rail > button:nth-child(2) { animation-delay: 400ms; }
-.workbench .ai-rail > button:nth-child(3) { animation-delay: 460ms; }
-.workbench .ai-rail > button:nth-child(4) { animation-delay: 520ms; }
-.workbench .ai-rail > button:nth-child(6) { animation-delay: 580ms; }
 
-/* Home content cascades in under the hero. */
-.home-hero { animation: sheet-in 560ms var(--ease-drawer) 220ms both; }
-.home-columns { animation: sheet-in 560ms var(--ease-drawer) 320ms both; }
+/* Home content is immediately available under the hero. */
+.home-hero { animation: sheet-in 560ms var(--ease-drawer) both; }
+.home-columns { animation: sheet-in 560ms var(--ease-drawer) both; }
 .recent-card { animation: sheet-in 460ms var(--ease-drawer) both; }
-.recent-card:nth-child(1) { animation-delay: 360ms; }
-.recent-card:nth-child(2) { animation-delay: 410ms; }
-.recent-card:nth-child(3) { animation-delay: 460ms; }
-.recent-card:nth-child(4) { animation-delay: 510ms; }
-.recent-card:nth-child(5) { animation-delay: 560ms; }
-.recent-card:nth-child(6) { animation-delay: 610ms; }
 
 /* ── chrome micro-interactions ─────────────────────────────────────────── */
 
@@ -250,8 +236,8 @@
 .settings-top { position: relative; }
 .settings-top > div:first-child { flex: 1; }
 .settings-undo { flex-shrink: 0; }
-.settings-nav { animation: sheet-in 560ms var(--ease-drawer) 80ms both; }
-.settings-main { animation: fade-in 520ms var(--ease-io) 180ms both; }
+.settings-nav { animation: sheet-in 560ms var(--ease-drawer) both; }
+.settings-main { animation: fade-in 520ms var(--ease-io) both; }
 
 /* ── selection tools (shared with the native toolbar window) ───────────── */
 .selection-input {

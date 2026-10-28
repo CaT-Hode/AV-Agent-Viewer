@@ -7,7 +7,8 @@ export type TranslationBackdrop = { image?: string; rect?: Rect };
 /** Reuse the trusted, view-bound panel host above WebContentsView. The owner
  * keeps the React state and permissions; the child only displays one material. */
 export function NativeTranslationPortal({ enabled, viewId, children }: { enabled: boolean; viewId: string; children(native: boolean, backdrop: TranslationBackdrop): ReactNode }) {
-  const [container, setContainer] = useState<HTMLElement>(), [backdrop, setBackdrop] = useState<TranslationBackdrop>({});
+  const [host, setHost] = useState<{ viewId: string; container: HTMLElement; backdrop: TranslationBackdrop }>();
+  const currentHost = enabled && host?.viewId === viewId && !host.container.ownerDocument.defaultView?.closed ? host : undefined;
   useLayoutEffect(() => {
     if (!enabled) return;
     const url = new URL(location.href); url.hash = '/reader-panel?side=translation&view=' + encodeURIComponent(viewId);
@@ -20,12 +21,12 @@ export function NativeTranslationPortal({ enabled, viewId, children }: { enabled
       if (disposed || popup.closed) return;
       const target = popup.document.getElementById('reader-panel-content');
       if (!target) { timer = setTimeout(attach, 30); return; }
-      sync(); setContainer(target);
-      unsubscribe = popup.agentViewer?.onToolbar(event => { if (event.action === 'reader-panel-backdrop') setBackdrop({ image: typeof event.image === 'string' ? event.image : undefined, rect: event.rect as Rect | undefined }); });
+      sync(); setHost({ viewId, container: target, backdrop: {} });
+      unsubscribe = popup.agentViewer?.onToolbar(event => { if (event.action === 'reader-panel-backdrop' && !disposed) setHost(previous => previous?.container === target ? { ...previous, backdrop: { image: typeof event.image === 'string' ? event.image : undefined, rect: event.rect as Rect | undefined } } : previous); });
       void popup.agentViewer?.call('reader-panel-ready');
     };
     attach();
-    return () => { disposed = true; clearTimeout(timer); unsubscribe?.(); observer.disconnect(); setContainer(undefined); setBackdrop({}); void call('translation-popover-layout', { viewId, visible: false }).catch(() => {}); if (!popup.closed) popup.close(); };
+    return () => { disposed = true; clearTimeout(timer); unsubscribe?.(); observer.disconnect(); setHost(undefined); void call('translation-popover-layout', { viewId, visible: false }).catch(() => {}); if (!popup.closed) popup.close(); };
   }, [enabled, viewId]);
-  return !enabled ? children(false, {}) : container ? createPortal(children(true, backdrop), container) : null;
+  return !enabled ? children(false, {}) : currentHost ? createPortal(children(true, currentHost.backdrop), currentHost.container) : null;
 }

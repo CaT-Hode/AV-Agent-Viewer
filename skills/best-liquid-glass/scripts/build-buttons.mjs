@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -46,10 +45,10 @@ sourceFiles.add('apps/desktop/src/renderer/main.tsx');
 sourceFiles.add('package.json'); sourceFiles.add('package-lock.json');
 const files = [];
 for (const path of [...sourceFiles].sort()) {
-  const absolute = resolve(sourceRoot, path), bytes = (await readFile(absolute, 'utf8')).replaceAll('\r\n', '\n');
-  files.push({ path: relative(sourceRoot, absolute).replaceAll('\\', '/'), sha256: createHash('sha256').update(bytes).digest('hex') });
+  const absolute = resolve(sourceRoot, path);
+  files.push({ path: relative(sourceRoot, absolute).replaceAll('\\', '/') });
 }
-files.push({ path: 'skills/best-liquid-glass/assets/button-preview.tsx', sha256: createHash('sha256').update(entrySource).digest('hex') });
+files.push({ path: 'skills/best-liquid-glass/assets/button-preview.tsx' });
 files.sort((left, right) => left.path.localeCompare(right.path, 'en'));
 const dependencies = [...new Set(inputFiles.filter(path => path.includes('node_modules')).map(path => {
   const parts = path.replaceAll('\\', '/').split('node_modules/').at(-1).split('/');
@@ -67,7 +66,7 @@ for (const name of dependencies) {
   assert(licenseText, 'Bundled dependency license missing: ' + name);
   licenses.push({ package: name, version: manifest.version, license: manifest.license, text: licenseText });
 }
-const provenance = { source: 'AgentViewer current renderer source', workerAdapter: 'Offline Blob URL only', styles, files, licenses: licenses.map(({ text, ...item }) => ({ ...item, sha256: createHash('sha256').update(text).digest('hex') })) };
+const provenance = { source: 'AgentViewer current renderer source', workerAdapter: 'Offline Blob URL only', styles, files, licenses: licenses.map(({ text, ...item }) => item) };
 const shell = `
 .button-preview:not([data-preview-ready="true"]) .preview-control-row{visibility:hidden}
 .button-preview{max-width:1120px;margin:auto;padding:42px 32px}.preview-header{display:flex;align-items:center;justify-content:space-between;gap:30px;margin-bottom:30px}.preview-header h1{font-size:25px;margin:0 0 8px;font-weight:650}.preview-header p,.preview-section>p{font-size:12px;line-height:1.7;color:var(--muted);margin:0}.preview-options{display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-size:12px}.preview-options label{display:flex;align-items:center;gap:6px}.preview-options select{font:inherit;color:inherit;background:var(--glass-panel);border:1px solid var(--line);border-radius:7px;padding:5px}.preview-designs{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px}.preview-section{padding:24px;border:1px solid var(--line);border-radius:24px;min-width:0}.preview-section h2{font-size:17px;margin:0 0 8px}.preview-scene{position:relative;min-height:270px;margin:24px 0 16px;overflow:visible;background:repeating-linear-gradient(90deg,transparent 0 23px,rgb(81 138 165/.11) 23px 24px),repeating-linear-gradient(0deg,transparent 0 23px,rgb(81 138 165/.11) 23px 24px);border-radius:16px}.preview-copy{padding:22px 16px;display:grid;gap:12px;pointer-events:none;color:var(--ink)}.preview-copy strong{font-size:20px}.preview-copy span{font-size:11px;letter-spacing:.04em;color:var(--muted)}.preview-control-row{min-height:90px;display:flex;align-items:center;justify-content:center;padding:18px 10px}.preview-section output{display:block;min-height:23px;font-size:12px;color:var(--muted)}.preview-status{font-size:12px;margin:24px 0 8px}.preview-note{font-size:11px;line-height:1.8;color:var(--muted);margin:0}:root[data-theme] body{background:var(--paper,#f5f6f9)}

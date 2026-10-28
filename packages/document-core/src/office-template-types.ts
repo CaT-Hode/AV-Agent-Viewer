@@ -6,7 +6,6 @@ export interface GeneratedOfficeTemplates {
   generators: { pptxgenjs: string; exceljs: string };
   templates: Record<OfficeTemplateKind, {
     format: 'pptx' | 'xlsx';
-    sha256: string;
     base64: string;
   }>;
 }

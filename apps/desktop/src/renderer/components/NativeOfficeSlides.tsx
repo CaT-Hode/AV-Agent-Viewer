@@ -6,8 +6,9 @@ import { OfficeSlideThumbnailController, readOfficeSlideNavigation, type OfficeS
 
 export function NativeOfficeSlides(props: { state: NativeOfficeState; ready: boolean; request: NativeOfficeRequest; disabled: boolean; reason?: string; navigate(target: NativeOfficeNavigateTarget): void }) {
   const { state } = props, identity = JSON.stringify([state.documentId, state.viewId, state.sessionId, state.engineEpoch]);
-  const renderGeneration = (state as NativeOfficeState & { renderGeneration?: number }).renderGeneration;
-  const metadataKey = JSON.stringify([identity, state.engineRevision, renderGeneration ?? state.viewport?.layoutRevision]);
+  // Slide content/history changes retire thumbnails; selecting, scrolling or
+  // repainting a view does not change the exported slide images.
+  const metadataKey = JSON.stringify([identity, state.engineRevision, state.undo?.token]);
   const [navigation, setNavigation] = useState<{ identity: string; key: string; value: OfficeSlideNavigation }>(), [loading, setLoading] = useState(false), [error, setError] = useState(''), [retry, setRetry] = useState(0), [visible, setVisible] = useState<Set<number>>(new Set()), [, changed] = useState(0);
   const list = useRef<HTMLDivElement>(null), latest = useRef(props), live = useRef(false), autoReload = useRef(''); latest.current = props;
   const currentMetadataKey = useRef(metadataKey); currentMetadataKey.current = metadataKey;
@@ -51,7 +52,7 @@ export function NativeOfficeSlides(props: { state: NativeOfficeState; ready: boo
     <div className="native-office-inline native-office-page-controls"><button className="icon-button" type="button" aria-label="上一张幻灯片" title={'上一张幻灯片' + (props.reason ? '\n' + props.reason : '')} disabled={props.disabled || activeIndex === undefined || !items.some(item => item.index === activeIndex - 1)} onMouseDown={event => event.preventDefault()} onClick={() => activeIndex !== undefined && props.navigate({ kind: 'slide', index: activeIndex - 1 })}><ChevronLeft size={16} aria-hidden="true" /></button><span>{activeIndex === undefined ? '—' : activeIndex + 1} / {items.length}</span><button className="icon-button" type="button" aria-label="下一张幻灯片" title={'下一张幻灯片' + (props.reason ? '\n' + props.reason : '')} disabled={props.disabled || activeIndex === undefined || !items.some(item => item.index === activeIndex + 1)} onMouseDown={event => event.preventDefault()} onClick={() => activeIndex !== undefined && props.navigate({ kind: 'slide', index: activeIndex + 1 })}><ChevronRight size={16} aria-hidden="true" /></button></div>
     {!data && !error && <p className="native-office-note" role="status">正在读取幻灯片列表…</p>}
     <div className="native-office-slide-list" ref={list}>{items.map(item => {
-      const near = visible.has(item.index), thumbnail = near && fresh && !loading ? controller.get(item.index) : undefined;
+      const near = visible.has(item.index), thumbnail = near ? controller.get(item.index, data?.source.geometryKey) : undefined;
       return <button key={item.index} type="button" data-office-slide-index={item.index} data-thumbnail-visible={near} className={activeIndex === item.index ? 'selected' : ''} aria-label={'第 ' + (item.index + 1) + ' 张幻灯片'} aria-current={activeIndex === item.index ? 'page' : undefined} disabled={props.disabled} title={item.text || item.name} onMouseDown={event => event.preventDefault()} onClick={() => props.navigate({ kind: 'slide', index: item.index })}>
         <span className="native-office-slide-preview" style={{ aspectRatio: item.width / item.height }}>{thumbnail ? <img src={thumbnail} alt="" draggable={false} /> : <span className="native-office-slide-excerpt">{item.text || item.name}</span>}</span>
         <span className="native-office-item-label"><span>{item.index + 1}</span>{item.name}</span>

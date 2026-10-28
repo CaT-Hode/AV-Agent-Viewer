@@ -88,8 +88,6 @@ export interface NativeOfficeRuntimeOptions {
   pythonPath?: string;
   requestTimeoutMs?: number;
   appearance?: NativeOfficeAppearance;
-  /** Tiled engine owns the LibreOffice core DLL and exposes no Office window. */
-  backend?: 'window' | 'kit';
   adapterPath?: string;
   /** App-provided docless registration seed; never a user Office profile. */
   bootstrapSeedPath?: string;

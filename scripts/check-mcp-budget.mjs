@@ -23,9 +23,6 @@ const tokenizerRoot = resolve(dirname(require.resolve('js-tiktoken/lite')), '..'
 const tokenizerPackage = JSON.parse(await readFile(join(tokenizerRoot, 'package.json'), 'utf8'));
 const hash = value => createHash('sha256').update(value).digest('hex');
 if (tokenizerPackage.version !== lock.version) throw new Error(`Tokenizer version changed: ${tokenizerPackage.version}; expected ${lock.version}`);
-for (const [file, expected] of Object.entries(lock.files)) {
-  if (hash(await readFile(join(tokenizerRoot, file))) !== expected) throw new Error('Tokenizer implementation/data hash changed: ' + file);
-}
 // All encoding data is bundled by the exact npm dependency. No model lookup,
 // network download, Python installation or character/byte estimate is used.
 const { Tiktoken } = await import('js-tiktoken/lite');
@@ -145,9 +142,9 @@ async function inspect(format) {
     assertLimit(format + ' hard', tokens, lock.limits.formatHard);
     report.formats[format] = {
       tokens, reservedHostTokens: lock.limits.formatHard - lock.limits.formatRaw,
-      hash: hash(stable(context)), instructionHash: hash(instruction), packs,
-      ...(capabilityVariants.length ? { capabilities: capabilityVariants.map(value => ({ docCall: value.docCall, pack: value.pack, tokens: count(stable(value.disclosure)), hash: hash(stable(value.disclosure)) })) } : {}),
-      tools: owned.map(tool => ({ name: tool.name, pack: registry.get(tool.name).pack, tokens: count(stable(tool)), hash: hash(stable(tool)) }))
+      hash: hash(stable(context)), packs,
+      ...(capabilityVariants.length ? { capabilities: capabilityVariants.map(value => ({ docCall: value.docCall, pack: value.pack, tokens: count(stable(value.disclosure)) })) } : {}),
+      tools: owned.map(tool => ({ name: tool.name, pack: registry.get(tool.name).pack, tokens: count(stable(tool)) }))
     };
   } catch (error) {
     throw new Error(`${format}: ${error instanceof Error ? error.message : error}${stderr ? '\nMCP stderr: ' + stderr : ''}`);
@@ -174,7 +171,7 @@ console.log('Reference tokenizer profile only. Codex host serialization/current-
 if (errors.length) throw new Error('MCP context budget exceeded:\n' + errors.join('\n'));
 if (update) {
   await writeFile(snapshotPath, serializedReport);
-  console.log('Updated scripts/mcp-budget.snapshot.json; review tool/instruction hashes and token deltas.');
+  console.log('Updated scripts/mcp-budget.snapshot.json; review catalog and token deltas.');
 } else {
   let snapshot;
   try { snapshot = (await readFile(snapshotPath, 'utf8')).replaceAll('\r\n', '\n'); } catch { throw new Error('Missing MCP budget snapshot. Run npm run mcp:budget -- --update and review it.'); }

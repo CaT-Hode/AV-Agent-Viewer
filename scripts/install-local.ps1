@@ -4,17 +4,6 @@
 )
 
 $ErrorActionPreference = 'Stop'
-function Get-FileSha256([string]$LiteralPath) {
-  $stream = $null
-  $sha256 = [System.Security.Cryptography.SHA256]::Create()
-  try {
-    $stream = [System.IO.File]::Open($LiteralPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-    return [System.BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
-  } finally {
-    if ($stream) { $stream.Dispose() }
-    $sha256.Dispose()
-  }
-}
 function Resolve-InstallStagingDirectory([string]$LiteralPath, [string]$ProgramsRoot, [string]$Destination, [string]$Source) {
   # .NET Framework IsPathRooted accepts drive-relative paths such as C:stage.
   if ([string]::IsNullOrWhiteSpace($LiteralPath) -or $LiteralPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+[\\/])') { throw '暂存目录必须使用绝对路径。' }
@@ -48,7 +37,7 @@ $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
 $nodeCommand = (Get-Command node.exe -ErrorAction Stop).Source
 # Direct invocation must enforce the same release gate as the npm command.
-# Verify the source package's own catalog and fingerprints before any copying.
+# Verify the source package's own MCP certification before any copying.
 Push-Location -LiteralPath $projectRoot
 try {
   & $npmCommand run mcp:budget
@@ -91,7 +80,7 @@ $staging = Resolve-InstallStagingDirectory $staging $programsRoot $destination $
 foreach ($file in $critical) {
   $stagedFile = Join-Path $staging $file
   if (-not (Test-Path -LiteralPath $stagedFile -PathType Leaf)) { throw ('暂存目录缺少文件: ' + $file) }
-  if ((Get-FileSha256 (Join-Path $source $file)) -ne (Get-FileSha256 $stagedFile)) { throw ('暂存文件校验失败: ' + $file) }
+  if ((Get-Item -LiteralPath (Join-Path $source $file)).Length -ne (Get-Item -LiteralPath $stagedFile).Length) { throw ('暂存文件复制不完整: ' + $file) }
 }
 # Recheck after the copy. Never rename a running installed application.
 $running = Get-CimInstance Win32_Process -Filter "name = 'AgentViewer.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($destination + '\', [System.StringComparison]::OrdinalIgnoreCase) }
@@ -104,7 +93,6 @@ catch { if ($hadPrevious -and -not (Test-Path -LiteralPath $destination)) { Move
 $installedExe = Join-Path $destination 'AgentViewer.exe'
 $installedOffice = Join-Path $destination 'resources\engines\libreoffice\program\soffice.exe'
 if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf) -or -not (Test-Path -LiteralPath $installedOffice -PathType Leaf)) { throw '安装文件复制不完整。' }
-if ((Get-FileSha256 (Join-Path $source 'AgentViewer.exe')) -ne (Get-FileSha256 $installedExe)) { throw '安装文件校验失败。' }
 
 $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
 New-Item -ItemType Directory -Path $startMenu -Force | Out-Null

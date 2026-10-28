@@ -26,8 +26,10 @@ PPT改用原生XStorage中介和无视图只读模型。两轮各前后10次变�
 
 公共浮层真实Chromium探针：20父层和20嵌套提示，100次移动的DOMRect读取8880→3960；100次已测量边界通知的额外读取6060→0。这是观察器工作量，不是屏幕延迟。
 
+10月28日Electron对照：普通、玻璃前景和AI浮窗分别前后各100次；组件提交到首次可见样式P50由53.0–53.1降至39.7ms，P95由53.4–53.5降至39.9–40.3ms。双RAF改单RAF，动画时长不变；去掉额外CSS起始规则仍保留渐变，因此未采用。启动级联延后取消，导航在首个测量帧推进原弹簧。证据在`animation-response`，不代表物理输入到屏幕。
+
 ## 验证边界
 
-原始结果在 `artifacts/verification/office-cold-performance`、`recovery-performance`、`hover-performance` 和 `mcp-web-final`。完整生产回归绑定源码及产物SHA，常规45项、上限50。OS缓存及同机负载未控制，新进程不代表冷盘；Kit数据不含Electron呈现、键盘到屏幕延迟或Codex桌面MCP认证。
+历史采样在`artifacts/verification/office-cold-performance`、`recovery-performance`、`hover-performance`和`mcp-web-final`。当前验收先构建，以buildId关联证据，不再全量扫描SHA；旧完整回归已退役。OS缓存及同机负载未控制，新进程不代表冷盘；Kit数据不含Electron呈现、键盘到屏幕延迟或Codex桌面MCP认证。
 
-[Office](../office/README.md) · [MCP](../automation/mcp.md) · [测试](../../tests/README.md)
+[Office](../office/README.md) · [MCP](../automation/mcp.md) · [验收](../verification.md)

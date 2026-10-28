@@ -1,13 +1,13 @@
 import { BrowserWindow, screen, type NativeImage, type WebContents } from 'electron';
 import { createHash } from 'node:crypto';
-import type { BackdropSource, NativeBackdropSource } from './web-toolbar';
+import type { BackdropSource } from './web-toolbar';
 import { nativeBackdropFrames } from './backdrop-frame-hub';
 import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
 import { readerPanelDestination, validReaderPanelRect } from './reader-panel-policy';
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Side = 'left' | 'right' | 'translation';
-type Entry = { owner: BrowserWindow; side: Side; popup: BrowserWindow; boundViewId: string; viewId?: string; bounds?: Rect; visible: boolean; ready: boolean; source?: string; attachedSource?: string; attachingSource?: string; attachRevision: number; unsubscribe?: () => void; frameSource?: WebContents; sampling: boolean; pending: boolean; timer?: ReturnType<typeof setTimeout>; sampledAt: number; signature?: string; pixels?: string; image?: string; rect?: Rect; generation: number };
+type Entry = { owner: BrowserWindow; side: Side; popup: BrowserWindow; boundViewId: string; viewId?: string; bounds?: Rect; visible: boolean; ready: boolean; source?: string; unsubscribe?: () => void; frameSource?: WebContents; sampling: boolean; pending: boolean; timer?: ReturnType<typeof setTimeout>; sampledAt: number; signature?: string; pixels?: string; image?: string; rect?: Rect; generation: number };
 const GUTTER = 12, FROST_FRAME_MS = 180;
 const intersection = (a: Rect, b: Rect): Rect | undefined => { const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y), right = Math.min(a.x + a.width, b.x + b.width), bottom = Math.min(a.y + a.height, b.y + b.height); return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : undefined; };
 
@@ -16,19 +16,20 @@ const intersection = (a: Rect, b: Rect): Rect | undefined => { const x = Math.ma
 export class ReaderPanelHost {
   private readonly entries = new Map<BrowserWindow, Map<Side, Entry>>();
   private readonly layouts = new Map<BrowserWindow, { viewId?: string; panels: { side: Side; bounds: Rect }[] }>();
-  constructor(private readonly rendererUrl: () => string, private readonly preload: string, private readonly web: (viewId: string) => BackdropSource | undefined, private readonly native: (viewId: string) => NativeBackdropSource | undefined, private readonly permits: (owner: BrowserWindow, viewId: string) => boolean, private readonly raised: (owner: BrowserWindow) => void, private readonly frostEnabled: () => boolean) {}
+  constructor(private readonly rendererUrl: () => string, private readonly preload: string, private readonly web: (viewId: string) => BackdropSource | undefined, private readonly permits: (owner: BrowserWindow, viewId: string) => boolean, private readonly raised: (owner: BrowserWindow) => void, private readonly frostEnabled: () => boolean) {}
 
   install(owner: BrowserWindow, windowId: string) {
     owner.webContents.setWindowOpenHandler(details => {
       const target = readerPanelDestination(details.url, this.rendererUrl(), details.frameName);
       if (!target || !this.permits(owner, target.viewId)) return { action: 'deny' };
       const { side } = target;
-      const previous = this.entries.get(owner)?.get(side); if (previous && !previous.popup.isDestroyed()) previous.popup.close();
+      const entries = this.entries.get(owner), previous = entries?.get(side);
+      if (previous) { entries!.delete(side); previous.bounds = undefined; this.hide(previous); if (!previous.popup.isDestroyed()) previous.popup.close(); }
       return { action: 'allow', overrideBrowserWindowOptions: { parent: owner, frame: false, transparent: true, show: false, skipTaskbar: true, resizable: false, minimizable: false, maximizable: false, hasShadow: false, backgroundColor: '#00000000', webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=' + windowId] } } };
     });
     owner.webContents.on('did-create-window', (popup, details) => {
       const params = new URLSearchParams(new URL(details.url).hash.split('?')[1]), side = params.get('side') as Side;
-      const entry: Entry = { owner, popup, side, boundViewId: params.get('view')!, visible: false, ready: false, sampling: false, pending: false, sampledAt: 0, generation: 0, attachRevision: 0 };
+      const entry: Entry = { owner, popup, side, boundViewId: params.get('view')!, visible: false, ready: false, sampling: false, pending: false, sampledAt: 0, generation: 0 };
       let entries = this.entries.get(owner); if (!entries) this.entries.set(owner, entries = new Map()); entries.set(side, entry);
       popup.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       const initial = details.url;
@@ -81,34 +82,26 @@ export class ReaderPanelHost {
     const owner = entry.owner.getContentBounds(), b = entry.bounds;
     entry.popup.setBounds({ x: owner.x + Math.round(b.x) - GUTTER, y: owner.y + Math.round(b.y) - GUTTER, width: Math.ceil(b.width) + 2 * GUTTER, height: Math.ceil(b.height) + 2 * GUTTER });
   }
-  private documentSources(entry: Entry) {
-    const native = entry.viewId ? this.native(entry.viewId) : undefined, candidate = entry.viewId ? this.web(entry.viewId) : undefined;
+  private documentSource(entry: Entry) {
+    const candidate = entry.viewId ? this.web(entry.viewId) : undefined;
     // WebContentsView frames contain the page alone. Never accept the owner
     // renderer or another sidebar popup as a backdrop: either would feed the
-    // panel's own frame/shadow back into the next sample. Native capture stays
-    // on the provider's document HWND (PrintWindow), not the desktop composite.
-    const web = candidate && !candidate.view.webContents.isDestroyed() && candidate.view.webContents !== entry.owner.webContents && !this.owns(candidate.view.webContents.id) ? candidate : undefined;
-    return { native, web };
+    // panel's own frame/shadow back into the next sample.
+    return candidate && !candidate.view.webContents.isDestroyed() && candidate.view.webContents !== entry.owner.webContents && !this.owns(candidate.view.webContents.id) ? candidate : undefined;
   }
   private sync(entry: Entry) {
     if (entry.owner.isDestroyed() || entry.popup.isDestroyed()) return;
-    const { native, web } = this.documentSources(entry);
-    if (!entry.ready || !entry.bounds || (!native && !web) || !entry.owner.isVisible() || entry.owner.isMinimized()) { this.hide(entry); return; }
-    const source = native ? 'native:' + native.navigationId : 'web:' + (web as BackdropSource).navigationId;
+    const web = this.documentSource(entry);
+    if (!entry.ready || !entry.bounds || !web || !entry.owner.isVisible() || entry.owner.isMinimized()) { this.hide(entry); return; }
+    const source = web.navigationId;
     this.position(entry);
     if (entry.source !== source) {
       this.hide(entry); entry.source = source; entry.generation++; entry.signature = undefined; entry.image = undefined; entry.rect = undefined; entry.pixels = undefined; this.send(entry);
-      entry.attachedSource = undefined; entry.attachingSource = undefined;
-    }
-    if (native && entry.attachedSource !== source) {
-      if (entry.attachingSource === source) return;
-      entry.attachingSource = source; const revision = ++entry.attachRevision;
-      void native.attach(entry.popup).then(() => { if (entry.attachRevision === revision && entry.source === source && !entry.popup.isDestroyed()) { entry.attachedSource = source; entry.attachingSource = undefined; this.sync(entry); } }).catch(() => { if (entry.attachRevision === revision) { entry.attachingSource = undefined; this.hide(entry); } }); return;
     }
     if (!entry.visible || !entry.popup.isVisible()) { entry.popup.showInactive(); this.raised(entry.owner); }
     entry.visible = true;
     if (!this.frostEnabled()) return;
-    if (web && entry.frameSource !== web.view.webContents) {
+    if (entry.frameSource !== web.view.webContents) {
       entry.unsubscribe?.(); entry.frameSource = web.view.webContents;
       try { entry.unsubscribe = nativeBackdropFrames.subscribe(entry.frameSource, () => this.sample(entry, true)); } catch { entry.unsubscribe = undefined; }
     }
@@ -126,22 +119,21 @@ export class ReaderPanelHost {
     if (entry.sampling) { entry.pending = true; return; }
     const delay = FROST_FRAME_MS - (Date.now() - entry.sampledAt);
     if (delay > 0) { if (!entry.timer) entry.timer = setTimeout(() => { entry.timer = undefined; this.sample(entry, true); }, delay); return; }
-    const { native, web } = this.documentSources(entry); if (!native && !web) return;
-    const sourceBounds = native?.bounds ?? web!.view.getBounds(), panel = entry.bounds;
+    const web = this.documentSource(entry); if (!web) return;
+    const sourceBounds = web.view.getBounds(), panel = entry.bounds;
     const slot = { x: Math.round(panel.x) - GUTTER, y: Math.round(panel.y) - GUTTER, width: Math.ceil(panel.width) + 2 * GUTTER, height: Math.ceil(panel.height) + 2 * GUTTER };
     const overscan = entry.side === 'translation' ? 84 : 0;
     const area = intersection({ x:slot.x-overscan,y:slot.y-overscan,width:slot.width+2*overscan,height:slot.height+2*overscan }, sourceBounds); if (!area) return;
     const local = { x: area.x - sourceBounds.x, y: area.y - sourceBounds.y, width: area.width, height: area.height };
     const density = screen.getDisplayMatching(entry.owner.getBounds()).scaleFactor;
     const capture = alignFrameCapture(local, sourceBounds, density) ?? { x: Math.floor(local.x), y: Math.floor(local.y), width: Math.ceil(local.width), height: Math.ceil(local.height) };
-    const source = native ?? web!;
-    const signature = JSON.stringify([source.navigationId, source.layoutRevision, source.revision, web?.scrollX, web?.scrollY, slot, capture]);
+    const signature = JSON.stringify([web.navigationId, web.layoutRevision, web.revision, web.scrollX, web.scrollY, slot, capture]);
     if (!force && entry.signature === signature) return;
     const generation = entry.generation;
     entry.sampling = true; entry.pending = false; entry.sampledAt = Date.now();
-    const latest = web && nativeBackdropFrames.peek(web.view.webContents.id), crop = physicalFrameCrop(capture, density);
+    const latest = nativeBackdropFrames.peek(web.view.webContents.id), crop = physicalFrameCrop(capture, density);
     const frameSize = latest?.image.getSize();
-    const image: Promise<{ image: NativeImage; rect: Rect }> = native ? native.capture(capture) : latest && crop && frameSize && crop.x + crop.width <= frameSize.width && crop.y + crop.height <= frameSize.height ? Promise.resolve({ image: latest.image.crop(crop), rect: capture }) : web!.view.webContents.capturePage(capture).then(image => ({ image, rect: capture }));
+    const image: Promise<{ image: NativeImage; rect: Rect }> = latest && crop && frameSize && crop.x + crop.width <= frameSize.width && crop.y + crop.height <= frameSize.height ? Promise.resolve({ image: latest.image.crop(crop), rect: capture }) : web.view.webContents.capturePage(capture).then(image => ({ image, rect: capture }));
     void image.then(value => {
       if (!entry.visible || generation !== entry.generation || entry.popup.isDestroyed()) return;
       // Refraction needs CSS-pixel detail. Tall frosted sidebars use half-DIP.

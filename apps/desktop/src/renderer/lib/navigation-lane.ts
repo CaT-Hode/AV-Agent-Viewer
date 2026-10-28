@@ -1,5 +1,5 @@
 import { scheduleLayoutRead } from './layout-frame';
-import { FLOATING_HITBOX_EVENT, floatingHitboxes, yieldFloatingRoom } from './floating-hitboxes';
+import { FLOATING_HITBOX_EVENT, floatingHitboxes, planFloatingRoom } from './floating-hitboxes';
 
 export type NavigationLane = { left: number; right: number; width: number; center: number };
 type Rect = { left: number; right: number };
@@ -7,7 +7,7 @@ const reservationProperties = ['--navigation-reservation-left','--navigation-res
 
 /** The pane's requested geometry, before its presence scale. Measuring its
  * current transformed box here would continually move the navigation target. */
-function panelLayoutBounds(panel: HTMLElement) {
+export function panelLayoutBounds(panel: HTMLElement) {
   const parent = panel.offsetParent as HTMLElement | null;
   if (!parent) return panel.getBoundingClientRect();
   const box = parent.getBoundingClientRect(), sx = box.width / (parent.offsetWidth || box.width || 1), sy = box.height / (parent.offsetHeight || box.height || 1);
@@ -24,15 +24,18 @@ function readingPanels(reader: HTMLElement) {
 }
 function localLane(reader: DOMRect, lane: NavigationLane) { return {...lane,left:lane.left-reader.left,right:lane.right-reader.left,center:lane.center-reader.left}; }
 function clearFloatingLane(box:DOMRect,lane:NavigationLane){
-  const obstacles=floatingHitboxes(['navigation','navigation-child','selection','panel','rail']).filter(item=>item.bounds.y<box.top+80&&item.bounds.y+item.bounds.height>box.top+4);
+  // Only the managed selection-translation card reserves navigation space.
+  // Tooltips inherit their trigger's group for other consumers, but even a
+  // translation button's tooltip must not move or shrink the navigation.
+  const obstacles=floatingHitboxes().filter(item=>item.group==='translation'&&item.id.startsWith('translation:')&&item.bounds.y<box.top+80&&item.bounds.y+item.bounds.height>box.top+4);
   if(!obstacles.length)return lane;
   let lanes=[{left:lane.left,right:lane.right}];
   for(const {bounds} of obstacles)lanes=lanes.flatMap(item=>bounds.x-8>=item.right||bounds.x+bounds.width+8<=item.left?[item]:[{left:item.left,right:Math.min(item.right,bounds.x-8)},{left:Math.max(item.left,bounds.x+bounds.width+8),right:item.right}]).filter(item=>item.right>item.left);
   lanes.sort((a,b)=>(b.right-b.left)-(a.right-a.left)||Math.abs((a.left+a.right)/2-lane.center)-Math.abs((b.left+b.right)/2-lane.center));
   const best=lanes[0];
   if(best&&best.right-best.left>=68)return {...best,width:best.right-best.left,center:(best.left+best.right)/2};
-  const room=yieldFloatingRoom({x:lane.center-110,y:box.top+12,width:Math.min(220,lane.width),height:60},{x:lane.left,y:box.top+12,width:lane.width,height:60},[],['navigation','navigation-child','selection','panel','rail']);
-  if(room)return {left:room.x,right:room.x+room.width,width:room.width,center:room.x+room.width/2};
+  const plan=planFloatingRoom({x:lane.center-110,y:box.top+12,width:Math.min(220,lane.width),height:60},{x:lane.left,y:box.top+12,width:lane.width,height:60},obstacles);
+  if(plan){for(const change of plan.yields)obstacles.find(item=>item.id===change.id)?.yield?.(change.bounds);const room=plan.bounds;return {left:room.x,right:room.x+room.width,width:room.width,center:room.x+room.width/2};}
   return best?{...best,width:best.right-best.left,center:(best.left+best.right)/2}:{left:lane.center,right:lane.center,width:0,center:lane.center};
 }
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "best-liquid-glass"
-  short_description: "真实折射玻璃、独立前景、可打断运动与悬浮避让的可复用实现"
-  default_prompt: "使用 $best-liquid-glass 改进当前界面的真实折射与交互性能，保留项目布局和原生控件。"
+  short_description: "真实折射玻璃、桌面 GPU 采样、动态高光与可打断交互的可复用方案"
+  default_prompt: "使用 $best-liquid-glass 改进当前桌面界面的真实折射与交互，按需采用页面底图或 Windows 桌面 GPU 采样，保留布局、前景和原生控件。"

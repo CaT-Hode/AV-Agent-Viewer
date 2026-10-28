@@ -36,7 +36,7 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
     collisionOffset.current = {x:0,y:0};
     redraw.current();
   }, [card?.id, source, viewId]);
-  useLayoutEffect(() => { redraw.current(); }, [context, backdrop.rect, motion, card?.result, card?.status, growthRatio]);
+  useLayoutEffect(() => { redraw.current(); }, [motion, card?.result, card?.status, card?.error, growthRatio]);
   useLayoutEffect(() => {
     const node = host.current, body = content.current; if (!node || !body) return;
     let disposed = false, layoutFrame = 0, inflight = false, sent = '', published = '', desired: Rect | undefined;
@@ -116,7 +116,7 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
     window.addEventListener('resize', schedule);
     draw();
     return () => { disposed = true; redraw.current = () => {}; observer.disconnect(); cancelAnimationFrame(layoutFrame); publish();node.removeEventListener('agentviewer:floating-yield',yieldRoom); window.removeEventListener('resize', schedule); if (native) void call('translation-popover-layout', { viewId, visible: false }).catch(() => {}); };
-  }, [native, viewId, source]);
+  }, [native, viewId]);
   const settle = (time: number) => {
     frame.current = 0; const dt = Math.min(.064, (time - lastFrame.current) / 1000); lastFrame.current = time; let moving = false;
     for (const key of ['x','y'] as const) {

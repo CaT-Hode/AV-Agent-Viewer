@@ -812,9 +812,10 @@ export class ViewerCore extends EventEmitter {
     const parsed = new URL(url);
     const id = randomUUID();
     this.documents.set(id, { bytes: new Uint8Array(), info: { id, title: parsed.hostname, format: 'web', revision: 0, diskRevision: 0, dirty: false, model: { format: 'web', url }, warnings: [], capabilities: { engine: this.browser ? 'electron-chromium' : 'preview-iframe', protocolVersion: PROTOCOL_VERSION, readText: !!this.browser, readSelection: !!this.browser, readViewport: !!this.browser, editKinds: [], saveFormats: ['html'], browserInput: !!this.browser, limitations: this.browser ? ['实时网页操作影响当前站点；持久编辑请建立阅读副本。', '正文提取当前仅顶层 frame。'] : ['原生网页输入与跨站上下文需在桌面应用使用。'] } } });
-    // Explicit Home opens wait for the page without changing the reading
-    // target; ordinary background registrations still follow the lazy policy.
-    const view = this.addView(id, windowId, activate); if (this.browser) await this.browser.open(view.id, url, { background: !activate && !options.preload }); return view;
+    // Persist the new identity before a network load can hold this operation
+    // open. Background creation keeps the active/default reading target intact.
+    const view = this.addView(id, windowId, activate); await this.persist();
+    if (this.browser) await this.browser.open(view.id, url, { background: !activate && !options.preload }); return view;
   }
   activate(viewId: string, actor: Actor = 'human') { this.getView(viewId); this.activeViewId = viewId; if (actor === 'human') { this.lastHumanViewId = viewId; this.humanActivationSequence++; } this.event('view.activated', { viewId, actor }); }
   setAgentControl(viewId: string, status: 'running' | 'paused' | 'stopped') { const view = this.getView(viewId); this.agentControl.set(viewId, status); this.agentControl.set(view.documentId, status); this.event('agent.control', { viewId, status }); }

@@ -6,17 +6,11 @@
   min-height: 100%;
   color: var(--ink, #303642);
 }
-.office-editing-ribbon { position: relative; z-index: 5; margin: 8px 18px 20px; border: 1px solid color-mix(in srgb, var(--line, #cdd2dd) 52%, transparent); border-radius: 18px; isolation: isolate; box-shadow: 0 4px 16px #24334a08; }
 .office-tools-v2 { font-size: 11px; color: var(--ink, #303642); min-width: 0; }
-.office-ribbon { display: flex; flex-wrap: wrap; align-items: stretch; position: relative; padding: 8px 10px; gap: 4px; }
 .office-tool-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.office-ribbon .office-tool-group { padding: 0 9px; border-right: 1px solid color-mix(in srgb, var(--line, #ccd2dc) 60%, transparent); }
-.office-ribbon .office-tool-group:last-of-type { border-right: 0; }
 .office-group-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .office-group-title { color: var(--muted, #80899a); font-size: 10px; text-align: center; line-height: 1.3; }
 .office-tools-v2 :is(input:not([type=checkbox]),select,textarea) { min-width: 0; height: 29px; border: 1px solid color-mix(in srgb, var(--line, #cbd3de) 75%, transparent); border-radius: 8px; background: var(--office-control-bg, #ffffffa3); color: inherit; padding: 4px 7px; outline-offset: 2px; font-size: 11px; }
-.office-ribbon input:not([type=color]):not([type=number]) { width: 120px; }
-.office-ribbon select { max-width: 116px; }
 .office-tools-v2 .office-font-size { width: 47px; }
 .office-tools-v2 input[type=color] { width: 28px; height: 27px; padding: 3px; cursor: pointer; }
 .office-tools-v2 .office-icon-tool { width: 29px; height: 29px; flex: 0 0 29px; border-radius: 8px; background: transparent; color: inherit; }
@@ -26,7 +20,6 @@
 .office-action-tool:hover { background: color-mix(in srgb, var(--accent, #087bdc) 8%, var(--surface, #fff)); }
 .office-property-field { display: inline-flex; align-items: center; gap: 5px; color: var(--muted, #717c8d); }
 .office-property-field > input[type=number] { width: 54px; }
-.office-ribbon .office-property-field:has(input[type=color]) > span { display: none; }
 .office-sidebar { padding: 0 3px 20px; --office-control-bg: color-mix(in srgb, var(--surface, #fff) 72%, transparent); }
 .office-sidebar .office-tool-group { margin-bottom: 18px; padding-bottom: 15px; border-bottom: 1px solid color-mix(in srgb, var(--line, #cbd3de) 52%, transparent); }
 .office-sidebar .office-group-title { order: -1; text-align: left; margin-bottom: 3px; color: var(--muted, #768297); font-weight: 600; }
@@ -53,13 +46,10 @@
 .office-word-table .office-word-paragraph { margin: 0; }
 .office-draft-error { display: block; padding-top: 3px; }
 .office-presentation-stage { padding: 0 24px 35px; }
-.office-slide-strip { display: flex; gap: 9px; overflow-x: auto; margin-bottom: 20px; padding: 2px 2px 10px; }
-.office-slide-strip > button { min-width: 116px; max-width: 116px; padding: 0; font-size: 10px; color: var(--muted, #768297); }
 .office-slide-thumbnail { display: block; position: relative; width: 116px; border: 1px solid #bac4d06e; box-shadow: 0 3px 9px #24344a0c; margin-bottom: 6px; color: #252b34; text-align: left; overflow: hidden; }
 .office-slide-thumbnail-canvas { display: block; position: absolute; left: 0; top: 0; transform-origin: left top; }
 .office-slide-thumbnail-object { display: block; position: absolute; overflow: hidden; font: 28px/1.25 Arial, 'Microsoft YaHei', sans-serif; }
 .office-slide-thumbnail-text { display: block; width: 100%; height: 100%; padding: 5px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.office-slide-strip > button.selected .office-slide-thumbnail { outline: 2px solid var(--accent, #087bdc); outline-offset: 2px; }
 .office-slide-stage { min-width: 0; }
 .office-slide-canvas { width: min(100%, 1100px); position: relative; margin: 0 auto; box-shadow: 0 8px 30px #23304716; color: #252b34; }
 .office-slide-object { position: absolute; font: 28px/1.25 Arial, 'Microsoft YaHei', sans-serif; }
@@ -101,11 +91,10 @@
 .office-sheet-tabs > button:not(.icon-button) { white-space: nowrap; min-height: 33px; padding: 6px 12px; border-bottom: 2px solid transparent; border-radius: 0 0 7px 7px; }
 .office-sheet-tabs > button.selected { background: color-mix(in srgb, var(--accent, #087bdc) 8%, transparent); border-color: var(--accent, #087bdc); color: var(--accent, #087bdc); }
 :root[data-theme=dark] .office-document-editor { --office-cell-bg: #262b32; --office-grid-line: #424b58; }
-:root[data-theme=dark] .office-editing-ribbon { border-color: #ffffff16; box-shadow: 0 4px 16px #0002; }
 :root[data-theme=dark] .office-word-paper { box-shadow: 0 8px 30px #0003; }
-.office-tools-v2 :is(button,input,select),.office-slide-strip button,.office-sheet-tabs button { transition: background-color 130ms, border-color 130ms, color 130ms; }
-:root[data-motion=off] .office-tools-v2 :is(button,input,select),:root[data-motion=off] :is(.office-slide-strip,.office-sheet-tabs) button { transition: none; }
-@media (prefers-reduced-motion: reduce) { .office-tools-v2 :is(button,input,select),.office-slide-strip button,.office-sheet-tabs button { transition: none; } }
+.office-tools-v2 :is(button,input,select),.office-sheet-tabs button { transition: background-color 130ms, border-color 130ms, color 130ms; }
+:root[data-motion=off] .office-tools-v2 :is(button,input,select),:root[data-motion=off] .office-sheet-tabs button { transition: none; }
+@media (prefers-reduced-motion: reduce) { .office-tools-v2 :is(button,input,select),.office-sheet-tabs button { transition: none; } }
 
 /* One format toolbox: categories occupy the sidebar; the canvas keeps its space. */
 .office-tools-v3 { min-width: 0; padding-top: 2px; }

@@ -86,6 +86,7 @@ export function useNavigationLayout(nav: RefObject<HTMLElement | null>, capsule:
     };
     const measure = () => {
       if (cancelRead || disposed) return;
+      const queuedAt = owner.performance.now();
       cancelRead = scheduleLayoutRead(() => {
         cancelRead = undefined; if (disposed) return;
         const { lane, instant } = latest.current;
@@ -96,7 +97,13 @@ export function useNavigationLayout(nav: RefObject<HTMLElement | null>, capsule:
           if (!axes.current || instant || !animatedMotion(mode)) {
             cancelTick?.(); cancelTick = undefined;
             axes.current = { width: { value: target.width, velocity: 0 }, center: { value: target.center, velocity: 0 } }; paint(false);
-          } else if (changed) { previous = started = owner.performance.now(); paint(true); tick(); }
+          } else if (changed) {
+            const now = owner.performance.now(), seconds = (now - Math.max(previous, queuedAt)) / 1000;
+            previous = started = now;
+            const spring = glassSpringParameters(KUBE_GLASS_SPRINGS.lensShape, mode);
+            axes.current = { width: stepGlassSpring(axes.current.width, target.width, seconds, spring), center: stepGlassSpring(axes.current.center, target.center, seconds, spring) };
+            paint(true); tick();
+          }
         };
       });
     };

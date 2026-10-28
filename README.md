@@ -40,6 +40,6 @@ npm.cmd start
 
 - [架构](docs/architecture.md) · [代码审查](docs/review.md) · [编辑](docs/editing/README.md)
 - [Office](docs/office/README.md) · [阅读界面](docs/reader/README.md) · [AI 与连接](docs/automation/README.md)
-- [性能](docs/performance/README.md) · [开发](docs/development/README.md) · [许可](docs/development/dependencies.md) · [测试](tests/README.md)
+- [性能](docs/performance/README.md) · [开发](docs/development/README.md) · [许可](docs/development/dependencies.md) · [验收](docs/verification.md)
 
 每篇完整 Unicode 字符≤2000，每功能模块最多两篇；`npm.cmd run docs:check` 校验清单、长度与本地链接。历史由 Git 保存。

@@ -10,10 +10,8 @@ import { preferredNavigationWidth, type NavigationLane } from '../renderer/lib/n
 const backdropFrames = nativeBackdropFrames;
 type Rect = { x: number; y: number; width: number; height: number };
 export type BackdropSource = { view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
-export type NativeBackdropSource = { bounds: Rect; navigationId: string; layoutRevision: number; revision: number; sourceId: number; capture(rect: Rect): Promise<{ image: NativeImage; rect: Rect }>; attach(window: BrowserWindow): Promise<void> };
-type NativeHostOptions = { sourceFor(viewId: string): NativeBackdropSource | undefined };
 type TooltipReply = { ticket: number; offsetY: number; viewId?: unknown; placement?: ReturnType<typeof nativeTooltipLayout>['placement'] };
-type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; overlayViewId?: string; rootBounds?: Rect; state: Record<string, unknown>; ready?: boolean; focusViewId?: string; dispose?: () => void; panel?: boolean; panelBounds?: Rect; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
+type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; rootBounds?: Rect; state: Record<string, unknown>; ready?: boolean; focusViewId?: string; dispose?: () => void; panel?: boolean; panelBounds?: Rect; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
 type CaptureRequest = { state: Record<string, unknown>; source: BackdropSource; page: WebContentsView; b: Rect; p: Rect; zoom: number; density: number; frameAligned: boolean; capsule: Rect; capture: Rect; geometryRevision: number; key: string; shape: string };
 
 // A trusted, capsule-sized surface above the website; no page script or full-width scrim.
@@ -22,7 +20,7 @@ export class WebToolbarHost {
   // An unseen surface retains only its current target, never content or geometry.
   // Weak keys need no owner listeners or explicit disposal before first display.
   private deferred = new WeakMap<BrowserWindow, { viewId: string; focusRequested?: boolean }>();
-  constructor(private url: () => string, private preload: string, private route = '/web-toolbar', private channel = 'agentviewer:toolbar', private sourceFor?: (viewId: string) => BackdropSource | undefined, private nativeHost?: NativeHostOptions) {}
+  constructor(private url: () => string, private preload: string, private route = '/web-toolbar', private channel = 'agentviewer:toolbar', private sourceFor?: (viewId: string) => BackdropSource | undefined) {}
   ownerFor(id: number) { return [...this.entries].find(([,entry])=>!entry.view.webContents.isDestroyed()&&entry.view.webContents.id===id)?.[0]; }
   private bounds(entry: ToolbarEntry) { return entry.rootBounds ?? entry.view.getBounds(); }
   private syncNavigationShape(entry:ToolbarEntry) {
@@ -41,23 +39,27 @@ export class WebToolbarHost {
     const shape=regions.length?regions:[{x:0,y:0,width:1,height:1}],signature=JSON.stringify([overlay.id,shape]);
     if(entry.shapeSignature!==signature){overlay.setShape(shape);entry.shapeSignature=signature;}
   }
-  private nativeSource(entry: ToolbarEntry) { return this.nativeHost?.sourceFor(String(entry.state.viewId)); }
+  private showOverlay(owner: BrowserWindow, entry: ToolbarEntry) {
+    const overlay=entry.overlay;
+    if(!overlay||overlay.isDestroyed()||!entry.state.visible||owner.isDestroyed()||!owner.isVisible()||owner.isMinimized())return;
+    if(!overlay.isVisible())overlay.showInactive();
+  }
   private syncHost(owner: BrowserWindow, entry: ToolbarEntry) {
     if(entry.overlay?.isDestroyed()){
-      const bounds=entry.rootBounds;entry.overlay=undefined;entry.overlayViewId=undefined;entry.rootBounds=undefined;
+      const bounds=entry.rootBounds;entry.overlay=undefined;entry.rootBounds=undefined;
       if(!entry.view.webContents.isDestroyed()&&!owner.isDestroyed()){if(bounds)entry.view.setBounds(bounds);owner.contentView.addChildView(entry.view);}
     }
     if(entry.view.webContents.isDestroyed()||owner.isDestroyed())return;
     // Hidden requests and source notifications must not create an owned window.
     // An existing host remains available for its already-running exit animation.
     if(!entry.state.visible)return;
-    const source=this.nativeSource(entry),webSource=this.sourceFor?.(String(entry.state.viewId));
+    const source=this.sourceFor?.(String(entry.state.viewId));
     // Owned sidebars are above the parent's compositor. Trusted capsules must
-    // use the same window layer for both website and native Office sources.
-    const dropOverlay=()=>{if(entry.overlay){const b=entry.rootBounds;entry.overlay.contentView.removeChildView(entry.view);entry.overlay.close();entry.overlay=undefined;entry.overlayViewId=undefined;entry.rootBounds=undefined;if(b)entry.view.setBounds(b);owner.contentView.addChildView(entry.view);}};
-    if(!source&&!webSource){dropOverlay();return;}
-    // A former native owner must never retain a toolbar for a new webpage.
-    if(!source&&entry.overlayViewId)dropOverlay();
+    // use the same window layer as the embedded webpage and its sidebars.
+    if(!source){
+      if(entry.overlay){const overlay=entry.overlay,b=entry.rootBounds;entry.overlay=undefined;entry.rootBounds=undefined;overlay.hide();overlay.contentView.removeChildView(entry.view);overlay.close();if(b)entry.view.setBounds(b);owner.contentView.addChildView(entry.view);}
+      return;
+    }
     if(!entry.overlay){
       const b=entry.view.getBounds(),p=owner.getContentBounds();entry.rootBounds=b;
       owner.contentView.removeChildView(entry.view);
@@ -66,13 +68,12 @@ export class WebToolbarHost {
       entry.view.setBounds({x:0,y:0,width:b.width,height:b.height});
       overlay.webContents.setWindowOpenHandler(()=>({action:'deny'}));
       const follow=()=>{if(!owner.isDestroyed()&&!overlay.isDestroyed()&&entry.rootBounds){const p=owner.getContentBounds(),b=entry.rootBounds;overlay.setBounds({x:p.x+b.x,y:p.y+b.y,width:b.width,height:b.height});}};
-      const hide=()=>{if(!overlay.isDestroyed())overlay.hide();},show=()=>{follow();if(!overlay.isDestroyed()&&entry.state.visible)overlay.showInactive();};
+      const hide=()=>{if(!overlay.isDestroyed())overlay.hide();},show=()=>{follow();this.showOverlay(owner,entry);};
       owner.on('move',follow);owner.on('resize',follow);owner.on('minimize',hide);owner.on('hide',hide);owner.on('restore',show);owner.on('show',show);
       overlay.once('closed',()=>{owner.removeListener('move',follow);owner.removeListener('resize',follow);owner.removeListener('minimize',hide);owner.removeListener('hide',hide);owner.removeListener('restore',show);owner.removeListener('show',show);});
     }
-    if(source&&entry.overlayViewId!==source.navigationId){entry.overlayViewId=source.navigationId;const overlay=entry.overlay;void source.attach(overlay).then(()=>{if(entry.overlay===overlay&&!overlay.isDestroyed()&&this.nativeSource(entry)?.navigationId===source.navigationId&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized())overlay.showInactive();}).catch(()=>{if(!overlay.isDestroyed())overlay.hide();});}
     this.syncNavigationShape(entry);
-    if(!source&&webSource&&entry.state.visible&&owner.isVisible()&&!owner.isMinimized()&&entry.overlay&&!entry.overlay.isDestroyed()&&!entry.overlay.isVisible())entry.overlay.showInactive();
+    this.showOverlay(owner,entry);
   }
   raise(owner:BrowserWindow){const entry=this.entries.get(owner);if(entry?.state.visible&&entry.overlay&&!entry.overlay.isDestroyed()&&entry.overlay.isVisible())entry.overlay.moveTop();}
   sourceChanged(owner: BrowserWindow, viewId: string) {
@@ -80,7 +81,7 @@ export class WebToolbarHost {
     if (!entry || entry.state.viewId !== viewId) return;
     if(entry.view.webContents.isDestroyed()){this.update(owner,{viewId,visible:false});return;}
     this.syncHost(owner,entry);
-    const source = this.sourceFor?.(viewId) ?? this.nativeSource(entry), sample = entry.state.backdropSample as { navigationId?: string; layoutRevision?: number } | undefined;
+    const source = this.sourceFor?.(viewId), sample = entry.state.backdropSample as { navigationId?: string; layoutRevision?: number } | undefined;
     if (sample && (source?.navigationId !== sample.navigationId || source?.layoutRevision !== sample.layoutRevision)) {
       entry.cache.clear();
       entry.frameSignature = undefined;
@@ -215,7 +216,7 @@ export class WebToolbarHost {
     const pending=this.deferred.get(owner),focusRequested=pending?.viewId===state.viewId&&pending?.focusRequested;
     if(visible||pending?.viewId!==state.viewId)this.deferred.delete(owner);
     if (!entry) {
-      const view = new WebContentsView({ webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: process.env.AGENTVIEWER_TEST_MODE === '1' ? ['--agentviewer-test-mode=1'] : [] } });
+      const view = new WebContentsView({ webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false } });
       view.setBackgroundColor('#00000000'); view.setVisible(false);
       entry = { view, state, geometryRevision: 0, cache: new NativeBackdropCache(), stats: backdropStatistics() }; this.entries.set(owner, entry);
       owner.contentView.addChildView(view);
@@ -239,7 +240,7 @@ export class WebToolbarHost {
         owner.removeListener('minimize',suspend);owner.removeListener('hide',suspend);owner.removeListener('restore',resume);owner.removeListener('show',resume);owner.removeListener('closed',created.dispose!);
         this.clearFrameSubscription(created);clearInterval(created.timer);clearTimeout(created.sampleTimer);clearTimeout(created.exitTimer);clearTimeout(created.tooltipTimer);created.tooltipClose?.(this.tooltipReply(created));
         if(this.entries.get(owner)===created)this.entries.delete(owner);
-        if(created.overlay&&!created.overlay.isDestroyed())created.overlay.close();
+        if(created.overlay&&!created.overlay.isDestroyed()){created.overlay.hide();created.overlay.close();}
         else if(!owner.isDestroyed())owner.contentView.removeChildView(view);
         if(!view.webContents.isDestroyed())view.webContents.close();
       };
@@ -271,7 +272,7 @@ export class WebToolbarHost {
       this.setBounds(owner, entry);
     }
     if(!entry.overlay)owner.contentView.addChildView(entry.view);
-    if(visible){entry.view.setVisible(true);if(entry.overlay&&!entry.overlay.isDestroyed())entry.overlay.showInactive();}
+    if(visible){entry.view.setVisible(true);this.showOverlay(owner,entry);}
     else if(wasExiting&&(state.animate||state.viewId===previous.viewId)&&(!retainedExit||retainedExit==='keep')){/* Keep the existing exit during layout updates. */}
     else if((animate||retainedExit==='restart')&&duration){clearTimeout(entry.exitTimer);const current=entry;entry.exitTimer=setTimeout(()=>{current.exitTimer=undefined;if(!current.view.webContents.isDestroyed())this.hide(owner,current);},duration);}
     else {clearTimeout(entry.exitTimer);entry.exitTimer=undefined;this.hide(owner,entry);}
@@ -390,7 +391,6 @@ export class WebToolbarHost {
   }
   private sampleBackdrop(owner: BrowserWindow, entry: ToolbarEntry, force = false) {
     if (!this.canSample(owner, entry)) return;
-    if(this.nativeSource(entry)){this.sampleNativeBackdrop(owner,entry,force);return;}
     const request = this.captureRequest(owner, entry), frame = entry.frameSource && backdropFrames.peek(entry.frameSource.id);
     if (!force && request && frame && entry.frameSignature === this.frameSourceSignature(request) && frame.presentedAt >= (entry.pixelAt ?? 0)) {
       entry.stats.frameReuses++; if (this.acceptFrame(owner, entry, frame.image, frame.presentedAt, request)) return;
@@ -403,30 +403,6 @@ export class WebToolbarHost {
     const wait = !force && entry.unsubscribeFrame ? 100 : Math.max(0, 32 - (performance.now() - (entry.sampledAt ?? -Infinity)));
     if (wait > 0) { entry.sampleTimer = setTimeout(() => { entry.sampleTimer = undefined; this.captureLatest(owner, entry); }, wait); return; }
     this.captureLatest(owner, entry);
-  }
-  private sampleNativeBackdrop(owner:BrowserWindow,entry:ToolbarEntry,force:boolean) {
-    if(entry.sampling){entry.pending=true;return;}
-    const source=this.nativeSource(entry);if(!source)return;
-    const b=this.bounds(entry),p=source.bounds,zoom=entry.view.webContents.getZoomFactor(),metrics=this.route==='/agent-toolbar'?AGENT_OPERATION_METRICS:NAVIGATION_METRICS;
-    const capsule=entry.capsuleBounds??{x:metrics.shadowGutter,y:metrics.shadowGutter,width:b.width/zoom-2*metrics.shadowGutter,height:this.route==='/ai-result-toolbar'?330:metrics.height};
-    const extra=metrics.captureOverscan,captureTop=this.route==='/web-toolbar'?metrics.shadowGutter-NAVIGATION_METRICS.hideShift:capsule.y;
-    const captureBottom=this.route==='/selection-toolbar'&&entry.panel?b.height/zoom:this.route==='/web-toolbar'?metrics.shadowGutter+capsule.height:capsule.y+capsule.height;
-    const left=Math.max(0,Math.floor(b.x-p.x+(capsule.x-extra)*zoom)),top=Math.max(0,Math.floor(b.y-p.y+(captureTop-extra)*zoom));
-    const panelRight=this.route==='/selection-toolbar'&&entry.panel?(entry.panelBounds?.x??8)+(entry.panelBounds?.width??320):0;
-    const right=Math.min(p.width,Math.ceil(b.x-p.x+(Math.max(capsule.x+capsule.width,panelRight)+extra)*zoom)),bottom=Math.min(p.height,Math.ceil(b.y-p.y+(captureBottom+extra)*zoom));
-    const rect={x:left,y:top,width:right-left,height:bottom-top};if(rect.width<=0||rect.height<=0)return;
-    const key=JSON.stringify([source.navigationId,source.layoutRevision,source.revision,rect,zoom]),shape=JSON.stringify([rect.width,rect.height,zoom]);
-    const publish=(pixels:BackdropPixels,actual=rect)=>{
-      const latest=this.nativeSource(entry);if(!this.canSample(owner,entry)||!latest||latest.navigationId!==source.navigationId||latest.layoutRevision!==source.layoutRevision||latest.revision!==source.revision)return;
-      const current=this.bounds(entry);if(JSON.stringify(current)!==JSON.stringify(b)||JSON.stringify(latest.bounds)!==JSON.stringify(p)||(entry.capsuleBounds?.width??capsule.width)!==capsule.width)return;
-      if(this.route!=='/web-toolbar'&&entry.capsuleBounds&&JSON.stringify(entry.capsuleBounds)!==JSON.stringify(capsule))return;
-      const cssSize={width:actual.width/zoom,height:actual.height/zoom};
-      const sample={sequence:(entry.sequence??0)+1,capturedAt:pixels.capturedAt,sourceContentsId:source.sourceId,navigationId:source.navigationId,layoutRevision:source.layoutRevision,sourceRevision:source.revision,scrollX:0,scrollY:0,geometryRevision:entry.geometryRevision,capsuleBounds:entry.capsuleBounds??capsule,origin:{x:(p.x+actual.x-current.x)/zoom,y:(p.y+actual.y-current.y)/zoom},cssSize,pixelSize:pixels.pixelSize,density:{x:pixels.pixelSize.width/cssSize.width,y:pixels.pixelSize.height/cssSize.height},captureBounds:actual};
-      entry.sequence=sample.sequence;const changed=entry.state.backdropImage!==pixels.image;entry.state={...entry.state,backdropImage:pixels.image,backdropSample:sample};this.sendBackdrop(entry,pixels.image,sample,changed);
-    };
-    const cached=!force&&entry.cache.reuse(key);if(cached){publish(cached);return;}
-    entry.sampling=true;entry.pending=false;entry.stats.captures++;
-    void source.capture(rect).then(({image,rect:actual})=>{if(image.isEmpty())return;const accepted=entry.cache.accept(key,shape,image.toBitmap(),()=>{const png=image.toPNG();entry.stats.pngEncodes++;return {image:'data:image/png;base64,'+png.toString('base64'),pixelSize:{width:png.readUInt32BE(16),height:png.readUInt32BE(20)}};},Date.now());publish(accepted.pixels,actual);}).catch(()=>{entry.stats.frameErrors++;}).finally(()=>{entry.sampling=false;if(entry.pending&&this.canSample(owner,entry))this.sampleNativeBackdrop(owner,entry,false);});
   }
   private canSample(owner: BrowserWindow, entry: ToolbarEntry) {
     const values = (entry.state.settings as any)?.values;

@@ -1,6 +1,6 @@
 import { MotionPresence } from './components/MotionPresence';
 import { LiquidGlassSurface } from './components/LiquidGlassSurface';
-import { motionDuration } from './lib/motion';
+import { motionDuration, motionSnapshot } from './lib/motion';
 import { isNativeTooltipRelocation, placeTooltip, type NativeTooltipPointer, type TooltipPlacement } from './lib/tooltip-placement';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { call } from './lib/transport';
@@ -24,7 +24,8 @@ async function commitNativeLayout(layout: NativeLayout) {
 export function TooltipHost() {
   const [tip, setTip] = useState<Tip>(), bubble = useRef<HTMLDivElement>(null), sequence = useRef(0), nativeOpen = useRef(false);
   useEffect(() => {
-    let target: HTMLElement | null = null, original = '', titleBefore: string|null = null, describedBefore: string|null = null, timer: ReturnType<typeof setTimeout>, pointer: NativeTooltipPointer | undefined;
+    let target: HTMLElement | null = null, original = '', titleBefore: string|null = null, describedBefore: string|null = null, timer: ReturnType<typeof setTimeout>, pointer: NativeTooltipPointer | undefined, warmGroup: Element | null = null;
+    const group = (element: Element | null) => element?.closest('[role="toolbar"],.tab-strip,.navigation-toolbar,.selection-tools,.activity-rail,.ai-rail,.format-sidebar,.settings-nav') ?? null;
     const point = (event: Event): NativeTooltipPointer | undefined => native && event instanceof MouseEvent ? { x:event.clientX,y:event.clientY,screenX:event.screenX,screenY:event.screenY,offsetY:nativeOffsetY } : undefined;
     const relocation = (event: Event) => {
       const current=point(event);
@@ -34,24 +35,29 @@ export function TooltipHost() {
       const rect=target.getBoundingClientRect();return isNativeTooltipRelocation(current,pointer,{x:rect.x,y:rect.y,width:rect.width,height:rect.height});
     };
     const move = (event: Event) => { const current=point(event);if(current&&!relocation(event))pointer=current; };
-    const hide = () => { clearTimeout(timer); pointer=undefined; const current = ++sequence.current; if (target) { if(titleBefore===null)target.removeAttribute('title');else target.setAttribute('title',titleBefore); if(describedBefore===null)target.removeAttribute('aria-describedby');else target.setAttribute('aria-describedby',describedBefore); } target = null; setTip(undefined); if (native && nativeOpen.current) { nativeOpen.current=false; void call<NativeLayout>('toolbar-tooltip', { open: false, duration: motionDuration(160) }).then(layout=>{if(sequence.current===current)return commitNativeLayout(layout);}).catch(()=>{}); } };
+    const hide = (closeNative = true) => { clearTimeout(timer); pointer=undefined; const current = ++sequence.current; if (target) { if(titleBefore===null)target.removeAttribute('title');else target.setAttribute('title',titleBefore); if(describedBefore===null)target.removeAttribute('aria-describedby');else target.setAttribute('aria-describedby',describedBefore); } target = null; setTip(undefined); if (closeNative && native && nativeOpen.current) { nativeOpen.current=false; void call<NativeLayout>('toolbar-tooltip', { open: false, duration: motionDuration(160) }).then(layout=>{if(sequence.current===current)return commitNativeLayout(layout);}).catch(()=>{}); } };
     const show = (event: Event) => {
       if (event.type === 'pointerover' && relocation(event)) return;
+      if (event.type === 'focusin' && !motionSnapshot().endsWith(':keyboard')) return;
       const next = event.target instanceof Element ? event.target.closest<HTMLElement>('[title],button[aria-label]') : null;
       if (next === target) return;
-      hide(); if (!next || !(next.getAttribute('title') || next.getAttribute('aria-label'))?.trim()) return;
+      const nextGroup = group(next ?? (event.target instanceof Element ? event.target : null)), continuing = !!nextGroup && nextGroup === warmGroup, immediate = event.type === 'focusin' || continuing;
+      if (nextGroup !== warmGroup) warmGroup = null;
+      hide(!continuing); if (!next || !(next.getAttribute('title') || next.getAttribute('aria-label'))?.trim()) return;
       target = next; pointer=point(event);titleBefore=next.getAttribute('title'); describedBefore=next.getAttribute('aria-describedby'); original = next.getAttribute('title') || next.getAttribute('aria-label') || ''; if (!next.hasAttribute('aria-label') && !next.textContent?.trim()) next.setAttribute('aria-label', original); next.setAttribute('title','');
       const current=sequence.current;
-      timer = setTimeout(() => { if (!target?.isConnected || sequence.current!==current) return; target.setAttribute('aria-describedby', [describedBefore,'app-tooltip'].filter(Boolean).join(' ')); setTip({ text: original, target, sequence:current, ready:false, x:0, y:0, above:false }); }, event.type === 'focusin' ? 150 : 420);
+      const reveal = () => { if (!target?.isConnected || sequence.current!==current) return; warmGroup = nextGroup; target.setAttribute('aria-describedby', [describedBefore,'app-tooltip'].filter(Boolean).join(' ')); setTip({ text: original, target, sequence:current, ready:false, x:0, y:0, above:false }); };
+      if (immediate) reveal(); else timer = setTimeout(reveal, 420);
     };
-    const leave = (event: Event) => { if(relocation(event))return;const related=(event as MouseEvent).relatedTarget; if(target&&(!(related instanceof Node)||!target.contains(related)))hide(); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') hide(); };
-    const receive=(value:Record<string,unknown>)=>{if(typeof value.tooltipOffsetY==='number'){nativeOffsetY=value.tooltipOffsetY;document.documentElement.style.setProperty('--native-tooltip-offset-y',value.tooltipOffsetY+'px');}if(value.visible===false)hide();};
+    const leave = (event: Event) => { if(relocation(event))return;const related=(event as MouseEvent).relatedTarget,continuing=related instanceof Node&&!!warmGroup?.contains(related);if(!continuing)warmGroup=null;if(target&&(!(related instanceof Node)||!target.contains(related))||!continuing&&nativeOpen.current)hide(!continuing); };
+    const dismiss = () => { warmGroup=null;hide(); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
+    const receive=(value:Record<string,unknown>)=>{if(typeof value.tooltipOffsetY==='number'){nativeOffsetY=value.tooltipOffsetY;document.documentElement.style.setProperty('--native-tooltip-offset-y',value.tooltipOffsetY+'px');}if(value.visible===false)dismiss();};
     const unsubscribe=native?(location.hash.includes('selection-toolbar')?window.agentViewer?.onSelectionTool(receive):window.agentViewer?.onToolbar(receive)):undefined;
     document.addEventListener('pointerover', show); document.addEventListener('pointermove', move); document.addEventListener('focusin', show);
-    document.addEventListener('pointerout', leave); document.addEventListener('focusout', hide);
-    document.addEventListener('pointerdown', hide); document.addEventListener('scroll', hide, true); document.addEventListener('keydown', escape);
-    return () => { hide();unsubscribe?.(); document.removeEventListener('pointerover', show); document.removeEventListener('pointermove', move); document.removeEventListener('focusin', show); document.removeEventListener('pointerout', leave); document.removeEventListener('focusout', hide); document.removeEventListener('pointerdown', hide); document.removeEventListener('scroll', hide, true); document.removeEventListener('keydown', escape); };
+    document.addEventListener('pointerout', leave); document.addEventListener('focusout', leave);
+    document.addEventListener('pointerdown', dismiss); document.addEventListener('scroll', dismiss, true); document.addEventListener('keydown', escape);
+    return () => { hide();unsubscribe?.(); document.removeEventListener('pointerover', show); document.removeEventListener('pointermove', move); document.removeEventListener('focusin', show); document.removeEventListener('pointerout', leave); document.removeEventListener('focusout', leave); document.removeEventListener('pointerdown', dismiss); document.removeEventListener('scroll', dismiss, true); document.removeEventListener('keydown', escape); };
   }, []);
   useLayoutEffect(()=>{
     if(!tip||tip.ready||!bubble.current||!tip.target.isConnected)return;

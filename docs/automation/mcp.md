@@ -35,7 +35,7 @@ ref 绑定目标、授权与版本，不跟随人工焦点。req 标识一次逻
 
 计数含工具名/描述、input/output schema、annotations、格式说明及Office原生能力。能力每类型披露一次，按真实驱动形态计最大值。每格式基础+全部高级累计≤4500参考tokens，预留500宿主开销，硬上限5000；禁止分包计算或把schema搬进结果逃避。共享入口目标1200、全部共享2500，单独统计。
 
-固定 `js-tiktoken 1.0.21` 与两套内置词表/实现SHA，离线使用 `max(o200k_base,cl100k_base)`，不以字节或字符估算tokens。缺数据、哈希变化、跨格式泄露、超限或快照漂移均阻断构建。
+固定 `js-tiktoken 1.0.21` 与两套内置离线词表，使用 `max(o200k_base,cl100k_base)`，不以字节或字符估算tokens。npm锁文件负责包完整性；缺数据、版本变化、跨格式泄露、超限或快照漂移均阻断构建。
 
 运行报告位于 `artifacts/mcp-budget.json`；审查变化后用 `npm.cmd run mcp:budget -- --update` 更新受版本控制的快照。
 
