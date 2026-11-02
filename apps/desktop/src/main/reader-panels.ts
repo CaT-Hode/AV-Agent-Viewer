@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { BackdropSource } from './web-toolbar';
 import { nativeBackdropFrames } from './backdrop-frame-hub';
 import { alignFrameCapture, physicalFrameCrop } from './backdrop-frame-crop';
+import { TRANSLATION_CAPSULE_METRICS } from '../renderer/lib/translation-popover';
 import { readerPanelDestination, validReaderPanelRect } from './reader-panel-policy';
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -79,8 +80,8 @@ export class ReaderPanelHost {
   }
   private position(entry: Entry) {
     if (entry.owner.isDestroyed() || entry.popup.isDestroyed() || !entry.bounds) return;
-    const owner = entry.owner.getContentBounds(), b = entry.bounds;
-    entry.popup.setBounds({ x: owner.x + Math.round(b.x) - GUTTER, y: owner.y + Math.round(b.y) - GUTTER, width: Math.ceil(b.width) + 2 * GUTTER, height: Math.ceil(b.height) + 2 * GUTTER });
+    const owner = entry.owner.getContentBounds(), b = entry.bounds, gutter = entry.side === 'translation' ? TRANSLATION_CAPSULE_METRICS.shadowGutter : GUTTER;
+    entry.popup.setBounds({ x: owner.x + Math.round(b.x) - gutter, y: owner.y + Math.round(b.y) - gutter, width: Math.ceil(b.width) + 2 * gutter, height: Math.ceil(b.height) + 2 * gutter });
   }
   private documentSource(entry: Entry) {
     const candidate = entry.viewId ? this.web(entry.viewId) : undefined;
@@ -120,8 +121,8 @@ export class ReaderPanelHost {
     const delay = FROST_FRAME_MS - (Date.now() - entry.sampledAt);
     if (delay > 0) { if (!entry.timer) entry.timer = setTimeout(() => { entry.timer = undefined; this.sample(entry, true); }, delay); return; }
     const web = this.documentSource(entry); if (!web) return;
-    const sourceBounds = web.view.getBounds(), panel = entry.bounds;
-    const slot = { x: Math.round(panel.x) - GUTTER, y: Math.round(panel.y) - GUTTER, width: Math.ceil(panel.width) + 2 * GUTTER, height: Math.ceil(panel.height) + 2 * GUTTER };
+    const sourceBounds = web.view.getBounds(), panel = entry.bounds, gutter = entry.side === 'translation' ? TRANSLATION_CAPSULE_METRICS.shadowGutter : GUTTER;
+    const slot = { x: Math.round(panel.x) - gutter, y: Math.round(panel.y) - gutter, width: Math.ceil(panel.width) + 2 * gutter, height: Math.ceil(panel.height) + 2 * gutter };
     const overscan = entry.side === 'translation' ? 84 : 0;
     const area = intersection({ x:slot.x-overscan,y:slot.y-overscan,width:slot.width+2*overscan,height:slot.height+2*overscan }, sourceBounds); if (!area) return;
     const local = { x: area.x - sourceBounds.x, y: area.y - sourceBounds.y, width: area.width, height: area.height };
@@ -142,7 +143,7 @@ export class ReaderPanelHost {
       const hash = createHash('sha256').update(reduced.toBitmap()).digest('hex');
       entry.signature = signature;
       if (hash === entry.pixels && entry.image) return;
-      entry.pixels = hash; entry.image = reduced.toDataURL(); entry.rect = { x: sourceBounds.x + value.rect.x - slot.x - GUTTER, y: sourceBounds.y + value.rect.y - slot.y - GUTTER, width: value.rect.width, height: value.rect.height }; this.send(entry);
+      entry.pixels = hash; entry.image = reduced.toDataURL(); entry.rect = { x: sourceBounds.x + value.rect.x - slot.x - gutter, y: sourceBounds.y + value.rect.y - slot.y - gutter, width: value.rect.width, height: value.rect.height }; this.send(entry);
     }).catch(() => {}).finally(() => { entry.sampling = false; if (entry.pending) this.sample(entry, true); });
   }
 }

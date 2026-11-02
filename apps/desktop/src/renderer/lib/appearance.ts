@@ -4,17 +4,19 @@ import { documentPaperAppearance } from '../../../../../packages/settings/src/do
 export function applyAppearance(snapshot?: SettingsSnapshot) {
   if (!snapshot) return;
   const root = document.documentElement, values = snapshot.values;
+  const dataset = (name: string, value: string) => { if (root.dataset[name] !== value) root.dataset[name] = value; };
+  const property = (name: string, value: string) => { if (root.style.getPropertyValue(name) !== value) root.style.setProperty(name, value); };
   const preferredDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  root.dataset.theme = values['appearance.theme'] === 'system' ? preferredDark ? 'dark' : 'light' : String(values['appearance.theme']);
-  root.dataset.density = String(values['appearance.density'] ?? 'standard');
-  root.dataset.glass = values['appearance.reduceTransparency'] ? 'off' : String(values['appearance.glass'] ?? 'standard');
-  root.dataset.documentBackground = String(values['appearance.documentBackground'] ?? 'paper');
+  dataset('theme', values['appearance.theme'] === 'system' ? preferredDark ? 'dark' : 'light' : String(values['appearance.theme']));
+  dataset('density', String(values['appearance.density'] ?? 'standard'));
+  dataset('glass', values['appearance.reduceTransparency'] ? 'off' : String(values['appearance.glass'] ?? 'standard'));
+  dataset('documentBackground', String(values['appearance.documentBackground'] ?? 'paper'));
   const paper = documentPaperAppearance(values['appearance.documentPaperColor']);
-  root.dataset.documentPaper = paper.color;
-  root.style.setProperty('--document-paper', paper.color);
-  root.style.setProperty('--document-paper-ink', paper.ink);
-  root.style.setProperty('--document-paper-muted', paper.muted);
-  root.dataset.backgroundMotion = String(values['appearance.backgroundMotion'] ?? 'slow');
-  root.dataset.motion = String(values['appearance.motion'] ?? 'standard');
-  root.dataset.contrast = values['appearance.highContrast'] ? 'high' : 'standard';
+  dataset('documentPaper', paper.color);
+  property('--document-paper', paper.color);
+  property('--document-paper-ink', paper.ink);
+  property('--document-paper-muted', paper.muted);
+  dataset('backgroundMotion', String(values['appearance.backgroundMotion'] ?? 'slow'));
+  dataset('motion', String(values['appearance.motion'] ?? 'standard'));
+  dataset('contrast', values['appearance.highContrast'] ? 'high' : 'standard');
 }

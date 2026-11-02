@@ -1,5 +1,5 @@
 import type { Rect } from '../../../../../packages/contracts/src/index';
-export const TRANSLATION_CAPSULE_METRICS = { width:340,height:118,maxWidth:560,maxHeight:420,horizontalInset:112,verticalInset:66,growthRatio:1 } as const;
+export const TRANSLATION_CAPSULE_METRICS = { width:340,height:118,maxWidth:560,maxHeight:420,horizontalInset:112,verticalInset:66,growthRatio:1,shadowGutter:24 } as const;
 
 /** Cache font measurements once per result. Fitting reuses widths and never
  * copies/parses the document or measures the DOM at intermediate spring sizes. */

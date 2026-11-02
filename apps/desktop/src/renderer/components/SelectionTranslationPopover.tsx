@@ -6,6 +6,7 @@ import { fitTranslationCapsule, placeTranslationPopover, shouldCollapseTranslati
 import { stepGlassSpring, type SpringAxis } from '../lib/glass-elasticity';
 import { animatedMotion, useMotionSnapshot } from '../lib/motion';
 import { updateFloatingHitbox } from '../lib/floating-hitboxes';
+import { useGlassSurface } from '../lib/useGlassSurface';
 import { LiquidGlassSurface } from './LiquidGlassSurface';
 import { MotionPresence } from './MotionPresence';
 import { NativeTranslationPortal, type TranslationBackdrop } from './NativeTranslationPortal';
@@ -20,7 +21,7 @@ export function SelectionTranslationPopover(props: Props) {
 }
 function TranslationBubble({ card, context, format, shortcut, growthRatio, native, backdrop, renderCard, onTranslate, onCollapse, viewId, show: _show, ...presence }: Props & { native: boolean; backdrop: TranslationBackdrop; style?: CSSProperties }) {
   const host = useRef<HTMLDivElement>(null), content = useRef<HTMLDivElement>(null);
-  const [opticsReady, setOpticsReady] = useState(false), [placed, setPlaced] = useState(false), [localBounds, setLocalBounds] = useState<Rect>();
+  const [surface, setSurface] = useState<'light' | 'dark'>(), [opticsReady, setOpticsReady] = useState(false), [placed, setPlaced] = useState(false), [localBounds, setLocalBounds] = useState<Rect>();
   const motion = useMotionSnapshot(), animate = animatedMotion(motion.split(':')[0] as Parameters<typeof animatedMotion>[0]);
   const current = useRef({ card, onCollapse, animate, growthRatio }); current.current = { card, onCollapse, animate, growthRatio };
   const textMetrics=useRef<{key:string;height:(width:number)=>number}|undefined>(undefined),fitted=useRef<{key:string;size:ReturnType<typeof fitTranslationCapsule>}|undefined>(undefined);
@@ -99,11 +100,11 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
       const scaleX=shape.scaleX*sizes.current.x.value,scaleY=shape.scaleY*sizes.current.y.value;
       node.style.setProperty('--translation-stretch-x', String(scaleX)); node.style.setProperty('--translation-stretch-y', String(scaleY)); node.dataset.dragging = String(!!gesture.current);
       const paintWidth=Math.max(position.width,position.width*scaleX),paintHeight=Math.max(position.height,position.height*scaleY),paint={x:x+(position.width-paintWidth)/2,y:y+position.height-paintHeight,width:paintWidth,height:paintHeight};
-      node.style.left = native ? 12+x-paint.x+'px' : x + 'px'; node.style.top = native ? 12+y-paint.y+'px' : y + 'px';
+      node.style.left = native ? TRANSLATION_CAPSULE_METRICS.shadowGutter+x-paint.x+'px' : x + 'px'; node.style.top = native ? TRANSLATION_CAPSULE_METRICS.shadowGutter+y-paint.y+'px' : y + 'px';
       setPlaced(true);
       publish(paint);
       if (native) {
-        const next = { x: 12+x-paint.x, y: 12+y-paint.y, width: position.width, height: position.height };
+        const next = { x: TRANSLATION_CAPSULE_METRICS.shadowGutter+x-paint.x, y: TRANSLATION_CAPSULE_METRICS.shadowGutter+y-paint.y, width: position.width, height: position.height };
         setLocalBounds(previous => previous && ['x','y','width','height'].every(key=>Math.abs(previous[key as keyof Rect]-next[key as keyof Rect])<.25) ? previous : next);
         desired = paint; send();
       }
@@ -137,9 +138,10 @@ function TranslationBubble({ card, context, format, shortcut, growthRatio, nativ
   };
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
   const rect = backdrop.rect, sampled = native && !!backdrop.image && !!rect;
+  useGlassSurface(host, { backdropImage: sampled ? backdrop.image : undefined, capsuleBounds: localBounds, onSurface: setSurface });
   const preferences = document.documentElement.dataset, requiresSource = native && preferences.glass !== 'off' && preferences.contrast !== 'high' && preferences.reduceTransparency !== 'true';
-  return <div {...presence} ref={host} className={'selection-translation-bubble material-host' + (!card ? ' translation-shortcut-bubble' : '')} data-floating-hitbox-managed="true" data-material-ready={placed && opticsReady && (!requiresSource || sampled)} data-glass-control-owner="translation" role={card ? 'region' : 'status'} aria-label={card ? '选区翻译浮窗' : '选区翻译快捷键提示'} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault(); }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onCollapse(); } }}>
-    <LiquidGlassSurface variant="panel" effect="refractive" bezelWidth={36} blur={1} blurLimit={1} strength={.65} specularOpacity={.13} interaction="none" onReady={setOpticsReady} backdropImage={sampled ? backdrop.image : undefined} backdropSample={sampled ? { origin: { x: 12 + rect.x, y: 12 + rect.y }, cssSize: { width: rect.width, height: rect.height } } : undefined} bounds={localBounds} />
+  return <div {...presence} ref={host} className={'selection-translation-bubble material-host' + (!card ? ' translation-shortcut-bubble' : '')} data-floating-hitbox-managed="true" data-navigation-surface={surface} data-material-ready={placed && opticsReady && (!requiresSource || sampled)} data-glass-control-owner="translation" role={card ? 'region' : 'status'} aria-label={card ? '选区翻译浮窗' : '选区翻译快捷键提示'} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault(); }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onCollapse(); } }}>
+    <LiquidGlassSurface variant="panel" effect="refractive" bezelWidth={36} blur={1} blurLimit={1} strength={.65} specularOpacity={.13} interaction="none" onReady={setOpticsReady} backdropImage={sampled ? backdrop.image : undefined} backdropSample={sampled ? { origin: { x: TRANSLATION_CAPSULE_METRICS.shadowGutter + rect.x, y: TRANSLATION_CAPSULE_METRICS.shadowGutter + rect.y }, cssSize: { width: rect.width, height: rect.height } } : undefined} bounds={localBounds} />
     <div className="selection-translation-content" ref={content}>
       {card ? <><button className="translation-drag-handle" aria-label="拖动译文，向下拖动收起" title="拖动可拉伸玻璃，向下拖动收起；也可按 Esc" onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onCollapse(); } }} onPointerDown={event => {
         if (event.button !== 0 || gesture.current) return;

@@ -4,6 +4,7 @@ import { glassOpticsCacheStats } from './lib/liquid-glass-optics';
 import { GlassInteractionHost } from './components/GlassInteractionHost';
 import { installSmoothScrolling } from './lib/smooth-scroll';
 import { installFloatingHitboxes } from './lib/floating-hitboxes';
+import { applyAppearance } from './lib/appearance';
 const App = lazy(() => import('./App').then(module => ({ default: module.App })));
 const TooltipHost = lazy(() => import('./TooltipHost').then(module => ({ default: module.TooltipHost })));
 const SettingsApp = lazy(() => import('./SettingsApp').then(module => ({ default: module.SettingsApp })));
@@ -34,6 +35,8 @@ import './sidebar-presence.css';
 import './adaptive-panel.css';
 import './selection-tools.css';
 import './text-fields.css';
+
+applyAppearance(window.agentViewer?.initialAppearance);
 
 if (location.hash !== '#/export-worker') {
   const disposeScrolling = installSmoothScrolling(document);

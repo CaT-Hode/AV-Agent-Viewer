@@ -34,4 +34,4 @@ MotionPresence 入场单 RAF，保留一个元素；SelectionTools 输入/错误
 
 ## 同步
 
-在技能目录运行 `node scripts/sync-optics.mjs <仓库> --check` 校验核心，`node scripts/build-buttons.mjs <仓库> --check` 校验原生按钮；检查差异后用 --write。全局模糊上限0px，例外同时传blur/blurLimit。选区2px，译文70%填充/1px模糊/36px边缘/32px圆角。导航亮度92转深、112转浅。
+在技能目录运行 `node scripts/sync-optics.mjs <仓库> --check` 校验核心，`node scripts/build-buttons.mjs <仓库> --check` 校验原生按钮；检查差异后用 --write。全局模糊上限0px，例外同时传blur/blurLimit。选区2px，译文与导航共用填色，1px模糊/36px边缘/32px圆角；独立阴影随形变，原生窗留24px边界。亮度92转深、112转浅。

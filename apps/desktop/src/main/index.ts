@@ -74,19 +74,19 @@ async function openStartupFiles() {
   catch (error) { for (const path of paths) pendingStartupFiles.add(path); owner.webContents.send('agentviewer:toolbar', { action: 'close-error', message: String(error) }); }
 }
 const pendingDraftFlush = new Map<number, { id: string; scope: string; finish(error?: string): void; promise: Promise<void> }>();
-function flushReaderWindow(win: BrowserWindow, documentId?: string, checkOnly = false): Promise<void> {
+function flushReaderWindow(win: BrowserWindow, documentId?: string, checkOnly = false, confirmClose = false): Promise<void> {
   if (win.isDestroyed() || win.webContents.isDestroyed() || !win.webContents.getURL()) return Promise.resolve();
   const contentsId = win.webContents.id, existing = pendingDraftFlush.get(contentsId);
-  const scope = `${checkOnly ? 'check' : 'flush'}:${documentId ?? '*'}`;
-  if (existing) return existing.scope === scope ? existing.promise : existing.promise.catch(() => {}).then(() => flushReaderWindow(win, documentId, checkOnly));
+  const scope = `${confirmClose ? 'close' : checkOnly ? 'check' : 'flush'}:${documentId ?? '*'}`;
+  if (existing) return existing.scope === scope ? existing.promise : existing.promise.catch(() => {}).then(() => flushReaderWindow(win, documentId, checkOnly, confirmClose));
   const id = randomUUID();
   let finish!: (error?: string) => void;
   const promise = new Promise<void>((done, fail) => {
-    const timer = setTimeout(() => finish('当前输入未能完成保存，请稍后重试关闭窗口。'), 15000);
+    const timer = confirmClose ? undefined : setTimeout(() => finish('当前输入未能完成保存，请稍后重试关闭窗口。'), 15000);
     finish = error => { clearTimeout(timer); pendingDraftFlush.delete(contentsId); error ? fail(new Error(error)) : done(); };
   });
   pendingDraftFlush.set(contentsId, { id, scope, finish, promise });
-  win.webContents.send('agentviewer:before-close', { id, documentId, checkOnly });
+  win.webContents.send('agentviewer:before-close', { id, documentId, checkOnly, confirmClose });
   return promise;
 }
 ipcMain.handle('agentviewer:close-flushed', (event, result: { id: string; error?: string }) => {
@@ -151,8 +151,8 @@ async function createWindow(id = 'main') {
     if (closeReady || shutdown === 'ready') return;
     event.preventDefault();
     if(closePending)return;closePending=true;
-    void flushReaderWindow(win).then(()=>office?.closeOwner(win)).then(() => { if (!win.isDestroyed()) { closeReady = true; win.close(); } }).catch(error => {
-      if (!win.isDestroyed()) win.webContents.send('agentviewer:toolbar', { action: 'close-error', message: String(error) });
+    void flushReaderWindow(win, undefined, false, true).then(()=>office?.closeOwner(win)).then(() => { if (!win.isDestroyed()) { closeReady = true; win.close(); } }).catch(error => {
+      if (!win.isDestroyed() && !(error instanceof Error && error.message === 'CLOSE_CANCELLED')) win.webContents.send('agentviewer:toolbar', { action: 'close-error', message: String(error) });
     }).finally(()=>{closePending=false;});
   });
   win.on('closed', () => {
@@ -178,7 +178,10 @@ async function openSettings(category?: string) {
     if (category) settingsWindow.webContents.send('agentviewer:settings-navigate', category);
     return;
   }
-  const win = new BrowserWindow({ width: 1040, height: 760, minWidth: 900, minHeight: 640, frame: false, show: false, icon: join(root, 'assets', 'agentviewer.ico'), backgroundColor: '#f6f5f2', title: 'AgentViewer 设置', webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=settings'] } });
+  const appearance = settings.snapshot();
+  appearance.values = Object.fromEntries(Object.entries(appearance.values).filter(([id]) => id.startsWith('appearance.')));
+  const dark = appearance.values['appearance.theme'] === 'dark' || appearance.values['appearance.theme'] === 'system' && nativeTheme.shouldUseDarkColors;
+  const win = new BrowserWindow({ width: 1040, height: 760, minWidth: 900, minHeight: 640, frame: false, show: false, icon: join(root, 'assets', 'agentviewer.ico'), backgroundColor: dark ? '#11171e' : '#f5f7f9', title: 'AgentViewer 设置', webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=settings', '--agentviewer-appearance=' + encodeURIComponent(JSON.stringify(appearance))] } });
   settingsWindow = win;
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   const url = new URL(process.env.AGENTVIEWER_VITE_URL ?? endpoint); url.hash = '/settings' + (category ? '?category=' + encodeURIComponent(category) : '');
@@ -533,8 +536,9 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (shutdown === 'saving') return;
   shutdown = 'saving';
-  void Promise.all([...windows.values()].map(win => flushReaderWindow(win))).then(async () => { await translations?.pauseAll(); await core.shutdownNativeOffice(); await office?.shutdown(); return core.persist(); }).then(async () => { selectionTranslations?.dispose(); clearInterval(browserPoll); webSemantic?.dispose(); await pdfContent?.dispose(); shutdown = 'ready'; app.quit(); }).catch(error => {
+  void Promise.all([...windows.values()].map(win => flushReaderWindow(win, undefined, false, true))).then(async () => { await translations?.pauseAll(); await core.shutdownNativeOffice(); await office?.shutdown(); return core.persist(); }).then(async () => { selectionTranslations?.dispose(); clearInterval(browserPoll); webSemantic?.dispose(); await pdfContent?.dispose(); shutdown = 'ready'; app.quit(); }).catch(error => {
     shutdown = 'idle';
+    if (error instanceof Error && error.message === 'CLOSE_CANCELLED') return;
     const message = '恢复点尚未保存完成，应用保持打开。' + String(error);
     core.event('workspace.recovery-error', { message });
     // A recoverable native failure must not block the Node event loop in a

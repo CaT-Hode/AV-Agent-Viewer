@@ -21,14 +21,14 @@
   --navigation-selected-fill:#eef4f8;
   --navigation-selected-ink:#172b3a;
 }
-.navigation-capsule[data-navigation-surface="light"] {
+:is(.navigation-capsule,.selection-translation-bubble)[data-navigation-surface="light"] {
   --navigation-ink: #253746;
   --navigation-tint:rgb(255 255 255 / .18);
   --navigation-solid:#eef3f7;
   --navigation-selected-fill:#253746;
   --navigation-selected-ink:#ffffff;
 }
-.navigation-capsule[data-navigation-surface="dark"] {
+:is(.navigation-capsule,.selection-translation-bubble)[data-navigation-surface="dark"] {
   --navigation-ink: #f4f6f8;
   --navigation-tint:rgb(9 13 18 / .30);
   --navigation-solid:#1e2934;

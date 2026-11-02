@@ -1230,6 +1230,29 @@ export class ViewerCore extends EventEmitter {
       const receipt: Receipt = { transactionId, documentId, revision: doc.info.revision, status: 'saved', path: target, ...(warnings ? { warnings } : {}) }; this.event('document.saved', receipt); await this.persist(); return receipt;
     });
   }
+  async discardChanges(documentId: string, expectedRevision: number, closingViewIds: string[]) {
+    return this.serial(documentId, async () => {
+      const document = this.getDocument(documentId), views = [...this.views.values()].filter(view=>view.documentId===documentId);
+      if(document.info.revision!==expectedRevision)throw new ViewerError('VERSION_CONFLICT','文档已更新，请重新确认关闭。');
+      if(!views.length||views.some(view=>!closingViewIds.includes(view.id)))throw new ViewerError('DOCUMENT_IN_USE','文档仍在其他视图中打开。');
+      const source = document.info.path ? new Uint8Array(await readFile(document.info.path)) : undefined;
+      if(source && source.byteLength>100*1024*1024)throw new ViewerError('FILE_TOO_LARGE','文件超过100 MB。');
+      const model = source ? await this.registry.resolve(document.info.format).open(source,document.info.format) : undefined;
+      const sourceHash = source ? await hashDocumentBytes(source) : undefined;
+      if(this.nativeOfficeBindings.has(documentId))await this.closeNativeOfficeInside(documentId);
+      for(const [id,entry] of this.transactions)if(entry.documentId===documentId)this.transactions.delete(id);
+      for(const [id,entry] of this.patches)if(entry.documentId===documentId)this.patches.delete(id);
+      if(source && model){
+        document.bytes=source;document.sourceHash=sourceHash;document.info={...document.info,model,revision:document.info.revision+1,diskRevision:document.info.revision+1,dirty:false,warnings:[]};
+        for(const view of views)if(view.context)view.context={...view.context,contentRevision:document.info.revision,quality:'not-ready',visibleText:'',selection:{kind:'none',text:''}};
+      }else{
+        for(const view of views)this.closeViewInside(view.id,true,true);
+        this.documents.delete(documentId);
+        for(const [id,note]of this.annotations)if(note.documentId===documentId)this.annotations.delete(id);
+      }
+      this.event('document.discarded',{documentId,removed:!source});await this.persist();return {documentId,removed:!source};
+    });
+  }
   async reloadFromDisk(documentId: string) {
     return this.serial(documentId, () => this.reloadFromDiskInside(documentId));
   }
