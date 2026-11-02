@@ -1,4 +1,5 @@
-import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFString, StandardFonts, rgb, degrees } from 'pdf-lib';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { Capabilities, DocumentModel, EditOperation, Format, FormatAdapter } from '../../contracts/src/index';
@@ -41,7 +42,7 @@ import { SheetAdapter } from "./sheet-editing";
 export class PdfAdapter implements FormatAdapter {
   id = 'pdf-lib-v1'; formats: Format[] = ['pdf'];
   fontPath = [process.env.AGENTVIEWER_PDF_FONT, 'C:/Windows/Fonts/simhei.ttf', 'C:/Windows/Fonts/arial.ttf'].find(p => p && existsSync(p));
-  capabilities(format: Format) { return cap(this.id, ['pdf.addText', 'pdf.highlight', 'pdf.markup', 'pdf.rotate', 'pdf.addPage'], format, ['增补内容与页面操作；不支持原有正文重写、真正脱敏及签名维护。', '中文增补需要可嵌入的字体；添加前会校验字符支持。']); }
+  capabilities(format: Format) { return cap(this.id, ['pdf.addText', 'pdf.highlight', 'pdf.markup', 'pdf.removeAnnotation', 'pdf.rotate', 'pdf.addPage'], format); }
   async open(bytes: Uint8Array, format: Format): Promise<DocumentModel> { const pdf = await PDFDocument.load(bytes); return { format, pageCount: pdf.getPageCount() }; }
   preview(model: DocumentModel, op: EditOperation) {
     if (!op.kind.startsWith('pdf.')) return unsupported();
@@ -53,28 +54,37 @@ export class PdfAdapter implements FormatAdapter {
   async apply(bytes: Uint8Array, model: DocumentModel, op: EditOperation) {
     const preview = this.preview(model, op); const pdf = await PDFDocument.load(bytes);
     if (op.kind === 'pdf.addPage') pdf.addPage();
-    else if (op.kind === 'pdf.markup') {
-      for (const rect of op.rects) {
+    else if (op.kind === 'pdf.markup' || op.kind === 'pdf.highlight') {
+      const style=op.kind==='pdf.markup'?op.style:'highlight';
+      for (const rect of op.kind==='pdf.markup'?op.rects:[op]) {
         const page = pdf.getPage(rect.pageIndex), crop = page.getCropBox(), rotation = ((page.getRotation().angle % 360) + 360) % 360;
         const toPdf = (x: number, y: number) => rotation === 90 ? { x: crop.x + y * crop.width, y: crop.y + x * crop.height } : rotation === 180 ? { x: crop.x + (1-x)*crop.width, y: crop.y + y*crop.height } : rotation === 270 ? { x: crop.x + (1-y)*crop.width, y: crop.y + (1-x)*crop.height } : { x: crop.x+x*crop.width, y: crop.y+(1-y)*crop.height };
-        if (op.style === 'highlight') { const a=toPdf(rect.x,rect.y),b=toPdf(rect.x+rect.width,rect.y+rect.height); page.drawRectangle({x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),width:Math.abs(a.x-b.x),height:Math.abs(a.y-b.y),color:rgb(1,.8,.18),opacity:.3}); }
-        else { const y=rect.y+rect.height*(op.style==='underline'?.92:.5);page.drawLine({start:toPdf(rect.x,y),end:toPdf(rect.x+rect.width,y),thickness:1.2,color:rgb(.2,.4,.8)}); }
+        const points=[toPdf(rect.x,rect.y),toPdf(rect.x+rect.width,rect.y),toPdf(rect.x,rect.y+rect.height),toPdf(rect.x+rect.width,rect.y+rect.height)];
+        const xs=points.map(point=>point.x),ys=points.map(point=>point.y);
+        const annotation=pdf.context.obj({Type:'Annot',Subtype:style==='highlight'?'Highlight':style==='underline'?'Underline':'StrikeOut',Rect:[Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)],QuadPoints:points.flatMap(point=>[point.x,point.y]),C:style==='highlight'?[1,.8,.18]:[.2,.4,.8],CA:style==='highlight'?.3:1,F:4,NM:PDFString.of(randomUUID())});
+        page.node.addAnnot(pdf.context.register(annotation));
       }
     }
+    else if(op.kind==='pdf.removeAnnotation'){
+      const page=pdf.getPage(op.pageIndex),annotations=page.node.lookupMaybe(PDFName.of('Annots'),PDFArray);
+      const index=annotations?.asArray().findIndex(value=>value instanceof PDFRef&&`${value.objectNumber}R${value.generationNumber||''}`===op.annotationId)??-1;
+      assertRange(index>=0,'PDF 批注已不存在。');
+      const annotation=annotations!.lookup(index,PDFDict),subtype=annotation.lookup(PDFName.of('Subtype'),PDFName).decodeText();
+      assertRange(['Text','FreeText','Line','Square','Circle','Highlight','Underline','Squiggly','StrikeOut','Stamp','Ink'].includes(subtype),'该目标不是可删除的 PDF 批注。');
+      annotations!.remove(index);
+    }
     else if (op.kind === 'pdf.rotate') { const page = pdf.getPage(op.pageIndex); page.setRotation(degrees((page.getRotation().angle + op.degrees) % 360)); }
-    else if (op.kind === 'pdf.addText' || op.kind === 'pdf.highlight') {
+    else if (op.kind === 'pdf.addText') {
       const page = pdf.getPage(op.pageIndex), { width, height } = page.getSize();
-      assertRange(page.getRotation().angle === 0 && page.getCropBox().x === 0 && page.getCropBox().y === 0, '当前增补坐标仅支持未旋转且 CropBox 原点为零的页面；先使用原方向或等待坐标适配升级。');
-      if (op.kind === 'pdf.addText') {
-        if (this.fontPath) {
+      assertRange(page.getRotation().angle === 0 && page.getCropBox().x === 0 && page.getCropBox().y === 0, '该页面的旋转或裁切坐标不支持文字增补。');
+      if (this.fontPath) {
           const { default: fontkit } = await import('@pdf-lib/fontkit');
           pdf.registerFontkit(fontkit);
         }
         const font = this.fontPath ? await pdf.embedFont(await readFile(this.fontPath), { subset: true }) : await pdf.embedFont(StandardFonts.Helvetica);
         const charset = new Set(font.getCharacterSet());
         assertRange([...op.text].every(c => charset.has(c.codePointAt(0)!)), '当前 PDF 字体不支持所输入字符，请配置 AGENTVIEWER_PDF_FONT。');
-        page.drawText(op.text, { x: op.x * width, y: (1 - op.y) * height - op.size, size: op.size, font, color: rgb(0.2, 0.15, 0.55) });
-      } else page.drawRectangle({ x: op.x * width, y: (1 - op.y - op.height) * height, width: op.width * width, height: op.height * height, color: rgb(1, 0.86, 0.2), opacity: 0.35 });
+      page.drawText(op.text, { x: op.x * width, y: (1 - op.y) * height - op.size, size: op.size, font, color: rgb(0.2, 0.15, 0.55) });
     } else return unsupported();
     const output = await pdf.save();
     return { bytes: output, model: await this.open(output, 'pdf'), warnings: preview.warnings };

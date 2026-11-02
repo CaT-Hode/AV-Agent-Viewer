@@ -22,7 +22,7 @@ type WindowProps = { request:typeof call; window: OfficeSurfaceWindow; identity:
 
 function EmbeddedOfficeWindow(props:WindowProps){
   const titleId=useId(),shell=useRef<HTMLDivElement>(null),form=useRef<OfficeDialogFormHandle>(null),closing=useRef(false),latest=useRef(props);latest.current=props;
-  const [dialog,setDialog]=useState(props.window.dialog),[loading,setLoading]=useState(!props.window.dialog),[error,setError]=useState(''),[compatibility,setCompatibility]=useState(false),[switching,setSwitching]=useState(false),[isClosing,setClosing]=useState(false),[readAttempt,setReadAttempt]=useState(0);
+  const [dialog,setDialog]=useState(props.window.dialog),[loading,setLoading]=useState(!props.window.dialog),[error,setError]=useState(''),[nativeOptions,setNativeOptions]=useState(false),[switching,setSwitching]=useState(false),[isClosing,setClosing]=useState(false),[readAttempt,setReadAttempt]=useState(0);
   useEffect(()=>{
     if(props.window.kind!=='dialog')return;
     let active=true;
@@ -37,7 +37,7 @@ function EmbeddedOfficeWindow(props:WindowProps){
   const currentDialog=props.window.dialog&&(!dialog||props.window.dialog.revision>=dialog.revision)?props.window.dialog:dialog;
   const tableDialog=currentDialog?.root.nativeId==='InsertTableDialog';
   useLayoutEffect(()=>{
-    if(!props.active||!props.modal||compatibility)return;
+    if(!props.active||!props.modal||nativeOptions)return;
     let previous:HTMLElement|undefined;
     const within=(target:HTMLElement)=>shell.current?.contains(target)||target.closest('[data-office-dialog-portal]')?.getAttribute('data-office-dialog-portal')===props.window.instanceId;
     const contain=(event:FocusEvent)=>{
@@ -48,7 +48,7 @@ function EmbeddedOfficeWindow(props:WindowProps){
       (saved??fallback)?.focus({preventScroll:true});
     };
     document.addEventListener('focusin',contain,true);return()=>document.removeEventListener('focusin',contain,true);
-  },[props.active,props.modal,props.window.instanceId,compatibility]);
+  },[props.active,props.modal,props.window.instanceId,nativeOptions]);
   useEffect(()=>{
     if(!props.active||props.window.kind!=='dialog')return;
     const focus=()=>{const targets=dialogFocusables(shell.current),target=targets.find(node=>node.matches('input,select,textarea'))??targets[0]??shell.current;target?.focus({preventScroll:true});};
@@ -70,12 +70,12 @@ function EmbeddedOfficeWindow(props:WindowProps){
     }catch(cause){if(shell.current){latest.current.onError(cause);setError(cause instanceof Error?cause.message:String(cause));}}
     finally{closing.current=false;if(shell.current)setClosing(false);}
   };
-  const showCompatibility=async()=>{
+  const showNativeOptions=async()=>{
     if(switching)return;setSwitching(true);setError('');
     try{
       const current=form.current;if(currentDialog&&!current)throw new Error('文档选项尚未准备好。');
       await current?.flush();
-      if(shell.current&&officeSurfaceWindowOwned(latest.current.getState(),latest.current.identity))setCompatibility(true);
+      if(shell.current&&officeSurfaceWindowOwned(latest.current.getState(),latest.current.identity))setNativeOptions(true);
     }catch(cause){if(shell.current){latest.current.onError(cause);setError(cause instanceof Error?cause.message:String(cause));}}
     finally{if(shell.current)setSwitching(false);}
   };
@@ -83,12 +83,12 @@ function EmbeddedOfficeWindow(props:WindowProps){
     event.stopPropagation();if(event.nativeEvent.isComposing||event.nativeEvent.keyCode===229)return;if(event.key==='Escape'){event.preventDefault();void close();return;}
     if(event.key==='Tab'&&props.modal&&shell.current){const focusable=dialogFocusables(shell.current);const first=focusable[0],last=focusable.at(-1);if(!first){event.preventDefault();shell.current.focus();}else if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}}
   };
-  if(props.window.kind!=='dialog'||compatibility)return <CanvasOfficeWindow {...props} onStructured={currentDialog?()=>setCompatibility(false):undefined}/>;
+  if(props.window.kind!=='dialog'||nativeOptions)return <CanvasOfficeWindow {...props} onStructured={currentDialog?()=>setNativeOptions(false):undefined}/>;
   return <div ref={shell} tabIndex={-1} className="modal material-host embedded-office-dialog-window office-structured-dialog" role="dialog" aria-modal={props.modal||undefined} aria-labelledby={titleId} aria-hidden={!props.active||undefined} inert={!props.active||undefined} data-office-window-id={props.window.id} data-office-window-instance={props.window.instanceId} style={{zIndex:80+props.index}} onKeyDown={keyboard}>
     <LiquidGlassSurface variant="panel"/>
     <div className="modal-heading embedded-office-window-heading"><span className="office-dialog-heading-icon" aria-hidden="true">{tableDialog?<Table2 size={21}/>:<SlidersHorizontal size={21}/>}</span><div className="office-dialog-heading-text"><h2 id={titleId}>{officeDialogCaption(props.window.title)||'文档设置'}</h2>{tableDialog&&<p>设置行列、标题行与分页方式</p>}</div><button type="button" className="icon-button embedded-office-window-close" aria-label="关闭文档对话框" title="关闭" disabled={isClosing} onClick={()=>void close()}><X size={17}/></button></div>
-    {currentDialog?<OfficeDialogForm ref={form} {...props} window={{...props.window,dialog:currentDialog}} onState={state=>{const next=state.windows?.find(window=>window.instanceId===props.window.instanceId)?.dialog;if(next)setDialog(next);props.onState(state);}} onClose={()=>void close()}/>:loading?<div className="office-dialog-loading" role="status">正在读取文档选项…</div>:<div className="office-dialog-unavailable"><p>暂时无法读取这个窗口的表单。</p><div><button type="button" className="button" onClick={()=>setReadAttempt(value=>value+1)}>重新读取</button><button type="button" className="button" disabled={switching} onClick={()=>void showCompatibility()}>使用原始选项</button></div></div>}
-    {currentDialog&&!currentDialog.complete&&<div className="office-dialog-compatibility"><span>这个窗口还包含特殊控件。</span><button type="button" disabled={switching} onClick={()=>void showCompatibility()}>打开完整选项</button></div>}
+    {currentDialog?<OfficeDialogForm ref={form} {...props} window={{...props.window,dialog:currentDialog}} onState={state=>{const next=state.windows?.find(window=>window.instanceId===props.window.instanceId)?.dialog;if(next)setDialog(next);props.onState(state);}} onClose={()=>void close()}/>:loading?<div className="office-dialog-loading" role="status">正在读取文档选项…</div>:<div className="office-dialog-unavailable"><p>暂时无法读取这个窗口的表单。</p><div><button type="button" className="button" onClick={()=>setReadAttempt(value=>value+1)}>重新读取</button><button type="button" className="button" disabled={switching} onClick={()=>void showNativeOptions()}>打开完整选项</button></div></div>}
+    {currentDialog&&!currentDialog.complete&&<div className="office-dialog-native-options"><button type="button" disabled={switching} onClick={()=>void showNativeOptions()}>打开完整选项</button></div>}
     {error&&<p className="office-dialog-error" role="alert">{error}</p>}
   </div>;
 }

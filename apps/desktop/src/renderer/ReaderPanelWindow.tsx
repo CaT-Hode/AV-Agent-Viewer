@@ -26,5 +26,5 @@ export function ReaderPanelWindow() {
     return () => { unsubscribe?.(); window.removeEventListener('keydown', shortcut); };
   }, []);
   const rect = backdrop.rect;
-  return <div id="reader-panel-content" className="workbench reader-panel-workbench">{!translation && <div className="reader-panel-backdrop" style={{ backgroundImage: backdrop.image ? `url("${backdrop.image}")` : undefined, backgroundSize: rect ? `${rect.width}px ${rect.height}px` : undefined, backgroundPosition: rect ? `${rect.x}px ${rect.y}px` : undefined } as CSSProperties} />}</div>;
+  return <div id="reader-panel-content" className="workbench reader-panel-workbench">{!translation && <div className="reader-panel-backdrop" style={{ backgroundImage: backdrop.image ? `url("${backdrop.image}")` : undefined, backgroundSize: rect ? `${rect.width}px ${rect.height}px` : undefined, backgroundPosition: rect ? `${rect.x}px calc(${rect.y}px - var(--reader-panel-offset-y,0px))` : undefined } as CSSProperties} />}</div>;
 }

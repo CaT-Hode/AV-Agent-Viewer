@@ -5,7 +5,7 @@ import { AgentSession } from '../packages/sdk/src/agent-session';
 import { createAgentMcpServer } from '../apps/local-service/src/mcp-server';
 const logPath=process.env.AGENTVIEWER_PROBE_LOG!;
 const record=(value:unknown)=>appendFile(logPath,JSON.stringify(value)+'\n');
-const core=new ViewerCore({load:async()=>undefined,save:async()=>{}});
+const core=new ViewerCore({load:async()=>undefined,saveDocuments:async()=>{}});
 await core.initialize();await core.openBytes('DiscoveryFixture.md',new TextEncoder().encode('# DiscoveryFixture\n\nSynthetic probe content.\n'),'markdown');
 const agent=new AgentSession(core,'codex-host-probe',process.env.AGENTVIEWER_PROBE_DIR!);
 if(process.env.AGENTVIEWER_PROBE_SEED_REFS==='1'){

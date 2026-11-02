@@ -404,10 +404,6 @@ void app.whenReady().then(async () => {
       const revisions = known && typeof known === 'object' && !Array.isArray(known) ? Object.fromEntries(Object.entries(known).filter(([id, revision]) => core.documents.has(id) && Number.isSafeInteger(revision) && Number(revision) >= 0).slice(0, 10000)) as Record<string, number> : {};
       return core.stateForDisplay(revisions);
     }
-    if (method === 'workspace-export-recovery') {
-      for (const reader of windows.values()) await flushReaderWindow(reader);
-      return core.exportRecovery(String(args.path));
-    }
     if (method.startsWith('markdown-')) {
       const ownerId = [...windows].find(([, window]) => window === owner)?.[0];
       if (method === 'markdown-export-capabilities') return markdownExportCapabilities();

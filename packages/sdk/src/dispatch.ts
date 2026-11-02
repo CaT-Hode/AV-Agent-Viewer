@@ -75,7 +75,6 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     case 'commit': return core.commit(str('patchId'), str('idempotencyKey'), actor);
     case 'undo': return core.undo(str('transactionId'), actor);
     case 'save': return core.save(str('documentId'), args.path as string | undefined, actor === 'human' && !!args.allowOverwrite);
-    case 'workspace-export-recovery': return core.exportRecovery(str('path'));
     case 'browser-input': return core.browserInput(browserRequestSchema.parse(args));
     case 'browser-capture': if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请使用桌面浏览器。'); return core.browser.capture(str('viewId'));
     case 'browser-navigate': {

@@ -8,71 +8,135 @@ import { observeNavigationLane, readNavigationTargetLane } from '../lib/navigati
 import '../pdf-viewport.css';
 import type { DocumentInfo, EditOperation } from '../../../../../packages/contracts/src/index';
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-type PaintedPage = { page: pdfjs.PDFPageProxy; canvas: HTMLCanvasElement; viewport: pdfjs.PageViewport; ratio: number; color?: string; disposed: boolean; pending?: Promise<void>; task?: pdfjs.RenderTask };
+
+type Page = { index: number; wrap: HTMLDivElement; canvas: HTMLCanvasElement; layer: HTMLDivElement; controls: HTMLDivElement; page: pdfjs.PDFPageProxy; ready: boolean; base: pdfjs.PageViewport; viewport: pdfjs.PageViewport; text?: ReturnType<pdfjs.PDFPageProxy['getTextContent']>; annotations?: ReturnType<pdfjs.PDFPageProxy['getAnnotations']>; textLayer?: pdfjs.TextLayer; key?: string; task?: pdfjs.RenderTask; visible: boolean };
+type Anchor = { index: number; fraction: number; screenY: number; scrollLeft: number };
+const editableAnnotationTypes = new Set([pdfjs.AnnotationType.TEXT,pdfjs.AnnotationType.FREETEXT,pdfjs.AnnotationType.LINE,pdfjs.AnnotationType.SQUARE,pdfjs.AnnotationType.CIRCLE,pdfjs.AnnotationType.HIGHLIGHT,pdfjs.AnnotationType.UNDERLINE,pdfjs.AnnotationType.SQUIGGLY,pdfjs.AnnotationType.STRIKEOUT,pdfjs.AnnotationType.STAMP,pdfjs.AnnotationType.INK]);
+const annotationNames: Record<number,string> = { [pdfjs.AnnotationType.HIGHLIGHT]:'高亮',[pdfjs.AnnotationType.UNDERLINE]:'下划线',[pdfjs.AnnotationType.STRIKEOUT]:'删除线' };
 
 export function PdfReader({ document, zoom = 1, note, highlight, edit, pageRef, onReady }: { document: DocumentInfo; zoom?: number; note: string; highlight: boolean; edit(operation: EditOperation): Promise<void>; pageRef: React.RefObject<number>; onReady(): void }) {
-  const host = useRef<HTMLDivElement>(null), [error, setError] = useState('');
-  const [readingWidth,setReadingWidth] = useState(0);
+  const host = useRef<HTMLDivElement>(null), [error,setError] = useState(''), [readingWidth,setReadingWidth] = useState(0);
   const paperColor = useDocumentPaperColor();
-  const currentPaper = useRef(paperColor); currentPaper.current = paperColor;
-  const paintedPages = useRef<PaintedPage[]>([]);
-  const paint = (item: PaintedPage): Promise<void> => {
-    if (item.pending) return item.pending;
-    const pending = (async () => {
-      // Repaint cached page operators on colour changes; keep text layers,
-      // selection, scroll position and the loaded PDF document intact.
-      while (!item.disposed && item.color !== currentPaper.current) {
-        const background = currentPaper.current;
-        item.task = item.page.render({ canvas: item.canvas, canvasContext: item.canvas.getContext('2d')!, viewport: item.viewport, background, transform: item.ratio === 1 ? undefined : [item.ratio,0,0,item.ratio,0,0] });
-        await item.task.promise; item.color = background; item.canvas.dataset.documentPaper = background;
-      }
-    })().catch(error => { if (!item.disposed) throw error; }).finally(() => { item.pending = undefined; item.task = undefined; });
-    item.pending = pending; return pending;
+  const current = useRef({note,highlight,edit,pageRef,onReady,zoom,readingWidth,paperColor}); current.current = {note,highlight,edit,pageRef,onReady,zoom,readingWidth,paperColor};
+  const pages = useRef<Page[]>([]), generation = useRef(0), revision = useRef(document.revision), loading = useRef(true), running = useRef(false), requestFrame = useRef(0), viewUpdate = useRef<() => void>(()=>{}), queuePaint = useRef<() => void>(()=>{});
+  const loadedPdf=useRef<pdfjs.PDFDocumentProxy | undefined>(undefined);
+  const scrollport = () => host.current?.closest<HTMLElement>('.document-content');
+  const anchor = (): Anchor | undefined => {
+    const root=scrollport(); if(!root||!pages.current.length)return;
+    const box=root.getBoundingClientRect(), screenY=Math.min(box.height*.35,260), at=box.top+screenY;
+    const page=pages.current.find(item=>{const rect=item.wrap.getBoundingClientRect();return rect.bottom>at;})??pages.current.at(-1)!;
+    const rect=page.wrap.getBoundingClientRect(); return {index:page.index,fraction:(at-rect.top)/Math.max(1,rect.height),screenY,scrollLeft:root.scrollLeft};
   };
-  const callback = useRef({ note, highlight, edit, pageRef, onReady }); callback.current = { note, highlight, edit, pageRef, onReady };
-  useLayoutEffect(() => {
+  const restore = (value: Anchor | undefined) => {
+    const root=scrollport(), page=value&&pages.current[Math.min(value.index,pages.current.length-1)]; if(!root||!page||!value)return;
+    const rect=page.wrap.getBoundingClientRect(), box=root.getBoundingClientRect();
+    root.scrollTop+=rect.top-box.top+value.fraction*rect.height-value.screenY; root.scrollLeft=value.scrollLeft;
+  };
+  const visible = (page:Page,margin=700) => { const root=scrollport();if(!root)return false;const box=root.getBoundingClientRect(),rect=page.wrap.getBoundingClientRect();return rect.bottom>=box.top-margin&&rect.top<=box.bottom+margin; };
+  const paintKey = (page:Page) => `${revision.current}:${page.viewport.scale}:${Math.min(2,window.devicePixelRatio||1)}:${current.current.paperColor}`;
+  queuePaint.current=()=>{
+    if(running.current||requestFrame.current)return;
+    requestFrame.current=requestAnimationFrame(()=>{
+      requestFrame.current=0;if(running.current)return;running.current=true;
+      const run=async()=>{
+        for(;;){
+          if(loading.current)break;
+          const candidates=pages.current.filter(item=>item.visible&&item.key!==paintKey(item));
+          candidates.sort((a,b)=>Math.abs(a.index-current.current.pageRef.current)-Math.abs(b.index-current.current.pageRef.current));
+          const item=candidates[0];if(!item)break;
+          const owned=generation.current;let key=paintKey(item);
+          try{
+          if(!item.ready){
+            const source=loadedPdf.current;if(!source)break;
+            const page=await source.getPage(item.index+1);if(generation.current!==owned)continue;
+            const saved=anchor();item.page=page;item.ready=true;item.base=page.getViewport({scale:1});
+            const scale=Math.min(1.1,current.current.readingWidth/item.base.width)*current.current.zoom;item.viewport=page.getViewport({scale});item.wrap.style.width=item.viewport.width+'px';item.wrap.style.height=item.viewport.height+'px';item.wrap.style.setProperty('--scale-factor',String(scale));item.wrap.style.setProperty('--total-scale-factor',String(scale));restore(saved);
+          }
+          key=paintKey(item);const viewport=item.viewport,ratio=Math.min(2,window.devicePixelRatio||1,Math.sqrt(8_000_000/(viewport.width*viewport.height))),color=current.current.paperColor;
+          const canvas=window.document.createElement('canvas');canvas.width=Math.ceil(viewport.width*ratio);canvas.height=Math.ceil(viewport.height*ratio);canvas.style.width='100%';canvas.style.height='100%';
+            item.task=item.page.render({canvas,canvasContext:canvas.getContext('2d')!,viewport,background:color,transform:ratio===1?undefined:[ratio,0,0,ratio,0,0]});
+            await item.task.promise;
+            if(generation.current!==owned||key!==paintKey(item)||!item.wrap.isConnected)continue;
+            item.canvas.replaceWith(canvas);item.canvas=canvas;canvas.dataset.documentPaper=color;
+            const text=await (item.text??=item.page.getTextContent());
+            if(generation.current!==owned||key!==paintKey(item))continue;
+            item.textLayer?.cancel();
+            if(item.layer.dataset.scale!==String(viewport.scale)||item.layer.dataset.revision!==String(revision.current)){
+              const layer=window.document.createElement('div');layer.className='textLayer';layer.style.setProperty('--total-scale-factor',String(viewport.scale));
+              const textLayer=new pdfjs.TextLayer({textContentSource:text,container:layer,viewport});item.textLayer=textLayer;await textLayer.render();
+              if(generation.current!==owned||key!==paintKey(item))continue;
+              layer.dataset.scale=String(viewport.scale);layer.dataset.revision=String(revision.current);item.layer.replaceWith(layer);item.layer=layer;
+            }
+            const annotations=await (item.annotations??=item.page.getAnnotations({intent:'display'}));
+            if(generation.current!==owned||key!==paintKey(item))continue;
+            item.controls.replaceChildren();
+            for(const annotation of annotations){
+              if(!editableAnnotationTypes.has(annotation.annotationType)||!/^\d+R\d*$/.test(annotation.id))continue;
+              const [x1,y1]=viewport.convertToViewportPoint(annotation.rect[0],annotation.rect[1]),[x2,y2]=viewport.convertToViewportPoint(annotation.rect[2],annotation.rect[3]), control=window.document.createElement('button');
+              control.className='pdf-annotation-delete';control.type='button';control.textContent='×';control.title=control.ariaLabel='删除'+(annotationNames[annotation.annotationType]??'批注');control.dataset.sourceKind='pdf-native-annotation';control.dataset.annotationId=annotation.id;
+              control.style.left=Math.min(viewport.width-20,Math.max(0,Math.max(x1,x2)-6))+'px';control.style.top=Math.max(0,Math.min(y1,y2)-12)+'px';
+              control.addEventListener('pointerdown',event=>{event.stopPropagation();event.preventDefault();});
+              control.addEventListener('click',event=>{event.stopPropagation();control.disabled=true;void current.current.edit({kind:'pdf.removeAnnotation',pageIndex:item.index,annotationId:annotation.id}).catch(error=>{setError(String(error));control.disabled=false;});});item.controls.append(control);
+            }
+            item.controls.style.visibility='';item.key=key;current.current.onReady();
+            // Keep nearby pages warm, release large rasters after leaving them.
+            const cached=pages.current.filter(page=>!page.visible&&page.canvas.width>0).sort((a,b)=>Math.abs(b.index-item.index)-Math.abs(a.index-item.index));
+            let pixels=pages.current.reduce((sum,page)=>sum+page.canvas.width*page.canvas.height,0);
+            for(const page of cached){if(pixels<=24_000_000)break;pixels-=page.canvas.width*page.canvas.height;page.canvas.width=page.canvas.height=0;page.key=undefined;}
+          }catch(error){if((error as Error).name!=='RenderingCancelledException'&&generation.current===owned){setError(String(error));item.key=key;}}
+          finally{item.task=undefined;}
+        }
+      };
+      void run().finally(()=>{running.current=false;});
+    });
+  };
+  viewUpdate.current=()=>{
+    const saved=anchor();generation.current++;
+    for(const item of pages.current){
+      item.task?.cancel();const scale=Math.min(1.1,current.current.readingWidth/item.base.width)*current.current.zoom,viewport=item.base.clone({scale});item.viewport=viewport;
+      item.wrap.style.width=viewport.width+'px';item.wrap.style.height=viewport.height+'px';item.wrap.style.setProperty('--scale-factor',String(scale));item.wrap.style.setProperty('--total-scale-factor',String(scale));
+      const textScale=Number(item.layer.dataset.scale);if(textScale){item.layer.style.setProperty('--total-scale-factor',String(textScale));item.layer.style.transform=`scale(${scale/textScale})`;item.layer.style.transformOrigin='0 0';item.layer.style.width=viewport.width/(scale/textScale)+'px';item.layer.style.height=viewport.height/(scale/textScale)+'px';}
+      if(item.key!==paintKey(item))item.controls.style.visibility='hidden';
+    }
+    restore(saved);for(const item of pages.current)item.visible=visible(item);queuePaint.current();
+  };
+  useLayoutEffect(()=>{
     const reader=host.current?.closest<HTMLElement>('.reader-panel');if(!reader)return;
     const update=()=>{
-      const box=reader.getBoundingClientRect(),workbench=reader.closest('.workbench');
-      const leftRail=workbench?.querySelector('.activity-rail')?.getBoundingClientRect(),rightRail=workbench?.querySelector('.ai-rail')?.getBoundingClientRect();
-      const railLeft=Math.max(12,leftRail?leftRail.right-box.left+12:12),railRight=Math.max(12,rightRail?box.right-rightRail.left+12:12);
-      const lane=readNavigationTargetLane(reader),left=Math.max(railLeft,lane.left),right=Math.max(railRight,box.width-lane.right);
-      for(const [name,value] of [['--pdf-safe-left',left],['--pdf-safe-right',right]] as const){const text=value.toFixed(3)+'px';if(reader.style.getPropertyValue(name)!==text)reader.style.setProperty(name,text);}
-      // Only real viewport/rail changes refit pixels. Opening a tool changes
-      // scroll padding, never reloads the PDF or silently changes its zoom.
+      const box=reader.getBoundingClientRect(),workbench=reader.closest('.workbench'),leftRail=workbench?.querySelector('.activity-rail')?.getBoundingClientRect(),rightRail=workbench?.querySelector('.ai-rail')?.getBoundingClientRect();
+      const railLeft=Math.max(12,leftRail?leftRail.right-box.left+12:12),railRight=Math.max(12,rightRail?box.right-rightRail.left+12:12),lane=readNavigationTargetLane(reader);
+      for(const [name,value]of[['--pdf-safe-left',Math.max(railLeft,lane.left)],['--pdf-safe-right',Math.max(railRight,box.width-lane.right)]]as const){const text=value.toFixed(3)+'px';if(reader.style.getPropertyValue(name)!==text)reader.style.setProperty(name,text);}
       const width=Math.max(1,Math.round(box.width-railLeft-railRight));setReadingWidth(old=>old===width?old:width);
     };
-    const stop=observeNavigationLane(reader,update);
-    return()=>{stop();reader.style.removeProperty('--pdf-safe-left');reader.style.removeProperty('--pdf-safe-right');};
+    const stop=observeNavigationLane(reader,update,false);return()=>{stop();reader.style.removeProperty('--pdf-safe-left');reader.style.removeProperty('--pdf-safe-right');};
   },[document.id]);
-  useEffect(() => {
-    if(!readingWidth)return;
-    let disposed = false; let task: ReturnType<typeof pdfjs.getDocument> | undefined;
-    const render = async () => {
-      const input = await bytes(document.id);
-      // A pending byte reply may outlive zoom, resize or tab disposal. Its old
-      // effect no longer owns a display and must never start another worker.
-      if(disposed)return;
-      task = pdfjs.getDocument({ data: input }); const pdf = await task.promise;
-      if (disposed) return; host.current!.replaceChildren();
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i); if (disposed) return;
-        const scale = Math.min(1.1, readingWidth / page.getViewport({ scale: 1 }).width) * zoom;
-        const viewport = page.getViewport({ scale }), ratio = window.devicePixelRatio || 1;
-        const wrap = window.document.createElement('div'); wrap.className = 'pdf-page'; wrap.dataset.pageIndex = String(i - 1); wrap.style.width = viewport.width + 'px'; wrap.style.height = viewport.height + 'px'; wrap.style.setProperty('--scale-factor', String(scale)); wrap.style.setProperty('--total-scale-factor', String(scale));
-        const canvas = window.document.createElement('canvas'); canvas.width = viewport.width * ratio; canvas.height = viewport.height * ratio; canvas.style.width = viewport.width + 'px'; canvas.style.height = viewport.height + 'px'; wrap.appendChild(canvas);
-        const layer = window.document.createElement('div'); layer.className = 'textLayer'; wrap.appendChild(layer); host.current!.appendChild(wrap);
-        const painted: PaintedPage = { page, canvas, viewport, ratio, disposed: false }; paintedPages.current.push(painted);
-        await paint(painted);
-        const text = await page.getTextContent(); if (disposed) return; await new pdfjs.TextLayer({ textContentSource: text, container: layer, viewport }).render();
-        wrap.addEventListener('pointerdown', () => { callback.current.pageRef.current = i - 1; });
-        wrap.addEventListener('click', event => { const current = callback.current; if (!current.note && !current.highlight) return; const rect = wrap.getBoundingClientRect(); const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height; void current.edit(current.highlight ? { kind: 'pdf.highlight', pageIndex: i - 1, x, y, width: Math.min(0.25, 1 - x), height: Math.min(0.03, 1 - y) } : { kind: 'pdf.addText', pageIndex: i - 1, x, y, text: current.note, size: 16 }).catch(() => {}); });
-      }
-      if (!disposed) callback.current.onReady();
+  useLayoutEffect(()=>{if(readingWidth)viewUpdate.current();},[zoom,readingWidth,paperColor]);
+  useEffect(()=>{
+    let disposed=false;const root=scrollport();if(!root)return;
+    const saved=anchor();let task:ReturnType<typeof pdfjs.getDocument>|undefined;loading.current=true;setError('');
+    const visibility=new IntersectionObserver(entries=>{for(const entry of entries){const item=pages.current[Number((entry.target as HTMLElement).dataset.pageIndex)];if(item?.wrap===entry.target)item.visible=entry.isIntersecting;}queuePaint.current();},{root,rootMargin:'700px 0px'});
+    const load=async()=>{
+      const input=await bytes(document.id);if(disposed)return;task=pdfjs.getDocument({data:input});const pdf=await task.promise;if(disposed)return;
+      const first=await pdf.getPage(1);if(disposed)return;
+      generation.current++;revision.current=document.revision;loadedPdf.current=pdf;
+      const old=pages.current;for(const item of old){item.task?.cancel();item.textLayer?.cancel();}
+      pages.current=Array.from({length:pdf.numPages},(_,index)=>{
+        const page=first;
+        const reused=old[index],wrap=reused?.wrap??window.document.createElement('div'),canvas=reused?.canvas??window.document.createElement('canvas'),layer=reused?.layer??window.document.createElement('div'),controls=reused?.controls??window.document.createElement('div');
+        wrap.className='pdf-page';wrap.dataset.pageIndex=String(index);layer.className='textLayer';controls.className='pdf-annotation-controls';controls.replaceChildren();
+        if(!reused){canvas.style.width=canvas.style.height='100%';wrap.append(canvas,layer,controls);host.current!.append(wrap);
+          wrap.addEventListener('pointerdown',()=>{current.current.pageRef.current=index;});
+          wrap.addEventListener('click',event=>{const callback=current.current;if(!callback.note&&!callback.highlight)return;const rect=wrap.getBoundingClientRect(),x=(event.clientX-rect.left)/rect.width,y=(event.clientY-rect.top)/rect.height;void callback.edit(callback.highlight?{kind:'pdf.highlight',pageIndex:index,x,y,width:Math.min(.25,1-x),height:Math.min(.03,1-y)}:{kind:'pdf.addText',pageIndex:index,x,y,text:callback.note,size:16}).catch(error=>setError(String(error)));});
+        }
+        return {index,wrap,canvas,layer,controls,page,ready:index===0,base:index===0?page.getViewport({scale:1}):old[index]?.base??page.getViewport({scale:1}),viewport:page.getViewport({scale:1}),visible:false};
+      });
+      for(const item of old.slice(pdf.numPages))item.wrap.remove();
+      for(const item of pages.current)visibility.observe(item.wrap);
+      loading.current=false;viewUpdate.current();restore(saved);for(const item of pages.current)item.visible=visible(item);queuePaint.current();
     };
-    void render().catch(e => { if (!disposed) setError(String(e)); });
-    return () => { disposed = true; for (const painted of paintedPages.current) { painted.disposed = true; painted.task?.cancel(); } paintedPages.current = []; void task?.destroy(); };
-  }, [document.id, document.revision, zoom,readingWidth]);
-  useEffect(() => { let active = true; void Promise.all(paintedPages.current.map(paint)).catch(error => { if (active) setError(String(error)); }); return () => { active = false; }; }, [paperColor]);
-  return <div className="pdf-content" ref={host}>{error && <p className="error-text">{error}</p>}</div>;
+    void load().catch(error=>{if(!disposed)setError(String(error));});
+    return()=>{disposed=true;visibility.disconnect();generation.current++;for(const item of pages.current){item.task?.cancel();item.textLayer?.cancel();}void task?.destroy();};
+  },[document.id,document.revision]);
+  useEffect(()=>()=>{cancelAnimationFrame(requestFrame.current);for(const item of pages.current)item.wrap.remove();pages.current=[];},[document.id]);
+  return <div className="pdf-content" ref={host}>{error&&<p className="error-text" role="alert">{error}</p>}</div>;
 }

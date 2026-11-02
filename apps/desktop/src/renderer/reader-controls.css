@@ -1,7 +1,7 @@
 :root[data-theme] .workbench .navigation-zoom { gap: 0; }
 :root[data-theme] .workbench .navigation-zoom .icon-button { width: 26px; }
-.navigation-zoom-value { display: flex; align-items: center; font-size: 11px; color: var(--navigation-ink, var(--glass-ink)); }
-.navigation-zoom-value input { width: 40px; padding: 5px 0; text-align: right; color: inherit; background: transparent; border: 0; outline: 0; font: inherit; appearance: textfield; }
+.navigation-zoom-value { display:flex; align-items:center; justify-content:center; gap:1px; width:49px; height:34px; font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--navigation-ink,var(--glass-ink)); }
+.navigation-zoom-value input { min-width:0; flex:none; padding:5px 0; text-align:center; color:inherit; background:transparent; border:0; outline:0; font:inherit; appearance:textfield; }
 .navigation-zoom-value input::-webkit-inner-spin-button { appearance: none; }
 .navigation-zoom-value input:focus-visible { outline: 2px solid var(--accent); border-radius: 5px; }
 .reading-content-body { min-height: 100%; }

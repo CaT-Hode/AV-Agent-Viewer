@@ -16,7 +16,6 @@ ctest --test-dir build -C Release --output-on-failure
 - `DesktopGlass.cpp`：DXGI/WGC、ROI atlas、GPU 槽、DirectComposition。
 - `GlassShader.h`：嵌入式 HLSL 与128字节常量布局，可独立迁移着色器。
 - `examples/minimal.cpp`：Win32 宿主及鼠标调度。
-- `tests/shader_smoke.cpp`：WARP 合成纹理测试，不启动桌面捕获。
 
 ## 宿主生命周期
 

@@ -27,11 +27,11 @@ export function useSidebarPresence(show: boolean, identity: unknown, side: strin
     return () => { generation.current++; cancelAnimationFrame(frame); };
   }, [show, identity, side, mode, enabled]);
   const changed = state.identity !== identity, present = changed ? show : show || state.present;
-  const presentation = sidebarSpringPresentation(changed ? 0 : state.progress, side);
+  const presentation = sidebarSpringPresentation(changed ? 0 : state.progress);
   return { present, duration: mode === 'elegant' ? 1400 : 1000, props: {
     'data-motion-phase': changed ? show ? 'enter' : 'exit' : state.phase,
     'data-sidebar-spring': enabled ? 'true' : undefined,
-    style: { '--motion-duration': `${mode === 'elegant' ? 1400 : 1000}ms`, '--sidebar-spring-x': `${presentation.x}px`, '--sidebar-spring-scale-x': presentation.scaleX, '--sidebar-spring-scale-y': presentation.scaleY, '--sidebar-spring-alpha': presentation.alpha } as CSSProperties,
+    style: { '--motion-duration': `${mode === 'elegant' ? 1400 : 1000}ms`, '--sidebar-spring-progress': presentation.progress, '--sidebar-spring-alpha': presentation.alpha } as CSSProperties,
     inert: !show || undefined, 'aria-hidden': !show || undefined,
   } };
 }

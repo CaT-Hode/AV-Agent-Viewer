@@ -28,11 +28,11 @@ export const normalizeViewZoom = (factor: number) => Math.round(factor * 100) / 
 const nativeCommandEdits = (command: string) => !/^\.uno:(?:Copy(?:$|Text$|HyperlinkLocation$|Url$)|Select|Print|PrinterSetup|Zoom|Find|Search|GoTo|Goto|JumpTo|Navigator|Help|NextPage|PreviousPage|FirstPage|LastPage|Browse)/.test(command);
 const nativeInputEdits = (action: BrowserAction) => action.kind === 'type' ? action.text.length > 0 : action.kind === 'press' && (['Backspace', 'Delete'].includes(action.key) || action.key.length === 1 && !action.modifiers.some(modifier => ['control', 'meta', 'alt'].includes(modifier)));
 // Keep retry identity without retaining every historical text replacement.
-const fingerprint = (payload: string) => /^sha256:[0-9a-f]{64}$/.test(payload) ? payload : 'sha256:' + createHash('sha256').update(payload).digest('hex');
+const fingerprint = (payload: string) => 'sha256:' + createHash('sha256').update(payload).digest('hex');
 interface InternalDocument { info: DocumentInfo; bytes: Uint8Array; sourceHash?: string }
 export interface FrozenDocumentSource { document: DocumentInfo; bytes: Uint8Array; sha256: string }
 import type { Annotation } from '../../selection-tools/src/index';
-interface StoredWorkspace { annotations?: Annotation[]; schemaVersion: string; documents: { info: DocumentInfo; bytes: string | Uint8Array; sourceHash?: string }[]; views: ViewInfo[]; activeViewId?: string; lastHumanViewId?: string; receipts?: [string, ReceiptRecord][]; patches?: [string, PreparedPatch][] }
+interface StoredWorkspace { annotations?: Annotation[]; schemaVersion: string; documents: { info: DocumentInfo; bytes: Uint8Array; sourceHash?: string }[]; views: ViewInfo[]; activeViewId?: string; lastHumanViewId?: string; receipts?: [string, ReceiptRecord][]; patches?: [string, PreparedPatch][] }
 type UndoEntry =
   | { kind: 'snapshot'; documentId: string; viewId?: string; before: InternalDocument; afterRevision: number; native?: never }
   | { kind: 'text'; documentId: string; viewId?: string; inverse: Extract<EditOperation, { kind: 'text.replace' }>; afterRevision: number; native?: never }
@@ -79,7 +79,6 @@ export class ViewerCore extends EventEmitter {
   private persistenceResult = 0;
   private readonly nativeCheckpointTimers = new Map<string, NodeJS.Timeout>();
   private readonly nativeCheckpointStarted = new Map<string, number>();
-  private recoveryEncodingCounts = { encodes: 0, encodedSourceBytes: 0, sharedCopyBytes: 0 };
   lastPersistenceError?: string;
   constructor(readonly repository: WorkspaceRepository, readonly registry: AdapterRegistry = createRegistry(), options: { receiptLimits?: { perDocumentBytes?: number; totalBytes?: number } } = {}) { super(); this.receipts = new ReceiptLedger(options.receiptLimits?.perDocumentBytes, options.receiptLimits?.totalBytes); }
   async initialize() {
@@ -89,19 +88,13 @@ export class ViewerCore extends EventEmitter {
     // load transfers its restored objects to Core (including info/model). Keep
     // the owned byte identity too, so the repository can reuse verified blobs
     // on the first metadata checkpoint instead of freezing every file again.
-    for (const entry of saved.documents) { delete entry.info.nativeOffice; this.documents.set(entry.info.id, { info: entry.info, bytes: typeof entry.bytes === 'string' ? new Uint8Array(Buffer.from(entry.bytes, 'base64')) : entry.bytes, sourceHash: entry.sourceHash }); }
+    for (const entry of saved.documents) { delete entry.info.nativeOffice; this.documents.set(entry.info.id, { info: entry.info, bytes: entry.bytes, sourceHash: entry.sourceHash }); }
     for (const entry of this.documents.values()) if (entry.info.format !== 'web') entry.info.capabilities = this.registry.resolve(entry.info.format).capabilities(entry.info.format);
     for (const savedView of saved.views) { const { agentState: _onlineState, ...view } = savedView; this.views.set(view.id, { ...view, windowId: 'main', context: view.context ? { ...view.context, quality: 'last-confirmed' } : undefined }); }
     for (const annotation of saved.annotations ?? []) this.annotations.set(annotation.id, annotation);
     this.activeViewId = saved.activeViewId;
     this.lastHumanViewId = saved.lastHumanViewId;
-    for (const [id, receipt] of saved.receipts ?? []) {
-      let patchId=receipt.patchId;
-      if (!patchId && !receipt.payload.startsWith('sha256:')) {
-        try { const patch=JSON.parse(receipt.payload); if (patch && typeof patch.id==='string' && typeof patch.documentId==='string' && Number.isSafeInteger(patch.expectedRevision) && typeof patch.operation?.kind==='string' && patch.preview && typeof patch.createdAt==='string') patchId=patch.id; } catch { /* Native undo uses a raw transaction ID. */ }
-      }
-      this.receipts.set(id, { ...receipt, ...(patchId ? {patchId} : {}), payload: id.startsWith('native-transaction-undo:') ? receipt.payload : fingerprint(receipt.payload) });
-    }
+    for (const [id, receipt] of saved.receipts ?? []) this.receipts.set(id, receipt);
     for (const [id, patch] of saved.patches ?? []) this.patches.set(id, patch);
   }
   state(): WorkspaceState { return clone({ protocolVersion: PROTOCOL_VERSION, documents: [...this.documents.values()].map(d => d.info), views: [...this.views.values()], agentStates: [...this.views.values()].flatMap(view => view.agentState ? [view.agentState] : []), activeViewId: this.activeViewId, eventsSeq: this.eventLog.at(-1)?.seq ?? 0, tasks: [...this.tasks.values()] }); }
@@ -128,18 +121,7 @@ export class ViewerCore extends EventEmitter {
       } else { clearTimeout(this.saveTimer); this.saveTimer = setTimeout(save, 300); }
     }
   }
-  get persistenceStatistics() { return { ...this.recoveryEncodingCounts, snapshotBytes: this.snapshots.retainedBytes, patchBytes: this.patches.retainedBytes, historyBytes: this.transactions.retainedBytes, receipts: this.receipts.statistics, backgroundCodec: documentCodec.statistics }; }
-  private recoveryBytes(document: InternalDocument) {
-    const shared = typeof SharedArrayBuffer !== 'undefined' && document.bytes.buffer instanceof SharedArrayBuffer;
-    const bytes = shared ? new Uint8Array(document.bytes) : document.bytes;
-    // Read ordinary buffers through a view, then synchronously freeze their
-    // current contents as Base64. Shared input requires an independent copy.
-    // Retaining encoded files saved little wall time while increasing memory.
-    if (shared) this.recoveryEncodingCounts.sharedCopyBytes += bytes.byteLength;
-    const value = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
-    this.recoveryEncodingCounts.encodes++; this.recoveryEncodingCounts.encodedSourceBytes += bytes.byteLength;
-    return value;
-  }
+  get persistenceStatistics() { return { snapshotBytes: this.snapshots.retainedBytes, patchBytes: this.patches.retainedBytes, historyBytes: this.transactions.retainedBytes, receipts: this.receipts.statistics, backgroundCodec: documentCodec.statistics }; }
   private clearPersistenceTimers() {
     clearTimeout(this.saveTimer); this.saveTimer = undefined;
     clearTimeout(this.positionSaveTimer); this.positionSaveTimer = undefined;
@@ -170,21 +152,12 @@ export class ViewerCore extends EventEmitter {
     const attempt = ++this.persistenceAttempt;
     try {
       const value = { annotations: [...this.annotations.values()], schemaVersion: PROTOCOL_VERSION, documents: [...this.documents.values()].map(d => ({ info: d.info, bytes: d.bytes, sourceHash: d.sourceHash })), views: [...this.views.values()].map(({ agentState: _onlineState, ...view }) => view), activeViewId: this.activeViewId, lastHumanViewId: this.lastHumanViewId, receipts: [...this.receipts.entries()], patches: [...this.patches.entries()].slice(-1000) };
-      if (this.repository.saveDocuments) await this.repository.saveDocuments(value, { mode });
-      else await this.repository.save({ ...value, documents: value.documents.map((entry, index) => ({ ...entry, bytes: this.recoveryBytes([...this.documents.values()][index]) })) }, { mode });
+      await this.repository.saveDocuments(value, { mode });
       if (attempt >= this.persistenceResult) { this.persistenceResult = attempt; this.lastPersistenceError = undefined; }
     } catch (error) {
       if (attempt >= this.persistenceResult) { this.persistenceResult = attempt; this.lastPersistenceError = String(error); }
       throw error;
     }
-  }
-  async exportRecovery(path: string) {
-    if (!this.repository.exportLegacy) throw new ViewerError('CAPABILITY_UNSUPPORTED','此恢复存储不支持旧格式导出。');
-    await this.documentSessions.drain();
-    for (const documentId of this.nativeOfficeBindings.keys()) await this.synchronizeNativeDocument(documentId);
-    await this.persist();
-    const target=resolve(path); await this.repository.exportLegacy(target);
-    return {path:target,format:'workspace-v1',documents:this.documents.size};
   }
   private serial<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return this.documentSessions.run(id, fn);
@@ -536,7 +509,7 @@ export class ViewerCore extends EventEmitter {
         }
         const value = { status: 'dispatched' as const, state: clone(replyState), idempotencyKey: input.idempotencyKey, warning, ...(controlReleased ? { controlReleased } : {}) };
         const action = input.action, point = 'x' in action ? { x: action.x, y: action.y } : action.kind === 'drag' ? clone(action.to) : undefined;
-        this.receipts.set(key, { payload, receipt: value }); this.event('office.input', { viewId: view.id, documentId: view.documentId, action: action.kind, actor, ...(controlReleased ? { controlReleased } : {}), ...(point ? { point } : {}), ...(action.kind === 'drag' ? { from: clone(action.from), to: clone(action.to) } : {}) }); return clone(value);
+        this.receipts.set(key, { payload, receipt: value, documentId: view.documentId }); this.event('office.input', { viewId: view.id, documentId: view.documentId, action: action.kind, actor, ...(controlReleased ? { controlReleased } : {}), ...(point ? { point } : {}), ...(action.kind === 'drag' ? { from: clone(action.from), to: clone(action.to) } : {}) }); return clone(value);
       }));
     });
   }
@@ -632,7 +605,7 @@ export class ViewerCore extends EventEmitter {
         else if (actor === 'agent' && controlled && status === 'dispatched' && (input.style || input.command && nativeCommandEdits(input.command))) this.markAgentEditingInProgress(view.id);
         // A document snapshot may use its first controller; replies must use the requested view.
         const value = { receipt, state: interactive ? clone(result.state) : await this.nativeMutationReply(view.id, result, receipt), undoToken: result.undoToken, durability: { status: 'pending', engineRevision: binding.state.engineRevision, recoverableEngineRevision: binding.mirrorEngineRevision } };
-        this.receipts.set(key, { payload, receipt: value }); this.event('office.executed', { ...receipt, viewId: view.id, actor, kind: operationKind, command: input.command, styleTarget: input.style?.target, cell: input.cell && { sheetName: input.cell.sheetName, address: input.cell.address } });
+        this.receipts.set(key, { payload, receipt: value, documentId: view.documentId }); this.event('office.executed', { ...receipt, viewId: view.id, actor, kind: operationKind, command: input.command, styleTarget: input.style?.target, cell: input.cell && { sheetName: input.cell.sheetName, address: input.cell.address } });
         if (interactive) { this.scheduleNativeCheckpoint(view.documentId); void this.persist('checkpoint').catch(error => this.emit('diagnostic', error)); }
         else { await this.persist(); if (binding.mirrorEngineRevision === binding.state.engineRevision) value.durability.status = 'recoverable'; }
         return value;
@@ -651,7 +624,7 @@ export class ViewerCore extends EventEmitter {
         if (!driver.navigate) throw new ViewerError('CAPABILITY_UNSUPPORTED', '原生引擎尚未提供此定位能力。');
         const requestId = randomUUID(), result = await driver.navigate({ sessionId: binding.state.sessionId, viewId: view.id, target: input.target, expectedEngineEpoch: input.expectedEngineEpoch, expectedEngineRevision: input.expectedEngineRevision, expectedSelectionEpoch: input.expectedSelectionEpoch, requestId, actor });
         this.updateNativeOfficeState(result.state); const value = { status: result.status, state: await this.nativeOfficeState(view.id), requestId };
-        this.receipts.set(key, { payload, receipt: value }); this.event('office.navigated', { viewId: view.id, requestId, status: result.status, target: input.target }); return clone(value);
+        this.receipts.set(key, { payload, receipt: value, documentId: view.documentId }); this.event('office.navigated', { viewId: view.id, requestId, status: result.status, target: input.target }); return clone(value);
       }));
     });
   }
@@ -675,7 +648,7 @@ export class ViewerCore extends EventEmitter {
         const receipt: Receipt = { transactionId: randomUUID(), documentId: view.documentId, revision: this.getDocument(view.documentId).info.revision, status, nativeSessionId: binding.state.sessionId, warnings };
         let controlled = true; if (actor === 'agent') { try { this.assertAgentPatchBinding(agentBinding); } catch { controlled = false; receipt.controlReleased = true; } }
         if (controlled && actor === 'agent' && status === 'undone' && receipt.revision !== before) this.markAgentEdit({ viewId: view.id, documentId: view.documentId, operation: { kind: 'native.undo' } }, receipt);
-        const value = { receipt, state: await this.nativeMutationReply(view.id, result, receipt) }; this.receipts.set(key, { payload, receipt: value }); await this.persist(); return value;
+        const value = { receipt, state: await this.nativeMutationReply(view.id, result, receipt) }; this.receipts.set(key, { payload, receipt: value, documentId: view.documentId }); await this.persist(); return value;
       }));
     });
   }
@@ -703,7 +676,7 @@ export class ViewerCore extends EventEmitter {
         await mkdir(dirname(target), { recursive: true }); const temp = target + '.agentviewer-' + randomUUID() + '.tmp';
         try { await writeFile(temp, result.bytes, { flag: 'wx' }); if (await hashDocumentBytes(new Uint8Array(await readFile(temp))) !== digest) throw new ViewerError('SAVE_VERIFY_FAILED', '导出临时文件校验失败。'); await import('node:fs/promises').then(fs => fs.link(temp, target)); } finally { await unlink(temp).catch(() => {}); }
         const value = { status: 'exported', documentId: view.documentId, viewId: view.id, path: target, format: input.format, sha256: digest, byteLength: result.bytes.length, engineEpoch: result.state.engineEpoch, engineRevision: result.engineRevisionAfter };
-        this.receipts.set(key, { payload, receipt: value }); this.event('office.exported', value); await this.persist(); return clone(value);
+        this.receipts.set(key, { payload, receipt: value, documentId: view.documentId }); this.event('office.exported', value); await this.persist(); return clone(value);
       }));
     });
   }
@@ -1110,7 +1083,7 @@ export class ViewerCore extends EventEmitter {
         const receipt: Receipt = { transactionId: randomUUID(), documentId: patch.documentId, revision: doc.info.revision, status, idempotencyKey, nativeSessionId: native.state.sessionId, warnings };
         let controlled = true; if (actor === 'agent') { try { this.assertAgentPatchBinding(patch); } catch { controlled = false; receipt.controlReleased = true; } }
         if (status === 'applied' && result.undoToken) this.transactions.set(receipt.transactionId, { kind: 'native', documentId: patch.documentId, afterRevision: doc.info.revision, native: { sessionId: native.state.sessionId, writerEpoch: native.writerEpoch, engineEpoch: native.state.engineEpoch, engineRevision: native.state.engineRevision, viewId: patch.viewId!, undoToken: result.undoToken } });
-        this.receipts.set(idempotencyKey, { payload, receipt, patchId }); this.patches.delete(patchId);
+        this.receipts.set(idempotencyKey, { payload, receipt, patchId, documentId: receipt.documentId }); this.patches.delete(patchId);
         this.event('office.executed', { ...receipt, viewId: patch.viewId, actor, kind: patch.operation.kind });
         if (actor === 'agent' && controlled && status === 'applied') this.markAgentEdit(patch, receipt);
         await this.persist(); return receipt;
@@ -1126,7 +1099,7 @@ export class ViewerCore extends EventEmitter {
       const receipt: Receipt = { transactionId: randomUUID(), documentId: doc.info.id, revision: doc.info.revision, status: 'applied', idempotencyKey, warnings: updated.warnings };
       if (textOperation) this.transactions.set(receipt.transactionId, { kind: 'text', documentId: doc.info.id, viewId: patch.viewId, afterRevision: doc.info.revision, inverse: { kind: 'text.replace', from: textOperation.from, to: textOperation.from + textOperation.text.length, expectedText: textOperation.text, text: textOperation.expectedText } });
       else this.transactions.set(receipt.transactionId, { kind: 'snapshot', documentId: doc.info.id, viewId: patch.viewId, before: before!, afterRevision: doc.info.revision });
-      this.receipts.set(idempotencyKey, { payload, receipt, patchId }); this.patches.delete(patchId);
+      this.receipts.set(idempotencyKey, { payload, receipt, patchId, documentId: receipt.documentId }); this.patches.delete(patchId);
       const operation = patch.operation;
       const target = 'blockId' in operation ? { kind: operation.kind, blockId: operation.blockId } : 'afterBlockId' in operation ? { kind: operation.kind, blockId: operation.afterBlockId } : 'shapeId' in operation ? { kind: operation.kind, slideId: operation.slideId, shapeId: operation.shapeId } : 'address' in operation ? { kind: operation.kind, sheetId: operation.sheetId, address: operation.address } : 'sheetId' in operation ? { kind: operation.kind, sheetId: operation.sheetId } : 'pageIndex' in operation ? { kind: operation.kind, pageIndex: operation.pageIndex } : { kind: operation.kind };
       this.event('document.changed', { ...receipt, actor, target, viewId: patch.viewId });
@@ -1169,7 +1142,7 @@ export class ViewerCore extends EventEmitter {
         const receipt: Receipt = { transactionId: randomUUID(), documentId: tx.documentId, revision: this.getDocument(tx.documentId).info.revision, status, nativeSessionId: binding.state.sessionId, warnings };
         let controlled = true; if (actor === 'agent') { try { this.assertAgentPatchBinding(agentBinding); } catch { controlled = false; receipt.controlReleased = true; } }
         if (actor === 'agent' && controlled && receipt.revision !== tx.afterRevision) this.markAgentEdit({ documentId: tx.documentId, viewId: tx.native.viewId, operation: { kind: 'native.undo' } }, receipt);
-        this.transactions.delete(transactionId); this.receipts.set(undoKey, { payload: transactionId, receipt }); this.event('office.executed', { ...receipt, viewId: view.id, actor, kind: 'native.undo' }); await this.persist(); return receipt;
+        this.transactions.delete(transactionId); this.receipts.set(undoKey, { payload: transactionId, receipt, documentId: receipt.documentId }); this.event('office.executed', { ...receipt, viewId: view.id, actor, kind: 'native.undo' }); await this.persist(); return receipt;
       }
       if (snapshotBinding) this.assertAgentPatchBinding(snapshotBinding);
       const current = this.getDocument(tx.documentId); if (current.info.revision !== tx.afterRevision) throw new ViewerError('VERSION_CONFLICT', '该修改之后还有其他编辑，不能整组覆盖撤销。');
@@ -1181,11 +1154,13 @@ export class ViewerCore extends EventEmitter {
       restored.info.revision = current.info.revision + 1; restored.info.diskRevision = current.info.diskRevision; restored.sourceHash = current.sourceHash; restored.info.path = current.info.path; restored.info.dirty = await hashDocumentBytes(restored.bytes) !== current.sourceHash;
       if (snapshotBinding) this.assertAgentPatchBinding(snapshotBinding);
       this.documents.set(tx.documentId, restored); this.transactions.delete(transactionId);
+      if (tx.kind === 'snapshot') for (const previous of this.transactions.values()) {
+        if (previous.documentId === tx.documentId && previous.kind !== 'native' && previous.afterRevision === tx.before.info.revision) previous.afterRevision = restored.info.revision;
+      }
       for (const view of this.views.values()) if (view.documentId === tx.documentId && view.context) view.context = { ...view.context, contentRevision: restored.info.revision, quality: 'not-ready', visibleText: '', selection: { kind: 'none', text: '' } };
       const receipt: Receipt = { transactionId: randomUUID(), documentId: tx.documentId, revision: restored.info.revision, status: 'undone' };
       if (actor === 'agent') this.markAgentEdit({ documentId: tx.documentId, viewId: tx.viewId, operation: { kind: 'document.undo' } }, receipt);
-      // Keep the existing key namespace compatible with saved native receipts.
-      this.receipts.set(undoKey, { payload: transactionId, receipt });
+      this.receipts.set(undoKey, { payload: transactionId, receipt, documentId: receipt.documentId });
       this.event('document.changed', { ...receipt, viewId: tx.viewId, actor, kind: 'document.undo' });
       await this.persist(); return receipt;
       });
@@ -1286,7 +1261,7 @@ export class ViewerCore extends EventEmitter {
       const view = this.getView(request.viewId);
       return this.withReceiptCapacity(request.idempotencyKey, view.documentId, { payload }, retainedValueBytes(view.context) * 2 + retainedValueBytes(request) * 2 + 1024 * 1024, async () => {
       if (this.agentControl.get(request.viewId) && this.agentControl.get(request.viewId) !== 'running') throw new ViewerError('AGENT_PAUSED', '此页面的 Agent 操作已暂停或停止。');
-      const result = await this.browser!.input(request); this.updateContext(request.viewId, result.context, 'agent'); this.receipts.set(request.idempotencyKey, { payload, receipt: result }); this.event('browser.input', { viewId: request.viewId, kind: request.action.kind, point: 'x' in request.action ? { x: request.action.x, y: request.action.y } : 'to' in request.action ? request.action.to : undefined, actor: 'agent' }); await this.persist(); return result;
+      const result = await this.browser!.input(request); this.updateContext(request.viewId, result.context, 'agent'); this.receipts.set(request.idempotencyKey, { payload, receipt: result, documentId: view.documentId }); this.event('browser.input', { viewId: request.viewId, kind: request.action.kind, point: 'x' in request.action ? { x: request.action.x, y: request.action.y } : 'to' in request.action ? request.action.to : undefined, actor: 'agent' }); await this.persist(); return result;
       });
     });
   }

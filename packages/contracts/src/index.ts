@@ -96,6 +96,7 @@ export const editOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('sheets.renameWorksheet'), sheetId: z.string(), name: z.string().trim().min(1).max(31).regex(/^[^*?:\[\]\\/]+$/) }),
   z.object({ kind: z.literal('pdf.addText'), pageIndex: z.number().int().nonnegative(), x: z.number().min(0).max(1), y: z.number().min(0).max(1), text: z.string().min(1), size: z.number().min(6).max(144).default(16) }),
   z.object({ kind: z.literal('pdf.highlight'), pageIndex: z.number().int().nonnegative(), x: z.number().min(0).max(1), y: z.number().min(0).max(1), width: z.number().min(0.001).max(1), height: z.number().min(0.001).max(1) }),
+  z.object({ kind: z.literal('pdf.removeAnnotation'), pageIndex: z.number().int().nonnegative(), annotationId: z.string().regex(/^\d+R\d*$/) }),
   z.object({ kind: z.literal('pdf.rotate'), pageIndex: z.number().int().nonnegative(), degrees: z.number().int().refine(v => v % 90 === 0) }),
   z.object({ kind: z.literal('pdf.addPage') }),
 ]);

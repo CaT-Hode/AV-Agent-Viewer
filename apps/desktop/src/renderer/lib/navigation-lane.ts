@@ -53,10 +53,10 @@ export function readNavigationTargetLane(reader: HTMLElement): NavigationLane {
 
 /** Only the pane's visible shape yields to the continuously moving capsule.
  * This does not clip the capsule, resize the canvas, or change pane contents. */
-export function sidebarNavigationScale(side:'left'|'right', panel:Rect, navigation:Rect, translation=0, gap=12) {
+export function sidebarNavigationScale(side:'left'|'right', panel:Rect, navigation:Rect, gap=12) {
   const width = panel.right-panel.left;
   if (width <= 0) return 0;
-  const space = side === 'left' ? navigation.left-gap-panel.left-translation : panel.right+translation-navigation.right-gap;
+  const space = side === 'left' ? navigation.left-gap-panel.left : panel.right-navigation.right-gap;
   return Math.max(0,Math.min(1.12,space/width));
 }
 function setVariable(element:HTMLElement,name:string,value:string) { if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name,value); }
@@ -66,8 +66,7 @@ export function prepareSidebarNavigationReservation(reader:HTMLElement,left:numb
   const updates = readingPanels(reader).flatMap(panel => {
     const side = panel.dataset.side; if (side !== 'left' && side !== 'right') return [];
     const bounds = panelLayoutBounds(panel), sx = 'sx' in bounds ? bounds.sx : 1;
-    const translation = (Number.parseFloat(panel.style.getPropertyValue('--sidebar-spring-x')) || 0) * sx;
-    const scale = sidebarNavigationScale(side,bounds,{left:box.left+left,right:box.left+right},translation,12*sx);
+    const scale = sidebarNavigationScale(side,bounds,{left:box.left+left,right:box.left+right},12*sx);
     return [{panel,scale:scale.toFixed(6)}];
   });
   // Read every pane before writing reservation variables. Their CSS can

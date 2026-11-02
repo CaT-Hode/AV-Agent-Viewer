@@ -4,6 +4,7 @@ import { advancePanelHeight, measurePanelHeight, panelContentPresentation, panel
 import { resolveMotionMode, useMotionSnapshot } from '../lib/motion';
 import { NativePanelHeightContext } from '../lib/native-panel-height';
 import { PanelScrollHints } from './PanelScrollHints';
+import { panelLayoutBounds } from '../lib/navigation-lane';
 
 type Props = HTMLAttributes<HTMLElement> & { availableHost: RefObject<HTMLElement | null>; contentIdentity: string; bodyClassName: string };
 /** A single widget/controller tree; changing categories never mounts a second
@@ -16,13 +17,16 @@ export function AdaptivePanel({ availableHost, contentIdentity, bodyClassName, c
   useLayoutEffect(() => {
     const host = frame.current, body = natural.current, viewport = scroll.current; if (!host || !body || !viewport) return;
     const owner=host.ownerDocument.defaultView;if(!owner)return;
-    let animation = 0, previous = 0, started = 0, disposed = false;
+    let animation = 0, previous = 0, started = 0, disposed = false, seedY = 0, seedSize = 36, seedWidth = 248;
     const draw = () => {
       const presentation = panelContentPresentation(content.current);
       host.style.setProperty('--adaptive-panel-height', height.current.value.toFixed(3) + 'px');
       body.style.opacity = String(presentation.alpha); body.style.transform = mode === 'reduced' || mode === 'off' ? 'none' : 'translateY(' + presentation.y.toFixed(3) + 'px)';
       host.dataset.panelNaturalHeight = naturalHeight.current.toFixed(3); host.dataset.panelHeightTarget = target.current.toFixed(3); host.dataset.panelMaximumHeight = maximum.current.toFixed(3);
-      notifyNative?.(height.current.value);
+      host.style.setProperty('--sidebar-seed-y', seedY.toFixed(3) + 'px');
+      host.style.setProperty('--sidebar-seed-scale-x', String(seedSize / seedWidth));
+      host.style.setProperty('--sidebar-seed-scale-y', String(seedSize / Math.max(seedSize, height.current.value)));
+      notifyNative?.(height.current.value, seedY, seedSize);
     };
     const tick = (now: number) => {
       animation = 0; if (disposed) return;
@@ -43,6 +47,12 @@ export function AdaptivePanel({ availableHost, contentIdentity, bodyClassName, c
       // Owner workbench survives popup opening at 1px and is never transformed.
       const available = availableHost.current?.clientHeight || owner.innerHeight;
       const measured = measurePanelHeight(host, body, viewport, available,element=>owner.getComputedStyle(element)), next = measured.target;
+      const source = notifyNative ? availableHost.current?.querySelector<HTMLElement>(':scope > .reader-panel-anchor[data-side="' + host.dataset.side + '"]') : host;
+      const triggerSelector = host.dataset.panelTrigger, trigger = triggerSelector ? availableHost.current?.ownerDocument.querySelector<HTMLElement>(triggerSelector) : undefined;
+      const box = source && panelLayoutBounds(source), button = trigger && panelLayoutBounds(trigger);
+      seedSize = button ? Math.max(1, Math.min(button.width, button.height)) : 36;
+      seedY = box && button ? button.top + button.height / 2 - box.top - seedSize / 2 : 0;
+      seedWidth = Math.max(seedSize, host.offsetWidth);
       maximum.current = measured.maximum; naturalHeight.current = measured.natural;
       const changed = Math.abs(next - target.current) > .25; target.current = next;
       if (!initialized.current || mode === 'off' || mode === 'reduced') {

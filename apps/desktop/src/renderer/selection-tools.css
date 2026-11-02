@@ -35,6 +35,7 @@
 }
 .selection-tool-row::-webkit-scrollbar { display:none; }
 .selection-tool-row svg { filter:none; opacity:1; }
+:root[data-theme] .selection-tool-row .icon-button > svg { width:20px; height:20px; stroke-width:2.15; }
 :root[data-theme] .selection-tool-icons.navigation-capsule .icon-button { width:30px; height:30px; flex:0 0 30px; border-radius:50%; color:inherit; }
 :root[data-theme] .selection-tool-icons.navigation-capsule .icon-button:not(:disabled):hover { color:var(--navigation-ink); background:color-mix(in srgb,var(--navigation-ink) 12%,transparent); }
 /* A pending worker never swaps in the old opaque menu. Once ready, all optics
@@ -43,7 +44,8 @@
 :root[data-theme] :is(.selection-input,.selection-error).material-host { --liquid-glass-tint:rgb(255 255 255 / .64); --field-fill:rgb(255 255 255 / .92); }
 :root[data-theme="dark"] :is(.selection-input,.selection-error).material-host { --liquid-glass-tint:rgb(9 13 18 / .64); --field-fill:rgb(20 29 38 / .92); }
 .selection-tools :is(.selection-input,.selection-error)[data-motion-phase] { translate:none; scale:1; }
-.selection-input label { font-weight:600; }
+.selection-input label { font-size:14px; font-weight:700; }
+.selection-input textarea { font-size:15px; font-weight:550; }
 html.native-toolbar-root .selection-input textarea { max-height:240px; }
 html.native-toolbar-root .selection-error { max-height:240px; overflow:auto; }
 .selection-tools :is(.selection-input,.selection-error) .liquid-glass-surface[data-glass-pending="true"] .liquid-glass-tint { background:var(--liquid-glass-tint); }

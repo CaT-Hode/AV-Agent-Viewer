@@ -60,9 +60,10 @@ export function useNativeSelectionTools(enabled: boolean, context: ReadingContex
       const signature=JSON.stringify([context.viewId,selection.snapshot.id,bounds,latest.settings?.revision]);if(published.current===signature)return;published.current=signature;
       const fullKey=JSON.stringify([context.viewId,selection.snapshot.id,latest.settings?.revision]),geometryOnly=!!bounds&&fullPublication.current===fullKey;
       fullPublication.current=bounds?fullKey:undefined;
-      // No legal lane is a safety withdrawal, not a voluntary animated exit:
-      // omit viewId so the native host removes its old hit target immediately.
-      void call('selection-layout',!bounds?{visible:false}:geometryOnly?{viewId:context.viewId,visible:true,geometryOnly:true,snapshotId:selection.snapshot.id,bounds}:{ viewId: context.viewId, visible:true, selection, settings: latest.settings, bounds }).catch(error=>{if(published.current===signature){published.current=undefined;fullPublication.current=undefined;}latest.report(error);});
+      // Placement withdrawal uses the same retained exit as dismissal. The
+      // renderer becomes inert immediately; the native pixels remain only
+      // for that fade, then a recovered lane starts a normal entrance.
+      void call('selection-layout',!bounds?{viewId:context.viewId,visible:false,animate:true}:geometryOnly?{viewId:context.viewId,visible:true,geometryOnly:true,snapshotId:selection.snapshot.id,bounds}:{ viewId: context.viewId, visible:true, selection, settings: latest.settings, bounds }).catch(error=>{if(published.current===signature){published.current=undefined;fullPublication.current=undefined;}latest.report(error);});
     };
     if (cache.current?.key === key) { if (cache.current.value) present(cache.current.value); return; }
     const entry = { key, pending: call<SelectionTools>('selection-tools', { viewId: c.viewId }) } as NonNullable<typeof cache.current>;

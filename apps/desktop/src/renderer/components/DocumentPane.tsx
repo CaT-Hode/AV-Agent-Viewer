@@ -111,9 +111,11 @@ function LegacyDocumentPane({ document, view, edit, onTextChange, reportError, o
     let from: number | undefined, to: number | undefined;
     if (block && block.contains(range.endContainer)) { const prefix=range.cloneRange();prefix.selectNodeContents(block);prefix.setEnd(range.startContainer,range.startOffset);from=prefix.toString().length;to=from+text.length; }
     const pageRects: NonNullable<ReadingContext['selection']['pageRects']> = [];
+    const selectionRects=document.format==='pdf'?[...range.getClientRects()]:[];
     if(document.format==='pdf') for(const pageElement of host.current.querySelectorAll<HTMLElement>('.pdf-page')) {
       const pageBox=pageElement.getBoundingClientRect();
-      for(const r of range.getClientRects()) { const x=Math.max(r.left,pageBox.left),y=Math.max(r.top,pageBox.top),right=Math.min(r.right,pageBox.right),bottom=Math.min(r.bottom,pageBox.bottom);if(right<=x||bottom<=y||r.width>pageBox.width*.98)continue;
+      if(pageBox.bottom<rect.top||pageBox.top>rect.bottom)continue;
+      for(const r of selectionRects) { const x=Math.max(r.left,pageBox.left),y=Math.max(r.top,pageBox.top),right=Math.min(r.right,pageBox.right),bottom=Math.min(r.bottom,pageBox.bottom);if(right<=x||bottom<=y||r.width>pageBox.width*.98)continue;
         const next={pageIndex:Number(pageElement.dataset.pageIndex),x:(x-pageBox.left)/pageBox.width,y:(y-pageBox.top)/pageBox.height,width:(right-x)/pageBox.width,height:(bottom-y)/pageBox.height};
         if(!pageRects.some(old=>old.pageIndex===next.pageIndex&&Math.abs(old.x-next.x)<.001&&Math.abs(old.y-next.y)<.001&&Math.abs(old.width-next.width)<.001))pageRects.push(next);
       }

@@ -63,10 +63,23 @@ export function useNavigationLayout(nav: RefObject<HTMLElement | null>, capsule:
     const context = host.ownerDocument.createElement('canvas').getContext('2d');
     let cancelRead: (() => void) | undefined, cancelTick: (() => void) | undefined, disposed = false, previous = 0, started = 0;
     let target = { width: 0, center: 0 };
+    const syncOptics = () => {
+      if (!axes.current) return;
+      const actual = boundedNavigationPresentation(latest.current.canvas, axes.current.width.value, axes.current.center.value);
+      const mapWidth = Number(host.dataset.navigationOpticsWidth), mapHeight = Number(host.dataset.navigationOpticsHeight);
+      if (mapWidth > 0 && mapHeight > 0) {
+        host.style.setProperty('--navigation-optics-scale-x', (actual.width / mapWidth).toFixed(6));
+        host.style.setProperty('--navigation-optics-scale-y', ((Number.parseFloat(toolbar.style.getPropertyValue('--navigation-height')) || 60) / mapHeight).toFixed(6));
+      }
+    };
     const paint = (moving: boolean) => {
       const actual = boundedNavigationPresentation(latest.current.canvas, axes.current!.width.value, axes.current!.center.value);
       toolbar.style.setProperty('--navigation-slot-left', actual.center.toFixed(3) + 'px');
       toolbar.style.setProperty('--navigation-slot-width', actual.width.toFixed(3) + 'px');
+      // The mask, refraction and its specular rim share the border-box scale.
+      // Commit it with the width spring, before any observer can see a frame
+      // whose tint is wider than its old optical field.
+      syncOptics();
       const resizing = String(moving), widthTarget = target.width.toFixed(3), available = latest.current.lane.width.toFixed(3);
       if (host.dataset.navigationResizing !== resizing) host.dataset.navigationResizing = resizing;
       if (toolbar.dataset.navigationWidthTarget !== widthTarget) toolbar.dataset.navigationWidthTarget = widthTarget;
@@ -113,8 +126,9 @@ export function useNavigationLayout(nav: RefObject<HTMLElement | null>, capsule:
     });
     changes.observe(host, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['placeholder', 'data-dirty', 'data-stale', 'aria-invalid'] });
     host.addEventListener('input', measure); host.addEventListener(NAVIGATION_CONTENT_EVENT, measure);
+    host.addEventListener('agentviewer:glass-optics', syncOptics);
     host.ownerDocument.fonts.addEventListener('loadingdone', measure); measure();
-    return () => { disposed = true; refresh.current = undefined; cancelRead?.(); cancelTick?.(); changes.disconnect(); host.removeEventListener('input', measure); host.removeEventListener(NAVIGATION_CONTENT_EVENT, measure); host.ownerDocument.fonts.removeEventListener('loadingdone', measure); };
+    return () => { disposed = true; refresh.current = undefined; cancelRead?.(); cancelTick?.(); changes.disconnect(); host.removeEventListener('input', measure); host.removeEventListener(NAVIGATION_CONTENT_EVENT, measure); host.removeEventListener('agentviewer:glass-optics', syncOptics); host.ownerDocument.fonts.removeEventListener('loadingdone', measure); };
   }, [nav, capsule, mode]);
   useLayoutEffect(() => { refresh.current?.(); }, [lane.left, lane.right, lane.width, lane.center, canvas.left, canvas.right, canvas.width, contentIdentity, instant]);
 }

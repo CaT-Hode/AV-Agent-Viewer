@@ -56,7 +56,7 @@ function ZoomModule({ state, dispatch, zoomDraft: draft = '100', setZoomDraft: s
   const commit = () => { if (cancelBlur.current) { cancelBlur.current = false; return; } const next = Number(draft); if (Number.isFinite(next) && next >= 25 && next <= 400) dispatch({ type: 'zoom', factor: next / 100 }); else setDraft?.(String(percentage)); };
   return <div className="navigation-module navigation-zoom" data-navigation-module="zoom">
     {steps && <button className="icon-button" aria-label="缩小正文" title="缩小正文 · Ctrl+滚轮" disabled={percentage <= 25} onClick={() => dispatch({ type: 'zoom', factor: Math.max(.25, (percentage - 10) / 100) })}><Minus size={14} /></button>}
-    {value && <label className="navigation-zoom-value"><input aria-label="正文缩放比例" title="输入 25–400；双击恢复 100%" type="number" min={25} max={400} value={draft} onFocus={() => setZoomEditing?.(true)} onChange={event => setDraft?.(event.target.value)} onBlur={() => { commit(); setZoomEditing?.(false); }} onDoubleClick={() => dispatch({ type: 'zoom', factor: 1 })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } if (event.key === 'Escape') { event.preventDefault(); cancelBlur.current = true; setDraft?.(String(percentage)); event.currentTarget.blur(); } }} /><span>%</span></label>}
+    {value && <label className="navigation-zoom-value"><input aria-label="正文缩放比例" title="输入 25–400；双击恢复 100%" type="number" min={25} max={400} value={draft} style={{width:Math.max(1,Math.min(3,draft.length))+'ch'}} onFocus={() => setZoomEditing?.(true)} onChange={event => setDraft?.(event.target.value)} onBlur={() => { commit(); setZoomEditing?.(false); }} onDoubleClick={() => dispatch({ type: 'zoom', factor: 1 })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } if (event.key === 'Escape') { event.preventDefault(); cancelBlur.current = true; setDraft?.(String(percentage)); event.currentTarget.blur(); } }} /><span>%</span></label>}
     {steps && <button className="icon-button" aria-label="放大正文" title="放大正文 · Ctrl+滚轮" disabled={percentage >= 400} onClick={() => dispatch({ type: 'zoom', factor: Math.min(4, (percentage + 10) / 100) })}><Plus size={14} /></button>}
   </div>;
 }
@@ -161,19 +161,12 @@ export function NavigationToolbar({ state, dispatch, progress = 0, durationMs = 
     const measure = () => {
       const rect = node.getBoundingClientRect();
       const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-      // Optical maps use local CSS dimensions; presence transforms already
-      // scale their host, so transformed bounds would scale the field twice.
-      const mapWidth = Number(node.dataset.navigationOpticsWidth), mapHeight = Number(node.dataset.navigationOpticsHeight), overscan = Number(node.dataset.navigationOpticsOverscan) || 0;
-      const localWidth = Number.parseFloat(toolbar.style.getPropertyValue('--navigation-slot-width')) || node.offsetWidth;
-      const opticalScale = mapWidth > 0 && mapHeight > 0 ? { x: (localWidth + 2 * overscan) / (mapWidth + 2 * overscan), y: (node.offsetHeight + 2 * overscan) / (mapHeight + 2 * overscan) } : { x: 1, y: 1 };
       const { hidden, sampled } = presentation.current;
       const changed = !previous || ['x', 'y', 'width', 'height'].some(key => Math.abs(previous![key as keyof NavigationBounds] - bounds[key as keyof NavigationBounds]) >= .125) || hidden !== previousHidden;
       const box = reader?.getBoundingClientRect();
       const reserve = reader && box && !hidden ? prepareSidebarNavigationReservation(reader,rect.left-box.left,rect.right-box.left,box) : undefined;
       return () => {
         const setProperty = (name: string, value: string) => { if (node.style.getPropertyValue(name) !== value) node.style.setProperty(name, value); };
-        setProperty('--navigation-optics-scale-x', opticalScale.x.toFixed(6));
-        setProperty('--navigation-optics-scale-y', opticalScale.y.toFixed(6));
         if (reader) { if (hidden) clearSidebarNavigationReservation(reader); else reserve?.(); }
         if (sampled) {
           setProperty('--navigation-capsule-x', bounds.x.toFixed(3) + 'px');

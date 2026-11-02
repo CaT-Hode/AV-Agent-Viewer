@@ -442,7 +442,7 @@ export class WebToolbarHost {
     const page = source.view, p = page.getBounds(), zoom = entry.view.webContents.getZoomFactor();
     const progress = Number(state.hideProgress ?? 0);
     // Geometry from the shared toolbar includes the current interpolated CSS
-    // transform. The fallback preserves the old protocol until it reports.
+    // transform. Before its first report, use the initial host geometry.
     const result = this.route === '/ai-result-toolbar';
     const metrics = this.route === '/agent-toolbar' ? AGENT_OPERATION_METRICS : result ? { height: 330, shadowGutter: 16, captureOverscan: 27 } : NAVIGATION_METRICS;
     const tooltipOffset=entry.tooltipLayout?.offsetY??0;

@@ -28,6 +28,8 @@ PPT改用原生XStorage中介和无视图只读模型。两轮各前后10次变�
 
 10月28日Electron对照：普通、玻璃前景和AI浮窗分别前后各100次；组件提交到首次可见样式P50由53.0–53.1降至39.7ms，P95由53.4–53.5降至39.9–40.3ms。双RAF改单RAF，动画时长不变；去掉额外CSS起始规则仍保留渐变，因此未采用。启动级联延后取消，导航在首个测量帧推进原弹簧。证据在`animation-response`，不代表物理输入到屏幕。
 
+11月2日10页PDF：旧构建6次API缩放至新画布P50为363ms；当前100次P50/P95为44/76ms。额外文件读取6→0，当前209帧无空画布，页面节点原位保留。修改、连续撤销和删除批注保留第5页；侧栏不改PDF尺寸。
+
 ## 验证边界
 
 历史采样在`artifacts/verification/office-cold-performance`、`recovery-performance`、`hover-performance`和`mcp-web-final`。当前验收先构建，以buildId关联证据，不再全量扫描SHA；旧完整回归已退役。OS缓存及同机负载未控制，新进程不代表冷盘；Kit数据不含Electron呈现、键盘到屏幕延迟或Codex桌面MCP认证。

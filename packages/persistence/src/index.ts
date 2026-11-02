@@ -1,10 +1,8 @@
-import { mkdir, readFile, writeFile, rename, copyFile, unlink, readdir, lstat, realpath, link } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { mkdir, readFile, writeFile, rename, unlink, readdir, lstat, realpath } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { blobStorageReference, collectFrozenBlobs, freezeWorkspaceBlob, markWorkspaceBlob, readWorkspaceBlob, validateBlobReference, type BlobReference, type FrozenBlob, type TextModelReference } from './workspace-blobs';
-import { hashDocumentBytes, stringifyDocumentValue } from './background-codec';
-import { retainedValueBytes } from './retained-value';
+import { hashDocumentBytes } from './background-codec';
 
 export interface WorkspaceSaveOptions { mode?: 'barrier' | 'checkpoint' }
 export interface WorkspaceDocumentSnapshot {
@@ -13,12 +11,10 @@ export interface WorkspaceDocumentSnapshot {
 }
 export interface WorkspaceRepository {
   load<T>(): Promise<T | undefined>;
-  save(value: unknown, options?: WorkspaceSaveOptions): Promise<void>;
-  saveDocuments?(value: WorkspaceDocumentSnapshot, options?: WorkspaceSaveOptions): Promise<void>;
-  exportLegacy?(path: string): Promise<void>;
+  saveDocuments(value: WorkspaceDocumentSnapshot, options?: WorkspaceSaveOptions): Promise<void>;
 }
 type Waiter = { resolve(): void; reject(error: unknown): void };
-type SaveEntry = { payload: string; blobs: FrozenBlob[]; bytes: number; mode: 'barrier' | 'checkpoint'; v2: boolean; waiters: Waiter[] };
+type SaveEntry = { payload: string; blobs: FrozenBlob[]; bytes: number; mode: 'barrier' | 'checkpoint'; waiters: Waiter[] };
 export class WorkspacePersistenceBusyError extends Error {
   readonly code = 'PERSISTENCE_BUSY';
   constructor() { super('恢复队列正忙，请等待当前检查点完成后重试。'); this.name = 'WorkspacePersistenceBusyError'; }
@@ -39,9 +35,7 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
   private maintenance = false;
   private gcRequested = false;
   private gcWaiters: Waiter[] = [];
-  private exports: { path: string; waiter: Waiter }[] = [];
   private lastGcAt = Date.now();
-  private legacyBackupChecked = false;
   constructor(readonly path: string, limits: { maxPendingBytes?: number; maxPendingEntries?: number; maxWaiters?: number } = {}) {
     this.maxPendingBytes = limits.maxPendingBytes ?? 64 * 1024 * 1024;
     this.maxPendingEntries = limits.maxPendingEntries ?? 8;
@@ -62,7 +56,6 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
     try { source = await readFile(this.path, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
     const stored = JSON.parse(source);
-    if (stored.storageVersion === undefined) return stored as T;
     if (stored.storageVersion !== 2 || !stored.workspace || !Array.isArray(stored.workspace.documents)) throw new Error('WORKSPACE_STORAGE_VERSION_UNSUPPORTED');
     const workspace = stored.workspace;
     // A missing/corrupt blob must fail the whole restore. Never turn it into an
@@ -142,21 +135,13 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       const payload = JSON.stringify({ storageVersion: 2, workspace: { ...value, documents } });
       const present = new Set(value.documents.map(entry => entry.info.id));
       for (const id of this.textSnapshots.keys()) if (!present.has(id)) this.textSnapshots.delete(id);
-      return this.enqueue(payload, collectFrozenBlobs(blobs), options, true);
+      return this.enqueue(payload, collectFrozenBlobs(blobs), options);
     } catch (error) { this.releaseUnretained(collectFrozenBlobs(blobs)); throw error; }
-  }
-  save(value: unknown, options: WorkspaceSaveOptions = {}) {
-    // Freeze mutable models at the call boundary, before any asynchronous work.
-    // Checkpoint coalescing replaces only already-frozen, explicitly replaceable
-    // requests; a barrier is never replaced with later application state.
-    const payload = JSON.stringify(value);
-    if (typeof payload !== 'string') throw new TypeError('工作区必须可以序列化为 JSON。');
-    return this.enqueue(payload, [], options);
   }
   private releaseUnretained(blobs: FrozenBlob[]) {
     for (const blob of blobs) if (!this.active?.blobs.includes(blob) && !this.queue.some(entry => entry.blobs.includes(blob))) blob.data = undefined;
   }
-  private enqueue(payload: string, blobs: FrozenBlob[], options: WorkspaceSaveOptions, v2 = false) {
+  private enqueue(payload: string, blobs: FrozenBlob[], options: WorkspaceSaveOptions) {
     const mode = options.mode ?? 'barrier', bytes = payload.length * 2 + blobs.reduce((sum, blob) => sum + (blob.data?.byteLength ?? 0), 0);
     this.counts.requested++;
     this.counts.maximumMetadataBytes = Math.max(this.counts.maximumMetadataBytes, payload.length * 2);
@@ -177,9 +162,9 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
     const promise = new Promise<void>((resolve, reject) => {
       if (replace) {
         const previousBlobs = tail!.blobs;
-        this.retainedBytes -= tail!.bytes; tail!.payload = payload; tail!.blobs = blobs; tail!.bytes = bytes; tail!.v2 = v2; tail!.waiters.push({ resolve, reject }); this.counts.coalesced++;
+        this.retainedBytes -= tail!.bytes; tail!.payload = payload; tail!.blobs = blobs; tail!.bytes = bytes; tail!.waiters.push({ resolve, reject }); this.counts.coalesced++;
         this.releaseUnretained(previousBlobs);
-      } else this.queue.push({ payload, blobs, bytes, v2, mode: bytes > this.maxPendingBytes ? 'barrier' : mode, waiters: [{ resolve, reject }] });
+      } else this.queue.push({ payload, blobs, bytes, mode: bytes > this.maxPendingBytes ? 'barrier' : mode, waiters: [{ resolve, reject }] });
       this.retainedBytes += bytes;
       this.counts.maximumRetainedBytes = Math.max(this.counts.maximumRetainedBytes, this.retainedBytes);
     });
@@ -188,15 +173,6 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
   protected async writePayload(payload: string) {
     await mkdir(dirname(this.path), { recursive: true });
     const temp = this.path + '.tmp'; await writeFile(temp, payload, { mode: 0o600 }); await rename(temp, this.path);
-  }
-  private async backupLegacy() {
-    if (!this.legacyBackupChecked) {
-      try {
-        const existing = JSON.parse(await readFile(this.path, 'utf8'));
-        if (existing.storageVersion === undefined) await copyFile(this.path, this.path + '.v1.bak', constants.COPYFILE_EXCL);
-      } catch (error) { if (!['ENOENT', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
-      this.legacyBackupChecked = true;
-    }
   }
   private async backupRollback() {
     try {
@@ -228,12 +204,11 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       const file = await lstat(join(directory, reference.sha256));
       if (!file.isFile() || file.isSymbolicLink() || file.size !== reference.byteLength) throw new Error('WORKSPACE_BLOB_CORRUPT');
     };
-    for (const path of [this.path, this.path + '.v2.bak', this.path + '.tmp', this.path + '.v2.bak.tmp', this.path + '.v1.bak']) {
+    for (const path of [this.path, this.path + '.v2.bak', this.path + '.tmp', this.path + '.v2.bak.tmp']) {
       let source: string;
       try { source = await readFile(path, 'utf8'); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
       const manifest = JSON.parse(source);
-      if (manifest.storageVersion === undefined) continue;
       if (manifest.storageVersion !== 2 || !Array.isArray(manifest.workspace?.documents)) throw new Error('WORKSPACE_STORAGE_VERSION_UNSUPPORTED');
       for (const entry of manifest.workspace.documents) {
         await markWorkspaceBlob(entry.content, value => this.readStoredBlob(value), marked, checkRaw);
@@ -249,30 +224,6 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       try { await unlink(join(directory, entry.name)); this.blobCounts.removedBlobs++; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
-  }
-  exportLegacy(path: string) {
-    const result = new Promise<void>((resolve, reject) => this.exports.push({ path, waiter: { resolve, reject } }));
-    void this.pump(); return result;
-  }
-  private async writeLegacyExport(path: string) {
-    const target = resolve(path), source = resolve(this.path), ownData = resolve(this.path + '.data');
-    const normalized = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
-    const local = relative(normalized(ownData), normalized(target));
-    if ([source, source + '.tmp', source + '.v1.bak', source + '.v2.bak', source + '.v2.bak.tmp'].some(value => normalized(value) === normalized(target)) || !isAbsolute(local) && local !== '..' && !local.startsWith('..' + sep)) throw new Error('WORKSPACE_EXPORT_TARGET_INVALID');
-    const workspace = await this.load<WorkspaceDocumentSnapshot>();
-    if (!workspace || !Array.isArray(workspace.documents)) throw new Error('WORKSPACE_EXPORT_SOURCE_MISSING');
-    const documents = workspace.documents.map(entry => {
-      const { content: _content, model: _model, ...document } = entry as typeof entry & { content?: unknown; model?: unknown };
-      return { ...document, bytes: typeof document.bytes === 'string' ? document.bytes : Buffer.from(document.bytes).toString('base64') };
-    });
-    const { storageVersion: _storageVersion, ...legacy } = workspace;
-    const temporary = target + '.' + randomUUID() + '.tmp'; await mkdir(dirname(target), { recursive: true });
-    // Linking the completed sibling file publishes it atomically and fails
-    // exclusively if a file appeared at the destination during serialization.
-    const exportValue = { ...legacy, documents };
-    const payload = await stringifyDocumentValue(exportValue, retainedValueBytes(exportValue));
-    try { await writeFile(temporary, payload, { mode: 0o600, flag: 'wx' }); await link(temporary, target); }
-    finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
   }
   private async writeBlobs(blobs: FrozenBlob[]) {
     if (!blobs.length) return;
@@ -293,8 +244,8 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
     while (this.queue.length) {
       const entry = this.queue.shift()!; this.active = entry;
       try {
-        if (entry.v2) await this.backupLegacy(); await this.writeBlobs(entry.blobs); if (entry.v2) await this.backupRollback(); await this.writePayload(entry.payload); this.counts.written++;
-        if (entry.v2 && (this.counts.written % 32 === 0 || Date.now() - this.lastGcAt >= 30000)) this.gcRequested = true;
+        await this.writeBlobs(entry.blobs); await this.backupRollback(); await this.writePayload(entry.payload); this.counts.written++;
+        if (this.counts.written % 32 === 0 || Date.now() - this.lastGcAt >= 30000) this.gcRequested = true;
         for (const waiter of entry.waiters) waiter.resolve();
       }
       catch (error) { for (const waiter of entry.waiters) waiter.reject(error); }
@@ -306,15 +257,6 @@ export class JsonWorkspaceRepository implements WorkspaceRepository {
       catch (error) { this.blobCounts.gcFailures++; for (const waiter of waiters) waiter.reject(error); }
       finally { this.maintenance = false; }
       if (this.queue.length || this.gcRequested) { void this.pump(); return; }
-    }
-    // Export holds the same maintenance barrier as GC while reading blob
-    // chains. New saves can enqueue, but cannot advance rollback/GC beneath it.
-    if (this.exports.length) {
-      const request = this.exports.shift()!; this.maintenance = true;
-      try { await this.writeLegacyExport(request.path); request.waiter.resolve(); }
-      catch (error) { request.waiter.reject(error); }
-      finally { this.maintenance = false; }
-      if (this.queue.length || this.gcRequested || this.exports.length) void this.pump();
     }
   }
 }

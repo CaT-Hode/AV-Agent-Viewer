@@ -100,7 +100,7 @@ const server = createServer(async (request, response) => {
 server.listen(0, '127.0.0.1'); await new Promise(resolveListening => server.once('listening', resolveListening));
 const baseUrl = 'http://127.0.0.1:' + server.address().port + '/v1';
 const quote = JSON.stringify;
-const mcp = '{command=' + quote(process.execPath) + ',args=' + quote([join(root, 'node_modules/tsx/dist/cli.mjs'), join(root, 'scripts/codex-discovery-fixture.ts')]) + ',env={AGENTVIEWER_PROBE_LOG=' + quote(mcpLog) + ',AGENTVIEWER_PROBE_DIR=' + quote(directory) + ',AGENTVIEWER_PROBE_TARGET_FILE=' + quote(targetFile) + ',AGENTVIEWER_PROBE_SEED_REFS="1"},required=true,startup_timeout_sec=20,tool_timeout_sec=20}';
+const mcp = '{command=' + quote(process.execPath) + ',args=' + quote([join(root, 'node_modules/tsx/dist/cli.mjs'), join(root, 'scripts/codex-discovery-server.ts')]) + ',env={AGENTVIEWER_PROBE_LOG=' + quote(mcpLog) + ',AGENTVIEWER_PROBE_DIR=' + quote(directory) + ',AGENTVIEWER_PROBE_TARGET_FILE=' + quote(targetFile) + ',AGENTVIEWER_PROBE_SEED_REFS="1"},required=true,startup_timeout_sec=20,tool_timeout_sec=20}';
 const args = ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--json', '--color', 'never', '--cd', directory,
   '-c', 'model=' + quote(model), '-c', 'model_provider="av_loopback"',
   '-c', 'model_providers.av_loopback={name="AgentViewer local protocol fixture",base_url=' + quote(baseUrl) + ',wire_api="responses",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}',

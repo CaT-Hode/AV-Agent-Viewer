@@ -88,7 +88,7 @@
 :root[data-theme="dark"] .translation-card { background: transparent; }
 :root[data-theme="dark"] .rail-dot { background: #c9c9c9; border-color: #2b2b2b; }
 :root[data-theme="dark"] .toast { background: #3a3a3a; color: #ededed; border: 1px solid #585858; box-shadow: var(--shadow); }
-:root[data-theme="dark"] .engine-notice { background: #292a28; color: #c0b8a2; border-color: #b3a67a1a; }
+
 
 /* Glass reads as a dark floating material, without bright outlines.
    The material itself — fill, frost, shadow — is owned by

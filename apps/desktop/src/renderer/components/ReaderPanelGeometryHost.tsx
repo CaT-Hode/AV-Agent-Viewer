@@ -20,7 +20,9 @@ export function ReaderPanelGeometryHost({ workbench, viewId, active, identity, r
         if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0) return [];
         // Native anchors are invisible; owned windows render their actual React
         // elements. Keep the anchor's real transformed border-box geometry.
-        return [{ side, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }];
+        const seedY = Number.parseFloat(element.style.getPropertyValue('--sidebar-seed-y')) || 0, seedSize = Number.parseFloat(element.style.getPropertyValue('--sidebar-seed-size')) || 36;
+        const top = Math.min(0,seedY), bottom = Math.max(rect.height,seedY + seedSize);
+        return [{ side, bounds: { x: rect.x, y: rect.y + top, width: rect.width, height: bottom - top } }];
       });
       return { windowId, viewId: current.viewId, panels };
     };

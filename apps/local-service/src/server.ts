@@ -6,7 +6,7 @@ import type { Server } from 'node:http';
 import { ViewerCore } from '../../../packages/document-core/src/index';
 import { PROTOCOL_VERSION, ViewerError } from '../../../packages/contracts/src/index';
 import { dispatch } from '../../../packages/sdk/src/dispatch';
-import { ensureSamples } from '../../../packages/document-core/src/fixtures';
+import { ensureSamples } from '../../../packages/document-core/src/document-templates';
 import { ZodError } from 'zod';
 import { MarkdownWorkspace } from '../../../packages/markdown/src/workspace';
 import { AgentSession } from '../../../packages/sdk/src/agent-session';

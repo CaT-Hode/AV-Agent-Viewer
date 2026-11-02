@@ -2,7 +2,6 @@ import { cloneElement, useCallback, useLayoutEffect, useRef, useState, type CSSP
 import { createPortal } from 'react-dom';
 import { desktop } from '../lib/transport';
 import { NativePanelHeightContext } from '../lib/native-panel-height';
-import { sidebarPopupProjection } from '../lib/sidebar-presence';
 
 type Attributes = Record<string, unknown> & { style?: CSSProperties };
 type Props = Attributes & { enabled: boolean; viewId?: string; side: 'left' | 'right'; children: ReactElement<Attributes> };
@@ -13,37 +12,39 @@ export function NativeSidebarPortal({ enabled, viewId, side, children, ...presen
   const [host, setHost] = useState<{ viewId: string; side: Props['side']; container: HTMLElement }>();
   const container = desktop && enabled && host && host.viewId === viewId && host.side === side && !host.container.ownerDocument.defaultView?.closed ? host.container : undefined;
   const anchor = useRef<HTMLDivElement>(null), height = useRef<number | undefined>(undefined);
-  const syncHeight = useCallback((value: number) => {
+  const syncHeight = useCallback((value: number, seedY: number, seedSize: number) => {
     if (!Number.isFinite(value) || value <= 0) return;
     height.current = value;
     anchor.current?.style.setProperty('--adaptive-panel-height', value.toFixed(3) + 'px');
+    anchor.current?.style.setProperty('--sidebar-seed-y', seedY.toFixed(3) + 'px');
+    anchor.current?.style.setProperty('--sidebar-seed-size', seedSize.toFixed(3) + 'px');
   }, []);
   useLayoutEffect(() => {
     if (!container) return;
     container.ownerDocument.documentElement.style.setProperty('--reader-panel-presence-duration', String(presence.style?.['--motion-duration' as keyof CSSProperties] ?? '220ms'));
     // The raw bitmap is a sibling behind the portalled material. It must not
     // remain an opaque rectangle while the actual tools and rim disappear.
-    for (const name of ['--sidebar-spring-alpha','--sidebar-spring-x','--sidebar-spring-scale-x','--sidebar-spring-scale-y']) {
+    for (const name of ['--sidebar-spring-alpha','--sidebar-spring-progress']) {
       const value = presence.style?.[name as keyof CSSProperties];
       if (value === undefined) container.style.removeProperty(name);
       else container.style.setProperty(name, String(value));
     }
-    const project = () => {
-      const source=anchor.current;if(!source)return;
-      const original=Number.parseFloat(String(presence.style?.['--sidebar-spring-x' as keyof CSSProperties]??0))||0;
-      const paint=sidebarPopupProjection(side,source.offsetWidth,original);
-      container.style.setProperty('--sidebar-window-scale-x',String(paint.scaleX));
-      container.style.setProperty('--sidebar-window-x',paint.x+'px');
-    };
-    const size=new ResizeObserver(project);if(anchor.current)size.observe(anchor.current);project();
-    return()=>size.disconnect();
   }, [container, presence.style,side]);
   useLayoutEffect(() => {
     const source = anchor.current; if (!container || !source) return;
     // The navigation lives in another trusted window. Its actual moving edge
     // constrains the hidden owner's anchor; mirror that paint-only constraint
     // into this same React tree before the child window's next frame.
-    const sync = () => { const value = source.style.getPropertyValue('--sidebar-space-scale-x'); if (value) container.style.setProperty('--sidebar-space-scale-x',value); else container.style.removeProperty('--sidebar-space-scale-x'); };
+    const sync = () => {
+      for (const name of ['--sidebar-space-scale-x','--adaptive-panel-height','--sidebar-seed-y','--sidebar-seed-size']) {
+        const value = source.style.getPropertyValue(name); if (value) container.style.setProperty(name,value); else container.style.removeProperty(name);
+      }
+      const height = Number.parseFloat(source.style.getPropertyValue('--adaptive-panel-height')) || source.offsetHeight, width = source.offsetWidth;
+      const seedY = Number.parseFloat(source.style.getPropertyValue('--sidebar-seed-y')) || 0, size = Number.parseFloat(source.style.getPropertyValue('--sidebar-seed-size')) || 36;
+      container.style.setProperty('--reader-panel-offset-y', Math.max(0,-seedY) + 'px');
+      container.style.setProperty('--sidebar-seed-scale-x', String(size / Math.max(size,width)));
+      container.style.setProperty('--sidebar-seed-scale-y', String(size / Math.max(size,height)));
+    };
     const observer = new MutationObserver(sync); observer.observe(source,{attributes:true,attributeFilter:['style']}); sync();
     return () => observer.disconnect();
   }, [container]);

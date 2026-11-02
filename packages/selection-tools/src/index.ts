@@ -84,7 +84,7 @@ export async function selectionAction(core:ViewerCore,input:unknown,actor:Actor)
       }
       else { const local:ReadingSnapshot=args.selectionContextId?{id:snapshot.id,schemaVersion:'1.0',createdAt:snapshot.createdAt,context:snapshot.context,document:d}:snapshot as ReadingSnapshot;const operation=operationFor(local,args);const patch=core.prepare(d.id,d.revision,operation,{viewId:snapshot.context.viewId});result={receipt:await core.commit(patch.id,args.idempotencyKey+':edit',actor)}; }
     }
-    core.receipts.set(args.idempotencyKey,{payload,receipt:result});await core.persist();return result;
+    core.receipts.set(args.idempotencyKey,{payload,receipt:result,documentId:d.id});await core.persist();return result;
     });
   });documentQueues.set(queueKey,pending);void pending.finally(()=>{if(documentQueues.get(queueKey)===pending)documentQueues.delete(queueKey);}).catch(()=>{});return pending;
 }

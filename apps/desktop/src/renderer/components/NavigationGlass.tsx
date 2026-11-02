@@ -22,9 +22,17 @@ function colorChannels(color: string) {
 export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, onSurface, softness = 'navigation', onReady }: { backdropImage?: string; backdropSample?: NavigationBackdropSample; capsuleBounds?: NavigationBounds; onSurface?(surface: 'light' | 'dark'): void; softness?: 'navigation' | 'selection'; onReady?(ready:boolean):void }) {
   const root = useRef<HTMLSpanElement>(null);
   const resample = useRef<(() => void) | undefined>(undefined);
+  const inferred = useRef<'light' | 'dark'>('light');
 
   useEffect(() => {
     if (!onSurface) return;
+    const brightness = (value: number) => {
+      // Mid-grey and tinted paper retain dark ink. Switch to white ink only
+      // over a genuinely dark source; a small dead band avoids flicker.
+      const next = value < (inferred.current === 'dark' ? 112 : 92) ? 'dark' : 'light';
+      if (next !== inferred.current) inferred.current = next;
+      onSurface(next);
+    };
     if (backdropImage) {
       let active = true;
       const image = new Image();
@@ -40,21 +48,18 @@ export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, 
           light += (.2126 * pixels[i] + .7152 * pixels[i + 1] + .0722 * pixels[i + 2]) * alpha;
           weight += alpha;
         }
-        if (weight) onSurface(light / weight > 145 ? 'light' : 'dark');
+        if (weight) brightness(light / weight);
       };
       image.src = backdropImage;
       return () => { active = false; image.onload = null; };
     }
     // Live documents need no screenshots: inspect their actual opaque page
     // surface, never navigation descendants. PDF and HTML retain page colors.
-    let frame = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    let frame = 0;
     const measure = () => {
-      cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      // Movement and document mutation can fire once per animation/input
-      // frame. Infer contrast once they settle instead of rescanning the DOM
-      // and reattaching listeners for every reported capsule coordinate.
-      timer = setTimeout(() => { frame = requestAnimationFrame(() => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
         const capsule = root.current?.parentElement; if (!capsule) return;
         const box = capsule.getBoundingClientRect();
         const underneath = document.elementsFromPoint(box.x + box.width / 2, box.y + box.height / 2).find(node => !capsule.contains(node) && !node.contains(capsule) && !node.closest('.reader-toolbar'));
@@ -69,23 +74,23 @@ export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, 
             if (pixels) {
               let light = 0;
               for (let i = 0; i < pixels.length; i += 4) light += .2126 * pixels[i] + .7152 * pixels[i + 1] + .0722 * pixels[i + 2];
-              onSurface(light / (pixels.length / 4) > 145 ? 'light' : 'dark'); return;
+              brightness(light / (pixels.length / 4)); return;
             }
           } catch { /* Read-only surface inference can fall back to page style. */ }
         }
         if (underneath instanceof HTMLIFrameElement && underneath.dataset.surfaceBackground) {
           const color = colorChannels(underneath.dataset.surfaceBackground);
-          if (color && color[3] > 204) { onSurface(.2126 * color[0] + .7152 * color[1] + .0722 * color[2] > 145 ? 'light' : 'dark'); return; }
+          if (color && color[3] > 204) { brightness(.2126 * color[0] + .7152 * color[1] + .0722 * color[2]); return; }
         }
         let node: Element | null = underneath;
         while (node) {
           const color = colorChannels(getComputedStyle(node).backgroundColor);
           if (color && color[3] > 204) {
-            onSurface(.2126 * color[0] + .7152 * color[1] + .0722 * color[2] > 145 ? 'light' : 'dark'); return;
+            brightness(.2126 * color[0] + .7152 * color[1] + .0722 * color[2]); return;
           }
           node = node.parentElement;
         }
-      }); }, 80);
+      });
     };
     resample.current = measure;
     const appearance = new MutationObserver(measure);
@@ -94,7 +99,7 @@ export function NavigationGlass({ backdropImage, backdropSample, capsuleBounds, 
     const documentHost = root.current?.closest('.reader-panel')?.querySelector('.document-content');
     if (documentHost) content.observe(documentHost, { childList: true, subtree: true, characterData: true });
     document.addEventListener('scroll', measure, true); window.addEventListener('resize', measure); window.addEventListener('agentviewer:html-surface', measure); window.addEventListener('agentviewer:selection-material-position',measure); measure();
-    return () => { resample.current = undefined; clearTimeout(timer); cancelAnimationFrame(frame); appearance.disconnect(); content.disconnect(); document.removeEventListener('scroll', measure, true); window.removeEventListener('resize', measure); window.removeEventListener('agentviewer:html-surface', measure); window.removeEventListener('agentviewer:selection-material-position',measure); };
+    return () => { resample.current = undefined; cancelAnimationFrame(frame); appearance.disconnect(); content.disconnect(); document.removeEventListener('scroll', measure, true); window.removeEventListener('resize', measure); window.removeEventListener('agentviewer:html-surface', measure); window.removeEventListener('agentviewer:selection-material-position',measure); };
   }, [backdropImage, onSurface]);
   useEffect(() => resample.current?.(),[capsuleBounds?.x,capsuleBounds?.y,capsuleBounds?.width,capsuleBounds?.height]);
 

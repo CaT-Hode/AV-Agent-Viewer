@@ -73,8 +73,8 @@
 .office-dialog-unavailable p { color:var(--glass-ink); }
 .office-dialog-unavailable > div { display:flex; justify-content:flex-end; gap:8px; }
 .office-dialog-error { margin:9px 6px 0; font-size:12px; line-height:1.5; color:var(--danger,#bd5265); }
-.office-dialog-compatibility { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:10px 6px 0; border-top:1px solid var(--office-dialog-divider); font-size:11px; line-height:1.5; color:var(--office-dialog-secondary); }
-.office-dialog-compatibility button { color:var(--accent); text-decoration:underline; text-underline-offset:3px; }
+.office-dialog-native-options { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:10px 6px 0; border-top:1px solid var(--office-dialog-divider); font-size:11px; line-height:1.5; color:var(--office-dialog-secondary); }
+.office-dialog-native-options button { color:var(--accent); text-decoration:underline; text-underline-offset:3px; }
 .office-dialog-tabs { display:flex; flex-direction:column; gap:12px; min-width:0; }
 .office-dialog-tabs > .glass-segmented { align-self:flex-start; max-width:100%; margin:0 0 2px; }
 .office-dialog-choice { position:relative; flex:0 1 200px; min-width:84px; width:200px; }

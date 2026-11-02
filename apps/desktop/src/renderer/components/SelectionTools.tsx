@@ -14,6 +14,7 @@ import type { SettingsSnapshot } from '../../../../../packages/settings/src/inde
 import { OFFICE_SELECTION_EVENTS, type OfficeSelectionToolsEvent } from '../lib/office-surface-selection';
 import { SELECTION_POPOVER_MOTION_BASE_MS } from '../lib/motion-policy';
 import { READING_MOTION_EVENT } from '../lib/smooth-scroll';
+import { SELECTION_GLASS_BLUR_PX } from '../lib/glass-presets';
 type Tool = { id: string; label: string; input: boolean };
 type State = { snapshot: ReadingSnapshot | SelectionContext; actions: Tool[] };
 const icons:Record<string,typeof Copy>={copy:Copy,citation:Quote,extract:FilePlus2,note:MessageSquare,highlight:Highlighter,underline:Underline,strike:Strikethrough,bold:Bold,italic:Italic,code:Code,replace:Pencil,heading:Heading2,'align-left':AlignLeft,'align-center':AlignCenter,'center-object':MoveHorizontal,translate:Languages,ask:Sparkles};
@@ -28,7 +29,7 @@ function SelectionPanelGlass({ native, backdrop }: { native: boolean; backdrop: 
     };
     const observer=new ResizeObserver(measure);observer.observe(host);measure();return()=>observer.disconnect();
   },[native]);
-  return <LiquidGlassSurface surfaceRef={node} variant="panel" effect="refractive" strength={.55} specularOpacity={.16} backdropImage={native?backdrop.image:undefined} backdropSample={native?backdrop.sample:undefined} bounds={bounds} />;
+  return <LiquidGlassSurface surfaceRef={node} variant="panel" effect="refractive" blur={SELECTION_GLASS_BLUR_PX} blurLimit={SELECTION_GLASS_BLUR_PX} strength={.55} specularOpacity={.16} backdropImage={native?backdrop.image:undefined} backdropSample={native?backdrop.sample:undefined} bounds={bounds} />;
 }
 export function SelectionTools({native=false}:{native?:boolean}) {
   const [state,setState]=useState<State>(),[rect,setRect]=useState<Rect>(),[input,setInput]=useState<Tool>(),[value,setValue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[selecting,setSelecting]=useState(false);

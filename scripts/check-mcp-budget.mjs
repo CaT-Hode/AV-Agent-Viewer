@@ -72,7 +72,7 @@ async function inspect(format) {
   // Type-only discovery must not touch documents or engines. Compare the real
   // service path with the isolated wire path so its budget cannot accidentally
   // certify a smaller, divergent catalog-only implementation.
-  const service = new AgentSession(new ViewerCore({ load: async () => undefined, save: async () => {} }), 'budget:' + format, root);
+  const service = new AgentSession(new ViewerCore({ load: async () => undefined, saveDocuments: async () => {} }), 'budget:' + format, root);
   const client = new Client({ name: 'agentviewer-context-budget', version: '0.2.0' });
   const transport = new StdioClientTransport({
     command: process.execPath, args: ['--import', 'tsx', join(root, 'apps/local-service/src/mcp.ts')], cwd: root,

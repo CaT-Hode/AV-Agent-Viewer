@@ -152,10 +152,10 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
           }
           // Absolute positioning covers the border box. All reads for sibling
           // surfaces have finished before these shared-frame writes occur.
-          if (!navigation) {
-            const values = { left, top, width: `${width}px`, height: `${height}px` };
-            for (const [property, value] of Object.entries(values)) if (surface.style.getPropertyValue(property) !== value) surface.style.setProperty(property, value);
-          }
+          const values = navigation
+            ? { left, top, right: `${-Number.parseFloat(hostStyle.borderRightWidth || '0')}px`, bottom: `${-Number.parseFloat(hostStyle.borderBottomWidth || '0')}px` }
+            : { left, top, width: `${width}px`, height: `${height}px` };
+          for (const [property, value] of Object.entries(values)) if (surface.style.getPropertyValue(property) !== value) surface.style.setProperty(property, value);
         };
       });
     };
@@ -186,11 +186,9 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
       if (activeOptics) {
         host.dataset.navigationOpticsWidth = String(activeOptics.width);
         host.dataset.navigationOpticsHeight = String(activeOptics.height);
-        host.dataset.navigationOpticsOverscan = String(activeOptics.overscan);
       } else {
         delete host.dataset.navigationOpticsWidth;
         delete host.dataset.navigationOpticsHeight;
-        delete host.dataset.navigationOpticsOverscan;
       }
     }
     surface?.dispatchEvent(new Event('agentviewer:glass-optics', { bubbles: true }));
@@ -202,12 +200,14 @@ export function LiquidGlassSurface({ variant = 'panel', effect: requestedEffect,
   const totalWidth = activeOptics ? activeOptics.width + overscan * 2 : undefined, totalHeight = activeOptics ? activeOptics.height + overscan * 2 : undefined;
   const sourceStyle: CSSProperties = {
     width: totalWidth, height: totalHeight,
+    left: navigation ? 'calc(-1 * var(--liquid-glass-overscan) * var(--navigation-optics-scale-x, 1))' : undefined,
+    top: navigation ? 'calc(-1 * var(--liquid-glass-overscan) * var(--navigation-optics-scale-y, 1))' : undefined,
     transform: navigation && activeOptics ? 'scale(var(--navigation-optics-scale-x, 1), var(--navigation-optics-scale-y, 1))' : undefined,
     transformOrigin: navigation ? '0 0' : undefined,
     backgroundImage: sampled ? `url("${backdropImage}")` : undefined,
     backgroundSize: backdropSample ? navigation ? `calc(${backdropSample.cssSize.width}px / var(--navigation-optics-scale-x, 1)) calc(${backdropSample.cssSize.height}px / var(--navigation-optics-scale-y, 1))` : `${backdropSample.cssSize.width}px ${backdropSample.cssSize.height}px` : totalWidth ? `${totalWidth}px ${totalHeight}px` : undefined,
     // A sample remains in source/window coordinates while its host moves.
-    backgroundPosition: backdropSample && navigation ? `calc((${backdropSample.origin.x + overscan}px - var(--navigation-capsule-x, ${bounds?.x ?? 0}px)) / var(--navigation-optics-scale-x, 1)) calc((${backdropSample.origin.y + overscan}px - var(--navigation-capsule-y, ${bounds?.y ?? 0}px)) / var(--navigation-optics-scale-y, 1))` : backdropSample && bounds ? `${backdropSample.origin.x - bounds.x + overscan}px ${backdropSample.origin.y - bounds.y + overscan}px` : '0 0',
+    backgroundPosition: backdropSample && navigation ? `calc((${backdropSample.origin.x}px - var(--navigation-capsule-x, ${bounds?.x ?? 0}px)) / var(--navigation-optics-scale-x, 1) + ${overscan}px) calc((${backdropSample.origin.y}px - var(--navigation-capsule-y, ${bounds?.y ?? 0}px)) / var(--navigation-optics-scale-y, 1) + ${overscan}px)` : backdropSample && bounds ? `${backdropSample.origin.x - bounds.x + overscan}px ${backdropSample.origin.y - bounds.y + overscan}px` : '0 0',
   };
   const style: MaterialStyle = {
     '--liquid-glass-refraction-filter': activeOptics ? `url("#${id}-edge")` : 'none',

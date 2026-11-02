@@ -22,7 +22,7 @@
 .glass-switch-thumb:is([data-glass-elastic-state="press"],[data-glass-elastic-state="drag"]) { box-shadow: 0 4px 22px rgb(0 0 0 / .1),inset 2px 7px 24px rgb(0 0 0 / .09),inset -2px -7px 24px rgb(255 255 255 / .09); }
 /* Feedback begins on pointer-down, before the slower shape spring has moved.
    Only a paint tint changes here; no geometry, blur or texture is regenerated. */
-.glass-elastic:is([data-glass-elastic-state="press"],[data-glass-elastic-state="drag"]):is(button.icon-button,.activity-rail button,.ai-rail button,.tab-select,.outline-item,.settings-nav button) { background-color: color-mix(in srgb,var(--accent,#367dab) 7%,transparent); }
+.glass-elastic:is([data-glass-elastic-state="press"],[data-glass-elastic-state="drag"]):is(button.icon-button,.activity-rail button,.ai-rail button,.outline-item,.settings-nav button) { background-color: color-mix(in srgb,var(--accent,#367dab) 7%,transparent); }
 :root[data-motion="elegant"] :is(.activity-rail,.ai-rail,.settings-nav,.tab-strip) button:not(.glass-elastic) { transition-duration: 360ms; }
 :root[data-motion="elegant"] .glass-elastic { transition-property: background-color,color,border-color,box-shadow; }
 /* JS is the sole owner of scale/translate/position. Never add a second tween

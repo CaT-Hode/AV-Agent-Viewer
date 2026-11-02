@@ -24,7 +24,7 @@ AgentViewer 让你与 AI Agent 在同一份文档上阅读、思考和创作。
 
 ## 编辑与保存
 
-切换到源码模式可以编辑本文。Office 和 PDF 按当前引擎能力提供基础编辑；功能限制在文档状态中显示。
+切换到源码模式可以编辑本文。Office 和 PDF 支持文字、标记与页面编辑。
 
 | 格式 | 编辑方式 |
 | --- | --- |
@@ -43,7 +43,7 @@ export async function blankBytes(format: Format): Promise<Uint8Array> {
     const zip = new JSZip();
     zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
     zip.file('_rels/.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
-    zip.file('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>欢迎使用 AgentViewer</w:t></w:r></w:p><w:p><w:r><w:t>这是可编辑的 Word 文字块。编辑后另存文件，再重新打开检查。</w:t></w:r></w:p><w:p><w:r><w:t>未修改的 OOXML 部件保留，复杂排版需要完整 Office 引擎。</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>');
+    zip.file('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>欢迎使用 AgentViewer</w:t></w:r></w:p><w:p><w:r><w:t>这是可编辑的 Word 文字块。编辑后另存文件，再重新打开检查。</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>');
     return zip.generateAsync({ type: 'uint8array' });
   }
   if (format === 'pptx' || format === 'xlsx') return officeDocumentTemplateBytes('demo.' + format as 'demo.pptx' | 'demo.xlsx');
