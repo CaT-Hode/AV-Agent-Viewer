@@ -1071,6 +1071,87 @@ def reveal_native_target(session,view,rectangle):
     doc_call(session,'setClientVisibleArea',None,I,I,I,I)(*(round(visible[k]) for k in ['x','y','width','height']))
     emit({'type':'surface','action':'office-surface-scroll',**event_identity(session,view),'partIndex':view.get('partIndex',0),'layoutRevision':view['layoutRevision'],'rectTwips':visible,'scrollCss':{axis:visible[axis]*scale for axis in ['x','y']}})
 
+import re
+def find_reader_text(session,view,args):
+    token=args['token'];action=args['action'];current=view.get('readerFind')
+    if action=='clear':
+        if current and current['token']==token:view.pop('readerFind',None)
+        return {}
+    if action=='reveal':
+        if not current or current['token']!=token or current['revision']!=session['engineRevision']:fail('STALE_NATIVE_QUERY','Office 内容已变化，请重新查找。')
+        index=args.get('index')
+        if not isinstance(index,int) or not 0<=index<len(current['targets']):fail('INVALID_TARGET','查找结果无效。')
+        part,item,span=current['targets'][index];controller=view['controller'];activate(session,view)
+        if session['format']=='docx':
+            cursor=controller.getViewCursor();cursor.gotoRange(item.getStart(),False);cursor.gotoRange(item.getEnd(),True)
+        elif session['format']=='xlsx':
+            controller.setActiveSheet(session['doc'].Sheets.getByIndex(part));doc_call(session,'setPart',None,I)(part);view['partIndex']=part;controller.select(item)
+        else:
+            controller.setCurrentPage(session['doc'].DrawPages.getByIndex(part));doc_call(session,'setPart',None,I)(part);view['partIndex']=part;controller.select(item)
+            if span:
+                def keypress(name,modifiers={}):
+                    code=key_code({'key':name,'modifiers':modifiers})
+                    post=doc_call(session,'postKeyEvent',None,I,I,I);post(0,0,code);post(1,0,code)
+                keypress('F2');native_event_fence();keypress('Home',{'control':True});native_event_fence()
+                # Impress XSelectionSupplier selects shapes, but not a substring of an
+                # inactive shape. Enter its text Outliner, then use native find from
+                # the beginning. One step per occurrence works for bidi and non-BMP text.
+                options=props({'SearchItem.SearchString':current['text'],'SearchItem.Command':uno.Any('unsigned short',0),'SearchItem.TransliterateFlags':uno.Any('long',0 if current['caseSensitive'] else 1),'Quiet':True,'SynchronMode':True})
+                for step in range(span[2]+1):
+                    dispatcher.executeDispatch(view['frame'],'.uno:ExecuteSearch','',0,options);native_event_fence()
+                chosen=selected_text_range(session,view)
+                if chosen is not None:
+                    xy=chosen.getPropertyValue('Selection')
+                    prefix,word,_=ppt_text_parts(item.String,[xy.Start.Paragraph,xy.Start.PositionInParagraph,xy.End.Paragraph,xy.End.PositionInParagraph])
+                    if chosen.Text.queryInterface(uno.getTypeByName('com.sun.star.drawing.XShape'))!=item or len(prefix.encode('utf-16-le'))//2!=span[0] or len(word.encode('utf-16-le'))//2!=span[1]:chosen=None
+                if chosen is None:
+                    keypress('Escape');native_event_fence();controller.setCurrentPage(session['doc'].DrawPages.getByIndex(part));controller.select(item)
+                    fail('NATIVE_FIND_SHAPE_ONLY','已定位到幻灯片对象，引擎无法选中这段文字。')
+        native_event_fence();yield
+        reveal_native_target(session,view,view.get('caret') if part is None else native_rect(item))
+        return {}
+    text=args['text'];doc=session['doc'];hits=[];targets=[]
+    current={'token':token,'revision':session['engineRevision'],'targets':targets,'text':text,'caseSensitive':args.get('caseSensitive')};view['readerFind']=current
+    def valid():return view.get('readerFind') is current and current['revision']==session['engineRevision']
+    def add(label,before,match,after,target):
+        hits.append({'label':label,'before':before[-36:],'match':match[:120],'after':after[:60]});targets.append(target)
+    regex=re.compile(re.escape(text),0 if args.get('caseSensitive') else re.I)
+    if session['format'] in ('docx','xlsx'):
+        writer=session['format']=='docx'
+        owners=[(None,doc)] if writer else [(i,doc.Sheets.getByIndex(i)) for i in range(doc.Sheets.Count)]
+        for part,owner in owners:
+            desc=owner.createSearchDescriptor();desc.SearchString=text;desc.SearchCaseSensitive=bool(args.get('caseSensitive'))
+            if not writer and desc.getPropertySetInfo().hasPropertyByName('SearchType'):desc.SearchType=1
+            item=owner.findFirst(desc)
+            while item is not None and len(hits)<501 and valid():
+                if writer:
+                    left=item.Text.createTextCursorByRange(item.Start);left.goLeft(36,True)
+                    right=item.Text.createTextCursorByRange(item.End);right.goRight(60,True)
+                    add('Word 正文',left.String,item.String,right.String,(None,item,None))
+                else:
+                    value=item.String
+                    for m in regex.finditer(value):
+                        add(str(item.AbsoluteName).replace('$',''),value[:m.start()],m.group(),value[m.end():],(part,item,None))
+                        if len(hits)>=501:break
+                if len(hits)%24==0:yield
+                item=owner.findNext(item,desc)
+            if len(hits)>=501 or not valid():break
+            yield
+    else:
+        for part in range(doc.DrawPages.Count):
+            page=doc.DrawPages.getByIndex(part);stack=list(reversed([page.getByIndex(i) for i in range(page.Count)]))
+            while stack and len(hits)<501 and valid():
+                shape=stack.pop()
+                if shape.supportsService('com.sun.star.drawing.GroupShape'):stack.extend(reversed([shape.getByIndex(i) for i in range(shape.Count)]));continue
+                value=getattr(shape,'String','')
+                for occurrence,m in enumerate(regex.finditer(value)):
+                    span=(len(value[:m.start()].encode('utf-16-le'))//2,len(m.group().encode('utf-16-le'))//2,occurrence)
+                    add('幻灯片 '+str(part+1),value[:m.start()],m.group(),value[m.end():],(part,shape,span))
+                    if len(hits)>=501:break
+            yield
+            if len(hits)>=501 or not valid():break
+    if not valid():fail('STALE_NATIVE_QUERY','查找已更新。')
+    return {'hits':hits[:500],'limited':len(hits)>500}
 def navigate(session,view,args):
     native_event_fence();expected(session,view,args);target=args['target'];controller=view['controller'];kind=target['kind'];session['operationActor']=args.get('actor','agent')
     try:
@@ -1211,6 +1292,7 @@ def handle_request(request):
     if method=='commands':return commands(session,view)
     if method=='commandStatus':return command_status(view,args['command'])
     if method=='commandStatuses':return command_statuses(session,view,args)
+    if method=='readerFind':return (yield from find_reader_text(session,view,args))
     if method=='query':return query(session,view,args['target'])
     if method=='authoringQuery':return authoring_query_request(session,view,args)
     if method=='authoringExecute':return authoring_execute(session,view,args)

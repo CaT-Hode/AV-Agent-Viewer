@@ -255,6 +255,7 @@ export class NativeOfficeRuntime extends EventEmitter {
       });
     }).finally(() => { const elapsed=performance.now()-started;metrics.completed++;metrics.totalMs+=elapsed;metrics.maximumMs=Math.max(metrics.maximumMs,elapsed); });
   }
+  readerFind(sessionId:string,viewId:string,args:{action:string;token:string;text:string;caseSensitive:boolean;index?:number}) {return this.request('readerFind',{...args,sessionId,viewId});}
   async convertLegacy(path: string, extension: 'doc' | 'ppt' | 'xls') {
     const format = ({doc:'docx',ppt:'pptx',xls:'xlsx'} as const)[extension];
     const id = randomUUID();

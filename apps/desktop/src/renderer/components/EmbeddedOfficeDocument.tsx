@@ -43,6 +43,8 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const hasStartupModel = !!(file.model.blocks || file.model.sheets || file.model.slides);
   const startupDocument=useMemo(()=>file,[identity,hasStartupModel]);
   const startupLocation=useRef<OfficeStartupPreviewLocation|undefined>(undefined);
+  const resume=useRef(view.readingPosition?.revision===file.revision?view.readingPosition.locator:view.context?.contentRevision===file.revision?view.context.locator:undefined);
+  const resumePart=useRef(false);
   const startupHandoff=useRef<string|undefined>(undefined);
   const presentationFlight=useRef(false);
   const firstPaintIdentity=useRef<string|undefined>(undefined);
@@ -68,7 +70,6 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const presentationFit=useMemo(()=>file.format==='pptx'?officePresentationFitForView(identity):undefined,[identity,file.format]);
   presentationFit?.observeZoom(view.zoom??1);
   const fitTiming=useRef({timer:0,started:0});
-  const presentationLane=useRef({left:12,right:12});
   const presenter=useMemo(()=>new OfficeFramePresenter(),[identity]);
   zoom.current = view.zoom ?? 1;
   const composition = useRef<{ id: string; text: string } | undefined>(undefined), lastCompositionCommit = useRef<{ text: string; at: number } | undefined>(undefined), pointer = useRef<OfficePointerCapture | undefined>(undefined), clicks = useRef(new OfficePointerClickTracker());
@@ -104,17 +105,12 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
       write('--office-controls-left-inset',lane.left);write('--office-controls-right-inset',right);
       const nav=presentation?null:reader.querySelector<HTMLElement>('.navigation-toolbar'),height=nav&&!nav.classList.contains('is-hidden')?Number.parseFloat(getComputedStyle(nav).getPropertyValue('--navigation-height'))||60:0;
       if(file.format==='docx'){
-        write('--office-word-left-inset',lane.left);write('--office-word-right-inset',right);
         write('--office-word-top-inset',height?height+24:12);
       }
       if(file.format==='xlsx'){
-        write('--office-sheet-left-inset',lane.left);write('--office-sheet-right-inset',right);
         write('--office-sheet-top-inset',height?height+24:12);
       }
       if(file.format==='pptx'){
-        const changed=presentationLane.current.left!==lane.left||presentationLane.current.right!==lane.right;presentationLane.current={left:lane.left,right:lane.right};
-        if(changed&&!presentationFit?.enabled)setViewportVersion(version=>version+1);
-        write('--office-presentation-left-inset',lane.left);write('--office-presentation-right-inset',right);
         write('--office-presentation-top-inset',84);
       }
     };
@@ -143,7 +139,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     const rect = host.getBoundingClientRect(), size = officeSurfaceSize(state), scale = officeCssScale(zoom.current);
     const viewport={x:rect.x,y:rect.y,width:host.clientWidth,height:host.clientHeight};
     const manual=latest.current.document.format==='pptx'&&!presentationFit?.enabled,reader=manual?host.closest('.reader-panel')?.getBoundingClientRect():undefined;
-    const extra=latest.current.document.format==='xlsx'?officeSheetCanvasLayout({width:size.width*scale,height:size.height*scale},viewport):manual&&reader?officePresentationManualLayout({width:size.width*scale,height:size.height*scale},viewport,{left:Math.max(0,presentationLane.current.left-(rect.left-reader.left)),right:Math.max(0,(rect.left+host.clientWidth-reader.left)-presentationLane.current.right)}):{};
+    const extra=latest.current.document.format==='xlsx'?officeSheetCanvasLayout({width:size.width*scale,height:size.height*scale},viewport):manual&&reader?officePresentationManualLayout({width:size.width*scale,height:size.height*scale},viewport,{left:Math.max(0,12-(rect.left-reader.left)),right:Math.max(0,(rect.left+host.clientWidth-reader.left)-12)}):{};
     return { zoom: zoom.current, scrollX: host.scrollLeft, scrollY: host.scrollTop, offsetX: Math.max(0, (host.clientWidth - size.width * scale) / 2), offsetY: latest.current.document.format==='pptx'?Math.max(0,(host.clientHeight-size.height*scale)/2):0, viewport,...extra };
   }, [presentationFit]);
   const refresh = useCallback(async () => { if(latest.current.obscured)return;const next = await surfaceCall<OfficeSurfaceState>(OFFICE_SURFACE_METHODS.state, { viewId: latest.current.view.id }); if (!isOfficeSurfaceState(next)) throw new Error('Office 内置核心没有返回 tiled 编辑会话。'); accept(next); }, [accept,surfaceCall]);
@@ -241,6 +237,20 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     if(display&&!presentationFlight.current&&presentedLeaseRef.current!==display.leaseId&&complete&&target.dataset.officeFrameRevision===String(state.engineRevision)&&target.dataset.officeFrameZoom===String(state.zoom??geometry.zoom)){
       presentationFlight.current=true;
       try {
+        const saved=resume.current;
+        if(saved && !startupLocation.current && firstPaintIdentity.current!==scope && state.engineRevision===(startupDocument.nativeOffice?.engineRevision??0)){
+          const part=saved.pageIndex??Number(saved.slideId??0);
+          if(!resumePart.current&&file.format!=='docx'&&state.parts.some(p=>p.index===part)&&part!==state.partIndex){
+            resumePart.current=true;
+            await call('office-navigate',{viewId:state.viewId,expectedEngineEpoch:state.engineEpoch,expectedEngineRevision:state.engineRevision,expectedSelectionEpoch:state.selectionEpoch,idempotencyKey:crypto.randomUUID(),target:{kind:file.format==='xlsx'?'sheet':'slide',index:part}});
+            await refresh();scheduleRef.current();return;
+          }
+          resume.current=undefined;
+          if(scroll.current && (saved.scrollTop!==undefined || saved.pageIndex!==undefined && file.format==='docx')){
+            const y=saved.scrollTop??(state.pages?.[part]?.y??0)*officeCssScale(geometry.zoom);
+            if(Math.abs(scroll.current.scrollTop-y)>1){scroll.current.scrollTop=y;await synchronizeLayout();scheduleRef.current();return;}
+          }
+        }
         const location=startupLocation.current,locationKey=location&&JSON.stringify([scope,location]);
         if(firstPaintIdentity.current!==scope&&location&&locationKey!==startupHandoff.current&&state.engineRevision===(startupDocument.nativeOffice?.engineRevision??0)){
           startupHandoff.current=locationKey;
@@ -332,7 +342,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   }, [identity, accept, surfaceCall, cache,tilePlans,presenter]);
   useEffect(()=>stateObserver.current?.visibilityChanged(),[!!props.obscured]);
   useEffect(() => () => inputController.dispose(), [inputController]);
-  useEffect(() => { const host = scroll.current; if (!host || !surface) return; const changed = () => { setViewportVersion(version => version + 1); lastLayout.current = ''; scheduleRef.current(); void synchronizeLayout().catch(fail); }; const observer = new ResizeObserver(changed); observer.observe(host); window.addEventListener('resize', changed); changed(); return () => { observer.disconnect(); window.removeEventListener('resize', changed); }; }, [!!surface, identity, synchronizeLayout, fail]);
+  useEffect(() => { const host = scroll.current; if (!host || !surface) return; const changed = () => { setViewportVersion(version => version + 1); lastLayout.current = ''; scheduleRef.current(); void synchronizeLayout().catch(fail); }; const moved=()=>{void synchronizeLayout().catch(fail);}; const observer = new ResizeObserver(changed); observer.observe(host); window.addEventListener('resize', changed); window.addEventListener('reader-geometry',moved); changed(); return () => { observer.disconnect(); window.removeEventListener('resize', changed); window.removeEventListener('reader-geometry',moved); }; }, [!!surface, identity, synchronizeLayout, fail]);
   useEffect(() => { if (!surface) return; schedule(); void synchronizeLayout().catch(fail); }, [surface,viewportVersion, view.zoom, props.obscured, schedule, synchronizeLayout, fail]);
   useLayoutEffect(() => {
     const draft: OfficeDraftController = { viewId: view.id, hasDrafts: options => officeSurfaceHasDrafts(inputController,current.current,formulaDraft.current,options), flush: options => flushOfficeSurfaceDraft(inputController,current.current,formulaDraft.current,async () => { await call('office-flush', { viewId: view.id }); await refresh(); },options), history: direction => inputController.history(direction), discard: () => { formulaDraft.current?.discard(); if (inputController.compositionActive || inputController.failure || current.current?.pendingInput) throw new Error('输入法或未确认输入尚未稳定，不能静默丢弃。'); } };
@@ -412,7 +422,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   void viewportVersion;
   const overlay = surface && presentedFrame && sameIdentity(surface,presentedFrame) && surface.engineRevision!==presentedFrame.engineRevision ? presentedFrame : surface;
   const showStartupPreview=!displayScope||paintedIdentity!==displayScope;
-  return <section className={'embedded-office-document embedded-office-' + file.format} data-office-engine="libreofficekit" data-office-ready={surface?.status === 'ready'&&nativePresented} aria-busy={!nativePresented} data-office-render-mode={showStartupPreview?'preview':'native'} data-office-actor={surface?.actor} data-office-agent-active={!!view.agentState} data-office-fit-mode={presentationFit?(presentationFit.enabled?'page':'manual'):undefined}>
+  return <section onPointerDownCapture={()=>{resume.current=undefined;}} onWheelCapture={()=>{resume.current=undefined;}} onKeyDownCapture={()=>{resume.current=undefined;}} className={'embedded-office-document embedded-office-' + file.format} data-office-engine="libreofficekit" data-office-ready={surface?.status === 'ready'&&nativePresented} aria-busy={!nativePresented} data-office-render-mode={showStartupPreview?'preview':'native'} data-office-actor={surface?.actor} data-office-agent-active={!!view.agentState} data-office-fit-mode={presentationFit?(presentationFit.enabled?'page':'manual'):undefined}>
     {file.format === 'xlsx' && formulaHost && createPortal(<NativeOfficeFormulaBar documentId={file.id} viewId={view.id} state={surface} active={surface?.status === 'ready' && nativePresented && !props.obscured && !modalOpen} onState={next => { if (isOfficeSurfaceState(next)) accept(next); else void refresh().catch(fail); }} onError={props.reportError} onDraftController={controller => { formulaDraft.current = controller; }} onDraftChange={dirty => latest.current.onOfficeDraftChange?.({ viewId: view.id, dirty: dirty || inputController.pendingEdit || inputController.compositionActive || !!current.current?.pendingInput })} />,formulaHost)}
     <div ref={scroll} id={'office-scroll-'+identity} className={'document-content embedded-office-content format-' + file.format} data-office-surface={view.id} data-office-page={pageIndex} tabIndex={-1} aria-label={file.title + ' 编辑区'} onWheelCapture={()=>pendingScroll.current.clear()} onScroll={() => { clicks.current.reset(); setViewportVersion(version => version + 1); latest.current.onReaderScroll?.(scroll.current?.scrollTop ?? 0); schedule(); void synchronizeLayout().catch(fail); }}>
       {size && <div className="embedded-office-stage" style={geometry?.stageSize??{ width: Math.max(size.width * scale, geometry?.viewport.width ?? 1), height: Math.max(size.height * scale, geometry?.viewport.height ?? 1) }}>
@@ -437,7 +447,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
       </div>}
       {failure&&!showStartupPreview && <div className="embedded-office-message has-error" role="status">{failure}</div>}
     </div>
-    {showStartupPreview&&<OfficeStartupPreview document={startupDocument} viewId={view.id} sourceRevision={startupDocument.revision} initialPartIndex={view.context?.locator.pageIndex??0} error={failure||undefined} onViewport={location=>{startupLocation.current=location;}} />}
+    {showStartupPreview&&<OfficeStartupPreview document={startupDocument} viewId={view.id} sourceRevision={startupDocument.revision} initialPartIndex={resume.current?.pageIndex??0} error={failure||undefined} onViewport={location=>{startupLocation.current=location;}} />}
     <OfficeHorizontalScrollbar host={scroll} identity={identity} version={viewportVersion+':'+(view.zoom??1)} active={file.format==='pptx'&&!presentationFit?.enabled&&surface?.status==='ready'} />
     {file.format === 'xlsx' && surface && <div className="embedded-office-sheet-tabs" role="tablist" aria-label="工作表">{surface.parts.filter(part => part.visible !== false).map(part => <button key={part.index} type="button" role="tab" aria-selected={part.index === surface.partIndex} disabled={!nativePresented || !!props.obscured || modalOpen || inputController.pending || inputController.compositionActive} onClick={() => void navigatePart(part.index)}>{part.name}</button>)}</div>}
     <EmbeddedOfficeDialogHost state={surface} obscured={props.obscured} request={surfaceCall} onState={accept} onError={fail} returnFocus={takeFocus} />

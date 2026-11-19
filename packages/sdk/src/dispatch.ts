@@ -88,7 +88,7 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
     }
     case 'browser-html': { if (!core.browser) throw new ViewerError('CAPABILITY_UNSUPPORTED', '请在桌面应用读取真实网页。'); return core.browser.html(str('viewId')); }
     case 'browser-copy': return core.browserCopy(str('viewId'));
-    case 'browser-layout': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '布局由桌面工作台管理。'); core.browser?.layout(String(args.windowId ?? 'main'), args.views as { viewId: string; bounds: Rect }[]); return {};
+    case 'browser-layout': if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '布局由桌面工作台管理。'); core.browser?.layout(String(args.windowId ?? 'main'), args.views as { viewId: string; bounds: Rect; clip?:Rect }[]); return {};
     case 'harness-submit': {
       if (args.sourceScope !== undefined && args.sourceScope !== 'selection' && args.sourceScope !== 'visible') throw new ViewerError('INVALID_ARGUMENT', '未知阅读范围。');
       return core.submitTask(str('driverId'), str('prompt'), viewId, typeof args.snapshotId === 'string' ? args.snapshotId : undefined, args.sourceScope as 'selection' | 'visible' | undefined);

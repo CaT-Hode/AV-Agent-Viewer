@@ -21,6 +21,7 @@ const contributions: Partial<Record<Format, { defaultCategory: OfficeToolboxCate
     { id: 'layout', label: '布局', commands: ['word.setParagraphFormat', 'word.setPageLayout'] },
     { id: 'references', label: '引用', commands: [] },
     { id: 'review', label: '审阅', commands: [] },
+    { id:'view',label:'阅读显示',commands:[] }, {id:'print',label:'打印',commands:[]},
   ] },
   xlsx: { defaultCategory: 'home', categories: [
     { id: 'home', label: '开始', commands: ['sheets.setRangeFormat', 'sheets.setCellFormat', 'sheets.mergeCells', 'sheets.unmergeCells'] },
@@ -28,6 +29,7 @@ const contributions: Partial<Record<Format, { defaultCategory: OfficeToolboxCate
     { id: 'formulas', label: '公式', commands: ['sheets.setCell'] },
     { id: 'data', label: '数据', commands: ['sheets.sortRange', 'sheets.setAutoFilter'] },
     { id: 'worksheet', label: '工作表', commands: ['sheets.addWorksheet', 'sheets.renameWorksheet', 'sheets.deleteWorksheet', 'sheets.setFreeze', 'sheets.setRowHeight', 'sheets.setColumnWidth', 'sheets.deleteRows', 'sheets.deleteColumns'] },
+    { id:'layout',label:'页面布局',commands:[] }, {id:'view',label:'阅读显示',commands:[]},
     { id: 'print', label: '打印', commands: [] },
   ] },
   pptx: { defaultCategory: 'slides', categories: [
@@ -40,6 +42,7 @@ const contributions: Partial<Record<Format, { defaultCategory: OfficeToolboxCate
     { id: 'animation', label: '动画', commands: [] },
     { id: 'presentation', label: '放映', commands: [] },
     { id: 'notes', label: '备注', commands: [] },
+    { id:'view',label:'阅读显示',commands:[] }, {id:'print',label:'打印',commands:[]},
   ] },
 };
 export function officeToolboxContribution(format: Format) { return contributions[format]; }

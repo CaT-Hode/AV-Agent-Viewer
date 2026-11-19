@@ -33,7 +33,8 @@ const groups: Record<NativeOfficeFormat, Partial<Record<OfficeToolboxCategory, r
     layout: [group('页面', [['PageDialog', '页面设置'], ['PageColumnDialog', '分栏'], ['InsertPageHeader', '页眉'], ['InsertPageFooter', '页脚'], ['TitlePageDialog', '标题页']]), group('段落与分页', [['ParagraphDialog', '缩进与间距'], ['InsertPagebreak', '分页符'], ['InsertBreak', '手动分隔符'], ['InsertLandscapePage', '横向页面']])],
     references: [group('引用', [['InsertFootnote', '脚注'], ['InsertEndnote', '尾注'], ['InsertFootnoteDialog', '脚注或尾注设置'], ['InsertReferenceField', '交叉引用'], ['InsertBookmark', '书签'], ['InsertCaptionDialog', '题注']]), group('目录与索引', [['InsertMultiIndex', '目录与索引'], ['InsertIndexesEntry', '索引条目'], ['UpdateAllIndexes', '更新全部索引'], ['EditCurIndex', '编辑当前目录']]), group('参考文献', [['InsertAuthoritiesEntry', '参考文献条目'], ['AuthoritiesEntryDialog', '编辑参考文献']])],
     review: [group('校对', [['SpellingAndGrammarDialog', '拼写与语法'], ['ThesaurusDialog', '同义词'], ['WordCountDialog', '字数统计']]), group('批注', [['InsertAnnotation', '添加批注'], ['ReplyComment', '回复批注'], ['ResolveComment', '解决批注']]), group('修订', [['TrackChanges', '记录修订'], ['ShowTrackedChanges', '显示修订'], ['AcceptTrackedChanges', '管理修订'], ['NextTrackedChange', '下一处修订'], ['PreviousTrackedChange', '上一处修订'], ['CompareDocuments', '比较文档']])],
-    view: [group('阅读布局', [['PrintLayout', '打印布局'], ['BrowseView', '网页布局'], ['DraftView', '草稿布局'], ['ShowSinglePage', '单页'], ['ShowTwoPages', '双页'], ['ShowMultiplePages', '多页']]), group('显示', [['ControlCodes', '格式标记'], ['Fieldnames', '字段名称'], ['ViewBounds', '文字边界'], ['TableBoundaries', '表格边界']]), group('预览', [['PrintPagePreview', '打印预览']])],
+    view: [group('阅读布局', [['PrintLayout', '打印布局'], ['BrowseView', '网页布局'], ['DraftView', '草稿布局'], ['ShowSinglePage', '单页'], ['ShowTwoPages', '双页'], ['ShowMultiplePages', '多页']]), group('显示', [['ControlCodes', '格式标记'], ['Fieldnames', '字段名称'], ['ViewBounds', '文字边界'], ['TableBoundaries', '表格边界']])],
+    print:[group('打印', [['PrintPagePreview','打印预览'],['PrinterSetup','打印机设置'],['Print','打印…']])],
   },
   xlsx: {
     home: [font, group('单元格', [['AlignLeft', '左对齐', 'left'], ['AlignHorizontalCenter', '居中', 'center'], ['AlignRight', '右对齐', 'right'], ['WrapText', '自动换行'], ['ToggleMergeCells', '合并单元格'], ['FormatCellDialog', '单元格格式'], ['NumberFormatCurrency', '货币格式'], ['NumberFormatPercent', '百分比格式']])],
@@ -42,9 +43,12 @@ const groups: Record<NativeOfficeFormat, Partial<Record<OfficeToolboxCategory, r
     data: [group('排序与筛选', [['DataSort', '排序'], ['DataFilterAutoFilter', '自动筛选'], ['DataFilterStandardFilter', '标准筛选'], ['DataFilterSpecialFilter', '高级筛选'], ['DataFilterRemoveFilter', '清除筛选']]), group('清理与校验', [['Validation', '数据有效性'], ['TextToColumns', '分列'], ['DataSubTotals', '分类汇总'], ['DataConsolidate', '合并计算']]), group('透视表', [['DataDataPilotRun', '创建数据透视表'], ['RecalcPivotTable', '刷新数据透视表']])],
     worksheet: [group('工作表', [['Insert', '插入工作表'], ['RenameTable', '重命名工作表'], ['Move', '移动或复制工作表'], ['Remove', '删除工作表'], ['Show', '显示工作表'], ['Hide', '隐藏工作表'], ['Protect', '保护工作表'], ['ToolProtectionDocument', '保护工作簿']]), group('行与列', [['ColumnWidth', '列宽'], ['RowHeight', '行高'], ['SetOptimalColumnWidth', '最佳列宽'], ['SetOptimalRowHeight', '最佳行高'], ['DeleteRows', '删除行'], ['DeleteColumns', '删除列']])],
     view: [group('显示', [['NormalViewMode', '普通视图'], ['PagebreakMode', '分页预览'], ['ViewValueHighlighting', '值突出显示'], ['ShowFormula', '显示公式']]), group('冻结', [['FreezePanes', '冻结或取消冻结'], ['FreezePanesRow', '冻结首行'], ['FreezePanesColumn', '冻结首列']])],
-    print: [group('打印区域', [['DefinePrintArea', '定义打印区域'], ['AddPrintArea', '添加打印区域'], ['EditPrintArea', '编辑打印区域'], ['DeletePrintArea', '清除打印区域']]), group('页面与输出', [['PageFormatDialog', '页面样式'], ['PrintPreview', '打印预览'], ['PrinterSetup', '打印机设置'], ['Print', '打印…']])],
+    layout: [group('打印区域', [['DefinePrintArea', '定义打印区域'], ['AddPrintArea', '添加打印区域'], ['EditPrintArea', '编辑打印区域'], ['DeletePrintArea', '清除打印区域']]), group('页面', [['PageFormatDialog', '页面样式']])],
+    print:[group('打印',[['PrintPreview', '打印预览'], ['PrinterSetup', '打印机设置'], ['Print', '打印…']])],
   },
   pptx: {
+    view:[group('阅读显示',[['DiaMode','幻灯片浏览'],['PageMode','普通视图'],['OutlineMode','大纲视图']])],
+    print:[group('打印',[['PrinterSetup','打印机设置'],['Print','打印…']])],
     home: [font, paragraph],
     insert: [group('对象', [['Text', '文本框'], ['Rect', '矩形'], ['Ellipse', '椭圆'], ['Line', '直线'], ['InsertGraphic', '图片'], ['InsertTable', '表格'], ['InsertObjectChart', '图表'], ['InsertObject', '嵌入对象']])],
     design: [group('页面与外观', [['PageDialog', '幻灯片设置'], ['Area', '填充与背景'], ['FormatLine', '线条设置'], ['MasterSlidesPanel', '选择母版'], ['EditStyle', '编辑样式']]), group('母版编辑', [['MasterPage', '编辑母版'], ['SlideMasterPage', '幻灯片母版'], ['CloseMasterView', '关闭母版视图'], ['MasterLayouts', '母版元素']])],

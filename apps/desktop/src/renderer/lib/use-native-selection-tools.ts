@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ReadingContext, Rect } from '../../../../../packages/contracts/src/index';
 import type { SettingsSnapshot } from '../../../../../packages/settings/src/index';
-import { call } from './transport';
+import { call, desktop } from './transport';
 import { humanNativeSelection, nativeSelectionAnchor, nativeSelectionKey, nativeSelectionLayout } from './native-selection';
 import { readSelectionPanelBounds } from './selection-position';
 import { SelectionToolbarMotion } from './selection-toolbar-motion';
@@ -22,6 +22,7 @@ export function useNativeSelectionTools(enabled: boolean, context: ReadingContex
   const tick=(now:number)=>{frame.current=0;const seconds=(now-lastFrameAt.current)/1000;lastFrameAt.current=now;publishFrame.current(seconds);if(motion.current.moving&&!frame.current)frame.current=requestAnimationFrame(tick);};
   const schedule=()=>{if(frame.current)return;lastFrameAt.current=performance.now();frame.current=requestAnimationFrame(tick);};
   const publish = (seconds=0) => {
+    if (!desktop) return;
     const now = current.current, c = now.context;
     if (!now.enabled || !c || !humanNativeSelection(c)) {
       cache.current = undefined; dismissed.current = undefined; published.current=undefined;fullPublication.current=undefined;motion.current.reset();cancelAnimationFrame(frame.current);frame.current=0; void call('selection-layout', { visible: false }); return;

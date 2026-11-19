@@ -17,6 +17,6 @@ export function OfficeToolboxRail({ format, section, open, onSelect }: { format:
     if (top < rail.scrollTop) rail.scrollTop = top; else if (bottom > rail.scrollTop + rail.clientHeight) rail.scrollTop = bottom - rail.clientHeight;
   }}>{officeToolboxContribution(format)?.categories.map(category => {
     const Icon = officeToolboxRailIcons[category.id], selected = open && section === 'office:' + category.id;
-    return <button key={category.id} type="button" data-office-category={category.id} aria-label={category.label} aria-pressed={selected} title={category.label} className={selected ? 'selected' : ''} onMouseDown={event => event.preventDefault()} onClick={() => onSelect(category.id)}><Icon size={20} /></button>;
+    return <button key={category.id} type="button" data-office-category={category.id} aria-label={category.label} aria-pressed={selected} aria-expanded={selected} aria-controls="format-tools" title={category.label} className={selected ? 'selected' : ''} onMouseDown={event => event.preventDefault()} onClick={() => onSelect(category.id)}><Icon size={20} /></button>;
   })}</div><PanelScrollHints viewport={viewport} /></div>;
 }

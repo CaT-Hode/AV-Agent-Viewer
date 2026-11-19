@@ -24,3 +24,5 @@
 .overlay-reading[data-panel-resizing] { cursor:col-resize; user-select:none; }
 .overlay-reading[data-panel-resizing] > .floating-side-panel { transition:none !important; }
 @media (prefers-reduced-motion:reduce) { .reader-panel-resize > span { transition:none; } }
+
+.workbench.overlay-reading .reader-panel > :is(.document-content,.embedded-office-document) { translate:var(--reader-shift,0px) 0; }

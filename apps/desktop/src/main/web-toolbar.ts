@@ -9,7 +9,7 @@ import { navigationExitDuration, retainedSurfaceExit } from './toolbar-motion';
 import { preferredNavigationWidth, type NavigationLane } from '../renderer/lib/navigation-lane';
 const backdropFrames = nativeBackdropFrames;
 type Rect = { x: number; y: number; width: number; height: number };
-export type BackdropSource = { view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
+export type BackdropSource = { bounds?: Rect; view: WebContentsView; navigationId: string; layoutRevision: number; revision: number; scrollX: number; scrollY: number; deviceScaleFactor?: number };
 type TooltipReply = { ticket: number; offsetY: number; viewId?: unknown; placement?: ReturnType<typeof nativeTooltipLayout>['placement'] };
 type ToolbarEntry = { view: WebContentsView; overlay?: BrowserWindow; rootBounds?: Rect; state: Record<string, unknown>; ready?: boolean; focusViewId?: string; dispose?: () => void; panel?: boolean; panelBounds?: Rect; tooltip?: boolean; tooltipLayout?: ReturnType<typeof nativeTooltipLayout> & {size?:TooltipSize}; tooltipTicket?: number; tooltipPending?: boolean; tooltipClose?: (value: TooltipReply) => void; sampling?: boolean; pending?: boolean; forceSample?: boolean; backdropPatches?: boolean; cache: NativeBackdropCache; stats: BackdropCacheStatistics; sampledAt?: number; sequence?: number; geometryRevision: number; shapeSignature?:string; capsuleBounds?: Rect; sampleTimer?: ReturnType<typeof setTimeout>; timer?: ReturnType<typeof setInterval>; exitTimer?: ReturnType<typeof setTimeout>; tooltipTimer?: ReturnType<typeof setTimeout>; frameSource?: WebContents; unsubscribeFrame?: () => void; frameSignature?: string; frameAt?: number; pixelAt?: number; acceptedFrames?: number };
 type CaptureRequest = { state: Record<string, unknown>; source: BackdropSource; page: WebContentsView; b: Rect; p: Rect; zoom: number; density: number; frameAligned: boolean; capsule: Rect; capture: Rect; geometryRevision: number; key: string; shape: string };
@@ -439,7 +439,7 @@ export class WebToolbarHost {
   private captureRequest(owner: BrowserWindow, entry: ToolbarEntry): CaptureRequest | undefined {
     const state = entry.state, b = this.bounds(entry), source = this.sourceFor?.(String(state.viewId));
     if (!source || source.view.webContents.isDestroyed() || source.view.webContents.isLoading()) return;
-    const page = source.view, p = page.getBounds(), zoom = entry.view.webContents.getZoomFactor();
+    const page = source.view, p = source.bounds??page.getBounds(), zoom = entry.view.webContents.getZoomFactor();
     const progress = Number(state.hideProgress ?? 0);
     // Geometry from the shared toolbar includes the current interpolated CSS
     // transform. Before its first report, use the initial host geometry.

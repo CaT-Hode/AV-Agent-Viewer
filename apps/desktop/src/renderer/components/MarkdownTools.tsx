@@ -86,11 +86,12 @@ const groups: ToolGroup[] = [
  * the command event also supports the same explicit target from other UIs. */
 export function MarkdownTools({ viewId }: { viewId: string }) {
   const [state, setState] = useState<Record<string, boolean>>({ spellcheck: true, autoPair: true }), [error, setError] = useState('');
+  const [more,setMore]=useState(false),[keys,setKeys]=useState<Record<string,string>>({});
   const [emojiQuery, setEmojiQuery] = useState(''), [emojiCatalog, setEmojiCatalog] = useState<Gemoji[]>([]);
   useEffect(() => { if (!emojiQuery || emojiCatalog.length) return; let active = true; void loadMarkdownEmoji().then(module => { if (active) setEmojiCatalog(module.gemoji); }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); }); return () => { active = false; }; }, [emojiQuery, emojiCatalog.length]);
   useEffect(() => {
     setState({ spellcheck: true, autoPair: true }); setError('');
-    const history = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string } & Record<string, boolean | string>>).detail; if (detail?.viewId === viewId) setState(previous => ({ ...previous, ...Object.fromEntries(Object.entries(detail).filter(([, value]) => typeof value === 'boolean')) as Record<string, boolean> })); };
+    const history = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string } & Record<string, boolean | string>>).detail; if(detail?.viewId===viewId && typeof detail.keybindings==='object')setKeys(detail.keybindings as Record<string,string>); if (detail?.viewId === viewId) setState(previous => ({ ...previous, ...Object.fromEntries(Object.entries(detail).filter(([, value]) => typeof value === 'boolean')) as Record<string, boolean> })); };
     const failure = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; message: string }>).detail; if (detail?.viewId === viewId) setError(detail.message); };
     window.addEventListener('agentviewer:markdown-editor-history', history); window.addEventListener('agentviewer:markdown-error', failure);
     window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-state-request', { detail: { viewId } }));
@@ -102,20 +103,23 @@ export function MarkdownTools({ viewId }: { viewId: string }) {
     window.dispatchEvent(new CustomEvent<MarkdownCommandEventDetail>('agentviewer:markdown-command', { detail }));
   };
   return <div className="markdown-tools" aria-label="Markdown 编辑工具">
-    {groups.map(group => <section className="markdown-tool-group" key={group.label}>
+    {groups.filter(group=>group.label!=='表格编辑'||state.inTable).map(group => <section className="markdown-tool-group" key={group.label}>
       <h3>{group.label}</h3>
       <div className="markdown-tool-grid" role="group" aria-label={group.label}>
-        {group.tools.map(tool => {
-          const Icon = tool.icon, tooltip = tool.label + (tool.shortcut ? ' · ' + tool.shortcut : '') + '\n' + tool.description;
+        {group.tools.filter(tool=>more||['bold','italic','strike','code','heading0','heading1','heading2','heading3','quote','ordered','bullet','task','link','image','table','codeBlock','undo','redo','find','replace'].includes(tool.command)||group.label==='表格编辑').map(tool => {
+          const shortcut=Object.hasOwn(keys,tool.command)?keys[tool.command].replace(/^Mod-/,'Ctrl+'):tool.shortcut;
+          const Icon = tool.icon, tooltip = tool.label + (shortcut ? ' · ' + shortcut : '') + '\n' + tool.description;
           return <button key={tool.command} type="button" className="markdown-tool-button icon-button" aria-label={tool.label} title={tooltip} data-markdown-command={tool.command} aria-pressed={['focus', 'typewriter', 'spellcheck', 'autoPair'].includes(tool.command) ? !!state[tool.command] : undefined} disabled={tool.command === 'undo' ? !state.canUndo : tool.command === 'redo' ? !state.canRedo : false} onMouseDown={event => event.preventDefault()} onClick={() => execute(tool)}>
             <span className="markdown-tool-glyph"><Icon size={17} aria-hidden="true" />{tool.badge && (tool.badge === 'add' ? <Plus className="markdown-tool-badge" size={10} aria-hidden="true" /> : <Minus className="markdown-tool-badge" size={10} aria-hidden="true" />)}</span>
           </button>;
         })}
       </div>
     </section>)}
-    <section className="markdown-tool-group"><h3>Emoji</h3><input aria-label="搜索 Emoji 名称" placeholder="搜索名称，如 smile、rocket" value={emojiQuery} onChange={event => setEmojiQuery(event.target.value)} /><div className="markdown-emoji-picker" role="group" aria-label="插入 Emoji">{(emojiQuery ? emojiCatalog.filter(item => [...item.names, ...item.tags, item.description].some(name => name.includes(emojiQuery.toLowerCase()))).slice(0, 48).map(item => ({ emoji: item.emoji, label: item.names[0] })) : ['🙂', '😀', '😉', '🥳', '🤔', '👍', '👎', '👏', '🙏', '❤️', '✅', '❌', '⚠️', '💡', '📌', '📎', '📝', '🚀', '🐛', '🎯', '🔧', '📊', '🔥', '✨'].map(emoji => ({ emoji, label: emoji }))).map(({ emoji, label }) => <button key={label} type="button" aria-label={'插入 ' + label} title={label} onMouseDown={event => event.preventDefault()} onClick={() => execute({ command: 'emoji', value: emoji, label: 'Emoji', description: '', icon: Code })}>{emoji}</button>)}</div></section>
-    <section className="markdown-tool-group"><h3>代码语言</h3><select aria-label="当前代码块语言" defaultValue="" onChange={event => execute({ command: 'codeLanguage', value: event.target.value, label: '代码语言', description: '', icon: Code2 })}>{['', 'javascript', 'typescript', 'python', 'cpp', 'c', 'csharp', 'java', 'go', 'rust', 'sql', 'json', 'yaml', 'html', 'css', 'bash', 'powershell', 'mermaid'].map(language => <option key={language} value={language}>{language || '纯文本'}</option>)}</select></section>
-    <section className="markdown-tool-group"><h3>导入与导出</h3><button type="button" className="markdown-import-button" onClick={() => window.dispatchEvent(new CustomEvent('agentviewer:markdown-import', { detail: { viewId } }))}>导入为 Markdown</button><div className="markdown-export-formats">{(['markdown', 'html', 'pdf', 'png', 'docx', 'odt', 'rtf', 'epub', 'latex'] as const).map(format => <button key={format} type="button" onMouseDown={event => event.preventDefault()} onClick={() => window.dispatchEvent(new CustomEvent('agentviewer:markdown-export', { detail: { viewId, format } }))}>{format === 'markdown' ? 'Markdown' : format.toUpperCase()}</button>)}</div></section>
+    <button type="button" className="button quiet" aria-expanded={more} onClick={()=>setMore(!more)}>{more?'收起更多命令':'更多命令'}</button>
+    {more&&<section className="markdown-tool-group"><h3>Emoji</h3><input aria-label="搜索 Emoji 名称" placeholder="搜索名称，如 smile、rocket" value={emojiQuery} onChange={event => setEmojiQuery(event.target.value)} /><div className="markdown-emoji-picker" role="group" aria-label="插入 Emoji">{(emojiQuery ? emojiCatalog.filter(item => [...item.names, ...item.tags, item.description].some(name => name.includes(emojiQuery.toLowerCase()))).slice(0, 48).map(item => ({ emoji: item.emoji, label: item.names[0] })) : ['🙂', '😀', '😉', '🥳', '🤔', '👍', '👎', '👏', '🙏', '❤️', '✅', '❌', '⚠️', '💡', '📌', '📎', '📝', '🚀', '🐛', '🎯', '🔧', '📊', '🔥', '✨'].map(emoji => ({ emoji, label: emoji }))).map(({ emoji, label }) => <button key={label} type="button" aria-label={'插入 ' + label} title={label} onMouseDown={event => event.preventDefault()} onClick={() => execute({ command: 'emoji', value: emoji, label: 'Emoji', description: '', icon: Code })}>{emoji}</button>)}</div></section>}
+
     {error && <p role="status" className="markdown-tool-error">{error}</p>}
   </div>;
 }
+
+export function MarkdownTransfer({viewId}:{viewId:string}) {return (<section className="markdown-tool-group"><h3>导入与导出</h3><button type="button" className="markdown-import-button" onClick={() => window.dispatchEvent(new CustomEvent('agentviewer:markdown-import', { detail: { viewId } }))}>导入为 Markdown</button><div className="markdown-export-formats">{(['markdown', 'html', 'pdf', 'png', 'docx', 'odt', 'rtf', 'epub', 'latex'] as const).map(format => <button key={format} type="button" onMouseDown={event => event.preventDefault()} onClick={() => window.dispatchEvent(new CustomEvent('agentviewer:markdown-export', { detail: { viewId, format } }))}>{format === 'markdown' ? 'Markdown' : format.toUpperCase()}</button>)}</div></section>);}

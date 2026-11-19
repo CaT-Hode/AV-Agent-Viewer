@@ -11,7 +11,9 @@ export type MarkdownPreferencesValue = {
   upload: { command: string; args: string[] } | null;
   export: { header: string; footer: string; templatePath: string };
 };
-type Props = { documentId: string; viewId: string; onError(error: unknown): void };
+type Page = 'preferences' | 'resources' | 'export';
+const draftCache = new Map<string,Partial<Draft>>();
+type Props = { page:Page; documentId: string; viewId: string; onError(error: unknown): void };
 type Draft = { themeCss: string; keybindings: string; imageRoot: string; uploadEnabled: boolean; uploadCommand: string; uploadArgs: string; header: string; footer: string; templatePath: string };
 const empty: MarkdownPreferencesValue = { themeCss: '', keybindings: {}, imageRoot: '', upload: null, export: { header: '', footer: '', templatePath: '' } };
 const knownCommands = new Set<string>([...MARKDOWN_COMMANDS, 'find', 'replace', 'undo', 'redo', 'focus', 'typewriter', 'spellcheck', 'autoPair']);
@@ -40,7 +42,7 @@ function preferencesFor(draft: Draft): MarkdownPreferencesValue {
 /** Saving config is independent of document source edits. Upload commands are
  * stored here and run only by the explicit upload action in resource tools. */
 export function MarkdownPreferences(props: Props) {
-  const { documentId, viewId } = props, current = useRef(props); current.current = props;
+  const { documentId, viewId, page } = props, cacheKey=documentId+':'+page, current = useRef(props); current.current = props;
   const [draft, setDraft] = useState(() => draftFor(empty)), [baseline, setBaseline] = useState(() => draftFor(empty));
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [retry, setRetry] = useState(0), saved = useRef<{ documentId: string; preferences: MarkdownPreferencesValue } | undefined>(undefined), sequence = useRef(0), live = useRef(false);
@@ -52,10 +54,10 @@ export function MarkdownPreferences(props: Props) {
     saved.current = undefined; setLoading(true); setError(''); setNotice(''); setSaving(false);
     void call<{ preferences: MarkdownPreferencesValue }>('markdown-preferences-read', { documentId }).then(result => {
       if (!live.current || sequence.current !== owner || current.current.documentId !== documentId) return;
-      saved.current = { documentId, preferences: result.preferences }; const next = draftFor(result.preferences); setDraft(next); setBaseline(next); publish(result.preferences);
+      saved.current = { documentId, preferences: result.preferences }; const next = draftFor(result.preferences); setDraft({...next,...draftCache.get(cacheKey)}); setBaseline(next); publish(result.preferences);
     }).catch(cause => { if (live.current && sequence.current === owner) setError(cause instanceof Error ? cause.message : String(cause)); }).finally(() => { if (live.current && sequence.current === owner) setLoading(false); });
     return () => { live.current = false; sequence.current++; };
-  }, [documentId, retry]);
+  }, [documentId, retry, cacheKey]);
   useEffect(() => {
     const value = saved.current; if (value?.documentId === documentId) publish(value.preferences);
     const requested = (event: Event) => {
@@ -65,43 +67,46 @@ export function MarkdownPreferences(props: Props) {
     window.addEventListener('agentviewer:markdown-preferences-request', requested);
     return () => window.removeEventListener('agentviewer:markdown-preferences-request', requested);
   }, [documentId, viewId]);
-  const change = <K extends keyof Draft>(key: K, value: Draft[K]) => { setDraft(previous => ({ ...previous, [key]: value })); setNotice(''); setError(''); };
+  const change = <K extends keyof Draft>(key: K, value: Draft[K]) => { draftCache.set(cacheKey,{...draftCache.get(cacheKey),[key]:value}); setDraft(previous => ({ ...previous, [key]: value })); setNotice(''); setError(''); };
   const save = async (event: FormEvent) => {
     event.preventDefault(); if (loading || saving || !loaded) return;
     let preferences: MarkdownPreferencesValue;
     try { preferences = preferencesFor(draft); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return; }
     const owner = sequence.current; setSaving(true); setError(''); setNotice('');
     try {
+      const latest=await call<{preferences:MarkdownPreferencesValue}>('markdown-preferences-read',{documentId});
+      preferences = preferencesFor({...draftFor(latest.preferences),...draftCache.get(cacheKey)});
       const result = await call<{ preferences: MarkdownPreferencesValue }>('markdown-preferences-save', { documentId, preferences });
       if (!live.current || sequence.current !== owner || current.current.documentId !== documentId) return;
-      saved.current = { documentId, preferences: result.preferences }; const next = draftFor(result.preferences); setDraft(next); setBaseline(next); publish(result.preferences); setNotice('配置已保存并应用。');
+      draftCache.delete(cacheKey); saved.current = { documentId, preferences: result.preferences }; const next = draftFor(result.preferences); setDraft(next); setBaseline(next); publish(result.preferences); setNotice('配置已保存并应用。');
     } catch (cause) { if (live.current && sequence.current === owner) { setError(cause instanceof Error ? cause.message : String(cause)); current.current.onError(cause); } }
     finally { if (live.current && sequence.current === owner) setSaving(false); }
   };
   return <form className="markdown-configuration markdown-preferences" aria-label="Markdown 偏好配置" onSubmit={event => void save(event)}>
-    <div className="markdown-configuration-heading"><h3>写作偏好</h3><button className="icon-button" type="button" aria-label="重新读取 Markdown 配置" title={loaded && dirty ? '先保存或还原草稿，再重新读取配置' : '重新读取配置'} disabled={loading || saving || loaded && dirty} onClick={() => setRetry(value => value + 1)}><RefreshCw size={14} /></button></div>
+    <div className="markdown-configuration-heading"><h3>{{preferences:'写作偏好',resources:'图片配置',export:'导出配置'}[page]}</h3><button className="icon-button" type="button" aria-label="重新读取 Markdown 配置" title={loaded && dirty ? '先保存或还原草稿，再重新读取配置' : '重新读取配置'} disabled={loading || saving || loaded && dirty} onClick={() => setRetry(value => value + 1)}><RefreshCw size={14} /></button></div>
     {loading ? <p className="markdown-configuration-note" role="status">正在读取配置…</p> : !loaded ? <p className="markdown-configuration-note">读取配置后即可编辑。请使用右上角按钮重试。</p> : <fieldset disabled={saving}>
-      <details open><summary>编辑外观与快捷键</summary>
+      {page==='preferences'&&<details open><summary>编辑外观与快捷键</summary>
         <label>主题 CSS<textarea aria-label="Markdown 主题 CSS" className="markdown-configuration-code" rows={5} value={draft.themeCss} onChange={event => change('themeCss', event.target.value)} placeholder={'.markdown-live { font-size: 17px; }'} spellCheck={false} /></label>
         <p className="markdown-configuration-note">保存后应用于 Markdown 编辑区域。</p>
         <label>快捷键覆盖<textarea aria-label="Markdown 快捷键配置" className="markdown-configuration-code" rows={4} value={draft.keybindings} onChange={event => change('keybindings', event.target.value)} spellCheck={false} /></label>
         <p className="markdown-configuration-note">JSON 对象：命令名对应按键，例如 {`{"bold":"Mod-b","focus":"F8"}`}。Windows 中 Mod 为 Ctrl；空字符串禁用该命令的默认快捷键，未填写的保留默认。</p>
         <details className="markdown-configuration-help"><summary>可用命令名</summary><p>{[...knownCommands].join(' · ')}</p></details>
       </details>
-      <details><summary>图片目录与上传</summary>
+      }{page==='resources'&&<details open><summary>图片目录与上传</summary>
         <label>图片根目录<input aria-label="Markdown 图片根目录" value={draft.imageRoot} onChange={event => change('imageRoot', event.target.value)} placeholder="留空使用文档所在目录" spellCheck={false} /></label>
         <label className="markdown-configuration-toggle"><input type="checkbox" checked={draft.uploadEnabled} onChange={event => change('uploadEnabled', event.target.checked)} />配置图片上传命令</label>
         {draft.uploadEnabled && <><label>可执行文件<input aria-label="图片上传命令" value={draft.uploadCommand} onChange={event => change('uploadCommand', event.target.value)} placeholder="可执行文件或完整路径" spellCheck={false} /></label><label>参数 JSON<textarea aria-label="图片上传命令参数" className="markdown-configuration-code" rows={3} value={draft.uploadArgs} onChange={event => change('uploadArgs', event.target.value)} spellCheck={false} /></label><p className="markdown-configuration-note">参数使用字符串数组，{`{file}`} 表示本地图片路径。保存配置不会上传；仅在图片资源中点击上传时执行。</p></>}
       </details>
-      <details><summary>导出页眉页脚与模板</summary>
+      }{page==='export'&&<details open><summary>导出页眉页脚与模板</summary>
         <label>页眉模板<textarea aria-label="Markdown 导出页眉模板" rows={3} value={draft.header} onChange={event => change('header', event.target.value)} /></label>
         <label>页脚模板<textarea aria-label="Markdown 导出页脚模板" rows={3} value={draft.footer} onChange={event => change('footer', event.target.value)} /></label>
         <label>导出模板路径<input aria-label="Markdown 导出模板路径" value={draft.templatePath} onChange={event => change('templatePath', event.target.value)} placeholder="留空使用默认模板" spellCheck={false} /></label>
         <p className="markdown-configuration-note">模板适用格式和变量以导出选项为准。</p>
       </details>
+      }
     </fieldset>}
     {error && <p className="markdown-configuration-error" role="alert">{error}</p>}
-    <div className="markdown-configuration-footer"><button className="button" type="submit" disabled={loading || saving || !loaded || !dirty}><Save size={13} />{saving ? '保存中…' : '保存配置'}</button><button className="button quiet" type="button" disabled={loading || saving || !loaded || !dirty} onClick={() => { setDraft(baseline); setError(''); setNotice(''); }}>还原草稿</button></div>
+    <div className="markdown-configuration-footer"><button className="button" type="submit" disabled={loading || saving || !loaded || !dirty}><Save size={13} />{saving ? '保存中…' : '保存配置'}</button><button className="button quiet" type="button" disabled={loading || saving || !loaded || !dirty} onClick={() => { draftCache.delete(cacheKey); setDraft(baseline); setError(''); setNotice(''); }}>还原草稿</button></div>
     {notice && <p className="markdown-configuration-note" role="status"><Check size={12} aria-hidden="true" />{notice}</p>}
   </form>;
 }

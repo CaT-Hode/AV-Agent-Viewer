@@ -1,3 +1,4 @@
+import { installReaderFind } from '../../../../packages/browser-runtime/src/reader-find';
 import './safe-stdio-init';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage } from 'electron';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -381,6 +382,25 @@ void app.whenReady().then(async () => {
     }
     const owner = BrowserWindow.fromWebContents(event.sender); if (!owner || ![...windows.values(), settingsWindow].includes(owner)) throw new Error('AUTH_SCOPE_DENIED');
     const { method, args } = request;
+    if (['reader-find','reader-find-focus','reader-office-export'].includes(method)) {
+      const v=core.getView(String(args.viewId));if(windows.get(v.windowId)!==owner)throw new Error('AUTH_SCOPE_DENIED');
+      const file=core.getDocument(v.documentId).info;
+      if(method==='reader-office-export'){
+        const format=String(args.format);if(![file.format,'pdf',({docx:'odt',xlsx:'ods',pptx:'odp'} as Record<string,string>)[file.format]].includes(format)||!['docx','xlsx','pptx'].includes(file.format))throw new Error('不支持此导出格式。');
+        const result=await dialog.showSaveDialog(owner,{defaultPath:file.title.replace(/\.[^.]*$/,'')+'.'+format,filters:[{name:format.toUpperCase(),extensions:[format]}]});
+        if(result.canceled||!result.filePath)return null;
+        const state=await core.nativeOfficeState(v.id);
+        return dispatch(core,'office-export',{viewId:v.id,path:result.filePath,format,expectedEngineEpoch:state.engineEpoch,expectedEngineRevision:state.engineRevision,idempotencyKey:randomUUID()},'human');
+      }
+      const web=(core.browser as ElectronBrowserRuntime).entries.get(v.id)?.view.webContents;
+      if(method==='reader-find-focus'){web?.focus();return {};}
+      const action=String(args.action),token=String(args.token),text=String(args.text??'');
+      if(!['search','clear','reveal'].includes(action)||!token||token.length>80||!text||text.length>10000)throw new Error('查找参数无效。');
+      const request={action,token,text,caseSensitive:args.caseSensitive===true,index:typeof args.index==='number'?args.index:undefined};
+      if(file.format==='web'&&web)return web.executeJavaScriptInIsolatedWorld(1004,[{code:'(globalThis.avReaderFind??='+installReaderFind+')('+JSON.stringify(request)+')'}]);
+      if(!['docx','xlsx','pptx'].includes(file.format)||!office||!file.nativeOffice)throw new Error('阅读引擎尚未就绪。');
+      return office.runtime.readerFind(file.nativeOffice.sessionId,v.id,request);
+    }
     if (method === 'reader-panel-layout') { const viewId = typeof args.viewId === 'string' ? args.viewId : undefined; if (viewId && core.getView(viewId).windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.update(owner, viewId, args.panels as never); return {}; }
     if (method === 'translation-popover-layout') { const view = core.getView(String(args.viewId)); if (view.windowId !== [...windows].find(([, win]) => win === owner)?.[0]) throw new Error('AUTH_SCOPE_DENIED'); readerPanelHost.updateTranslation(owner, view.id, args.visible === true ? args.bounds as never : undefined); return {}; }
     if (method === 'settings-read') return { definitions: settingsRegistry.map(definition => ({ ...definition, ...settingsAvailability(definition.id) })), snapshot: settings.snapshot() };

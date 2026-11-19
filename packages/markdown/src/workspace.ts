@@ -1,3 +1,4 @@
+import { workspaceMatches } from './workspace-matches';
 import { readdir, readFile, realpath, stat, mkdir, rename, writeFile, unlink, link } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep, join } from 'node:path';
@@ -67,14 +68,21 @@ export class MarkdownWorkspace {
     const entries = (await readdir(target, { withFileTypes: true })).filter(entry => !hidden.has(entry.name) && !entry.isSymbolicLink()).map(entry => ({ path: relative(rootPath, join(target, entry.name)).split(sep).join('/'), name: entry.name, kind: entry.isDirectory() ? 'directory' as const : 'file' as const })).sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name, 'zh-CN', { numeric: true }) : a.kind === 'directory' ? -1 : 1);
     return { rootPath, relativePath: relative(rootPath, target).split(sep).join('/'), entries: entries.slice(0, 5000), limitReached: entries.length > 5000 };
   }
-  async search(documentId: string, query: string, caseSensitive = false, mode = 'content') {
+  private readonly searches=new Map<string,string>();
+  cancelSearch(owner:string,token:string){if(this.searches.get(owner)===token)this.searches.delete(owner);}
+  async search(documentId: string, query: string, caseSensitive = false, mode = 'content', owner='', token='') {
+    if(owner)this.searches.set(owner,token);
+    const cancelled=()=>!!owner&&this.searches.get(owner)!==token;
+    try {
     if (typeof query !== 'string' || query.length > 500) return invalid('搜索内容最多 500 字符。');
     const root = await this.root(documentId), needle = caseSensitive ? query : query.toLocaleLowerCase();
     const results: { path: string; uri: string; line: number; preview: string }[] = [];
+    const openText=new Map([...this.core.documents.values()].filter(d=>d.info.path&&d.info.model.text!==undefined).map(d=>[pathKey(d.info.path!),d.info.model.text!]));
     const pending = [root]; let examined = 0, limitReached = false;
-    while (pending.length && !limitReached) {
+    while (pending.length && !limitReached && !cancelled()) {
       const directory = pending.pop()!;
       for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if(cancelled())break;
         if (hidden.has(entry.name) || entry.isSymbolicLink()) continue;
         const uri = join(directory, entry.name);
         if (entry.isDirectory()) { pending.push(uri); continue; }
@@ -84,29 +92,18 @@ export class MarkdownWorkspace {
         if (mode === 'filename') {
           if ((caseSensitive ? path : path.toLocaleLowerCase()).includes(needle)) results.push({ path, uri, line: 0, preview: path });
         } else if (query && /\.(?:md|markdown|mdown|txt|html?)$/i.test(entry.name)) {
-          // Scan every byte with bounded line state, including very long data URI
-          // lines. UTF-8 decoding and query matches span stream chunk boundaries.
-          let line = 1, preview = '', tail = '', matched = false, nonempty = false;
-          const finish = () => { if (matched) results.push({path, uri, line, preview:preview.replace(/\r$/, '')}); line++; preview = ''; tail = ''; matched = false; nonempty = false; };
-          for await (const chunk of createReadStream(uri, {encoding:'utf8', highWaterMark:64 * 1024})) {
-            const parts = chunk.split('\n');
-            for (let index = 0; index < parts.length; index++) {
-              const part = parts[index]; nonempty ||= !!part.length;
-              if (preview.length < 240) preview += part.slice(0, 240 - preview.length);
-              const content = tail + (caseSensitive ? part : part.toLocaleLowerCase());
-              matched ||= content.includes(needle); tail = content.slice(-Math.max(1, needle.length - 1));
-              if (index < parts.length - 1) finish();
-              if (results.length >= 500) { limitReached = true; break; }
-            }
-            if (limitReached) break;
+          const buffer=openText.get(pathKey(uri));
+          const stream=buffer===undefined?createReadStream(uri,{encoding:'utf8',highWaterMark:64*1024}):[buffer];
+          for await(const hit of workspaceMatches(stream,query,caseSensitive,cancelled)){
+            results.push({path,uri,...hit});if(results.length>=500){limitReached=true;break;}
           }
-          if (!limitReached && nonempty) finish();
         }
         if (results.length >= 500) { limitReached = true; break; }
         if (examined % 20 === 0) await new Promise<void>(done => setImmediate(done));
       }
     }
     return { results, limitReached };
+    } finally {if(owner)this.cancelSearch(owner,token);}
   }
   private async move(root: string, from: string, to: string, actor: Actor = 'human') {
     const source = await this.path(root, from), destination = await this.path(root, to, false);

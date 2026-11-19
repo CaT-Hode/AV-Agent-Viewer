@@ -1,4 +1,3 @@
-import { rememberTabSlide, tabSlideKey } from '../lib/tab-preview';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import type { NativeOfficeNavigateTarget, NativeOfficeState } from '../../../../../packages/contracts/src/native-office';
@@ -46,10 +45,6 @@ export function NativeOfficeSlides(props: { state: NativeOfficeState; ready: boo
     buttons.forEach(button => observer.observe(button));
     return () => observer.disconnect();
   }, [itemIndices, controller]);
-  const tabImage = fresh && activeIndex !== undefined ? controller.get(activeIndex,data?.source.geometryKey) : undefined;
-  useEffect(()=>{
-    if(tabImage && state.viewId && activeIndex!==undefined) rememberTabSlide(tabSlideKey(state.viewId,state.engineEpoch,state.engineRevision,activeIndex),tabImage);
-  },[tabImage,state.viewId,state.engineEpoch,state.engineRevision,activeIndex]);
   const failed = [...visible].some(index => controller.error(index));
   const retryVisible = () => { if (error) setRetry(value => value + 1); else controller.retry(); };
   return <section className="native-office-group native-office-navigation" aria-label="幻灯片导航" data-office-slide-source={sourceKey} data-office-slide-mode="visible">

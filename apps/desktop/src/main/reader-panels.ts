@@ -122,7 +122,7 @@ export class ReaderPanelHost {
     const delay = entry.side === 'translation' ? 0 : FROST_FRAME_MS - (Date.now() - entry.sampledAt);
     if (delay > 0) { if (!entry.timer) entry.timer = setTimeout(() => { entry.timer = undefined; this.sample(entry, true); }, delay); return; }
     const web = this.documentSource(entry); if (!web) return;
-    const sourceBounds = web.view.getBounds(), panel = entry.bounds, gutter = entry.side === 'translation' ? TRANSLATION_CAPSULE_METRICS.shadowGutter : GUTTER;
+    const sourceBounds = web.bounds??web.view.getBounds(), panel = entry.bounds, gutter = entry.side === 'translation' ? TRANSLATION_CAPSULE_METRICS.shadowGutter : GUTTER;
     const slot = { x: Math.round(panel.x) - gutter, y: Math.round(panel.y) - gutter, width: Math.ceil(panel.width) + 2 * gutter, height: Math.ceil(panel.height) + 2 * gutter };
     const overscan = entry.side === 'translation' ? 84 : 0;
     const area = intersection({ x:slot.x-overscan,y:slot.y-overscan,width:slot.width+2*overscan,height:slot.height+2*overscan }, sourceBounds); if (!area) return;

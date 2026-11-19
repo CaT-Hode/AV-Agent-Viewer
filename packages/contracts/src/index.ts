@@ -6,7 +6,7 @@ export const NAVIGATION_EDGE_REVEAL_PX = 6;
 export type Format = 'markdown' | 'html' | 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'web';
 export type Actor = 'human' | 'agent' | 'engine';
 export type Rect = { x: number; y: number; width: number; height: number };
-export type Locator = { kind: string; blockId?: string; pageIndex?: number; sheetId?: string; cell?: string; slideId?: string; shapeId?: string; from?: number; to?: number; navigationId?: string; scrollTop?: number; quote?: string };
+export type Locator = { kind: string; blockId?: string; pageIndex?: number; sheetId?: string; cell?: string; slideId?: string; shapeId?: string; from?: number; to?: number; navigationId?: string; scrollTop?: number; pageFraction?:number; url?:string; quote?: string };
 export interface Capabilities {
   engine: string; protocolVersion: string; readText: boolean; readSelection: boolean; readViewport: boolean;
   editKinds: string[]; saveFormats: string[]; limitations: string[]; browserInput?: boolean;
@@ -39,7 +39,7 @@ export interface AgentViewState {
   lastEdit?: { transactionId: string; revision: number; kind: string };
 }
 export interface AgentViewStatus { viewId: string; documentId: string; state: AgentViewState | null; userControl?: 'running' | 'paused' | 'stopped' }
-export interface ViewInfo { id: string; documentId: string; windowId: string; mode: 'read' | 'source' | 'split'; pinned: boolean; context?: ReadingContext; zoom?: number; agentState?: AgentViewState }
+export interface ViewInfo { readingPosition?: {revision:number; locator:Locator}; id: string; documentId: string; windowId: string; mode: 'read' | 'source' | 'split'; pinned: boolean; context?: ReadingContext; zoom?: number; agentState?: AgentViewState }
 export interface ReadingSnapshot { id: string; schemaVersion: string; context: ReadingContext; document: DocumentInfo; createdAt: string }
 export interface TextSelectionLease { kind: 'text-selection'; revision: number; selection: Pick<ReadingContext['selection'], 'kind' | 'text' | 'locator'> }
 export type SelectionContextLease = import('./native-office').NativeOfficeSelectionLease | TextSelectionLease;
@@ -136,7 +136,7 @@ export interface FormatAdapter {
 export interface BrowserRuntime {
   setZoom?(viewId: string, factor: number): void;
   open(viewId: string, url: string, options?: { background?: boolean }): Promise<void>;
-  layout(windowId: string, views: { viewId: string; bounds: Rect }[]): void;
+  layout(windowId: string, views: { viewId: string; bounds: Rect; clip?:Rect }[]): void;
   context(viewId: string, actor?: Actor): Promise<ReadingContext>;
   input(request: BrowserRequest): Promise<{ navigationId: string; context: ReadingContext }>;
   navigate(viewId: string, action: 'back' | 'forward' | 'reload' | 'url', url?: string): Promise<void>;

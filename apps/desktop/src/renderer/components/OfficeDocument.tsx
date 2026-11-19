@@ -1,3 +1,4 @@
+import { findPattern, registerFind, snippet, type FindHit } from '../lib/reader-find';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { Check, ChevronDown, Grip, Maximize2 } from 'lucide-react';
 import { editOperationSchema, type DocumentInfo, type EditOperation, type OfficeTextStyle, type ReadingContext, type SheetCell, type TextBlock, type ViewInfo } from '../../../../../packages/contracts/src/index';
@@ -47,13 +48,14 @@ function selectOffsets(host: HTMLElement) {
   const prefix = range.cloneRange(); prefix.selectNodeContents(host); prefix.setEnd(range.startContainer, range.startOffset);
   return { from: prefix.toString().length, to: prefix.toString().length + range.toString().length, text: range.toString(), rect: range.getBoundingClientRect() };
 }
-function restoreOffsets(host: HTMLElement, from: number, to: number) {
+function restoreOffsets(host: HTMLElement, from: number, to: number, highlight = false) {
   const walker = window.document.createTreeWalker(host, NodeFilter.SHOW_TEXT), range = window.document.createRange();
   let node = walker.nextNode(), offset = 0, start = false;
   while (node) {
     const length = node.textContent?.length ?? 0;
     if (!start && from <= offset + length) { range.setStart(node, Math.max(0, from - offset)); start = true; }
-    if (start && to <= offset + length) { range.setEnd(node, Math.max(0, to - offset)); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); return; }
+    if (start && to <= offset + length) { range.setEnd(node, Math.max(0, to - offset)); if (highlight) CSS.highlights.set('av-office-find',new Highlight(range));
+      else { const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); } return; }
     offset += length; node = walker.nextNode();
   }
 }
@@ -87,7 +89,7 @@ function useAgentOfficeNavigation(props: RenderProps, identity: string, resolve:
             if (target.kind === 'html-heading') { fail('HTML 标题需要在 HTML 阅读视图中定位。'); return; }
             const locator: ReadingContext['locator'] = target.kind === 'paragraph' ? { kind: 'paragraph', blockId: target.blockId, quote: quote.slice(0, 120) } : target.kind === 'slide' ? { kind: 'slide', slideId: target.slideId, quote: quote.slice(0, 120) } : { kind: 'cell', sheetId: target.sheetId, cell: target.address, quote: quote.slice(0, 120) };
             current.selectTarget(target.kind === 'paragraph' ? { viewId: request.viewId, blockId: target.blockId } : target.kind === 'slide' ? { viewId: request.viewId, slideId: target.slideId } : { viewId: request.viewId, sheetId: target.sheetId, address: target.address, range: `${target.address}:${target.address}` });
-            const context: Partial<ReadingContext> = { actor: 'agent', locator, selection: { kind: 'none', text: '' } };
+            const context: Partial<ReadingContext> = { actor: request.actor, locator, selection: { kind: 'none', text: '' } };
             current.onNavigationContext?.(context, request.requestId);
             if (!current.onNavigationContext) current.onContext?.(context);
             finished.current = request.requestId; current.onNavigationResult?.({ requestId: request.requestId, status: 'rendered' });
@@ -355,6 +357,37 @@ const SpreadsheetDocument = memo(SpreadsheetDocumentImpl);
 function OfficeDocumentImpl(props: OfficeDocumentProps) {
   const [target, setTarget] = useState<OfficeTarget>();
   const callbacks = useRef(props); callbacks.current = props;
+  const root=useRef<HTMLElement>(null);
+  const [findRequest,setFindRequest]=useState<OfficeNavigationRequest>();
+  type Destination={target: OfficeNavigationRequest['target']; selector:string; from:number; to:number};
+  const findDestination=useRef<{id:string;target:Destination}|undefined>(undefined);
+  const afterNavigation=useCallback((result:OfficeNavigationResult)=>{
+    const pending=findDestination.current;
+    if (!pending || pending.id!==result.requestId) { callbacks.current.onNavigationResult?.(result); return; }
+    findDestination.current=undefined;setFindRequest(undefined);
+    if(result.status!=='rendered'){callbacks.current.reportError?.(result.error);return;}
+    const {selector,from,to}=pending.target,node=root.current?.querySelector<HTMLElement>(selector);
+    if(node){node.scrollIntoView({block:'nearest',inline:'nearest'});if(pending.target.target.kind!=='cell')restoreOffsets(node,from,to,true);}
+  },[]);
+  useEffect(()=>registerFind(props.view.id,options=>{
+    const hits:FindHit[]=[],targets:Destination[]=[],pattern=findPattern(options);
+    function scan(value:string,label:string,target:Destination['target'],selector:string) {
+      for(const match of value.matchAll(pattern)){
+        if(hits.length>500)return;
+        const from=match.index,to=from+match[0].length;
+        hits.push(snippet(value,from,to,label));targets.push({target,selector,from,to});
+      }
+    }
+    const model=props.document.model,blockSelector=(id:string)=>'[data-block-id="'+CSS.escape(id)+'"]';
+    for(const block of model.blocks??[]){if(hits.length>500)break;scan(block.text,'Word 正文',{kind:'paragraph',blockId:block.id},blockSelector(block.id));}
+    for(const [index,slide] of (model.slides??[]).entries()){if(hits.length>500)break;for(const block of slide.blocks){if(hits.length>500)break;scan(block.text,'幻灯片 '+(index+1),{kind:'slide',slideId:slide.id},blockSelector(block.id));}}
+    for(const sheet of model.sheets??[]){if(hits.length>500)break;for(const row of sheet.rows){if(hits.length>500)break;for(const cell of row){if(cell&&hits.length<=500)scan(cell.value,sheet.name+'.'+cell.address,{kind:'cell',sheetId:sheet.id,address:cell.address},'[data-address="'+CSS.escape(cell.address)+'"]');}}}
+    return {hits:hits.slice(0,500),limited:hits.length>500,reveal(index){
+      const dest=targets[index],id=crypto.randomUUID();if(!dest)return;
+      findDestination.current={id,target:dest};
+      setFindRequest({viewId:props.view.id,documentId:props.document.id,expectedRevision:props.document.revision,requestId:id,actor:'human',target:dest.target});
+    },clear(){CSS.highlights.delete('av-office-find');}};
+  }),[props.view.id,props.document.model,props.document.id,props.document.revision]);
   const drafts = useMemo(() => new OfficeDraftRegistry(props.view.id, dirty => callbacks.current.onDraftChange?.(dirty)), [props.view.id]);
   useLayoutEffect(() => { callbacks.current.onDraftController?.(drafts); return () => callbacks.current.onDraftController?.(undefined); }, [drafts]);
   const selectTarget = useCallback((next: OfficeTarget) => { setTarget(next); callbacks.current.onTarget?.(next); }, []);
@@ -363,8 +396,8 @@ function OfficeDocumentImpl(props: OfficeDocumentProps) {
   // latest parent callbacks, and local draft state remains owned by each editor.
   const editor = useMemo<EditorProps>(() => ({ document: { capabilities: props.document.capabilities }, view: { id: props.view.id }, edit: props.edit, onContext: props.onContext, onSelection: props.onSelection, reportError: props.reportError, selectTarget, drafts }), [props.document.capabilities, props.view.id, props.edit, props.onContext, props.onSelection, props.reportError, selectTarget, drafts]);
   const bodyDocument = useMemo(() => ({ id: props.document.id, format: props.document.format, model: props.document.model, capabilities: props.document.capabilities, revision: props.document.revision }), [props.document.id, props.document.format, props.document.model, props.document.capabilities, props.document.revision]);
-  const child = useMemo<RenderProps>(() => ({ ...editor, document: bodyDocument, zoom: props.zoom, editor, navigationRequest: props.navigationRequest, onNavigationContext: props.onNavigationContext, onNavigationResult: props.onNavigationResult, onToolboxController: props.onToolboxController }), [editor, bodyDocument, props.zoom, props.navigationRequest, props.onNavigationContext, props.onNavigationResult, props.onToolboxController]);
-  return <section className={'office-document-editor office-document-' + props.document.format}>
+  const child = useMemo<RenderProps>(() => ({ ...editor, document: bodyDocument, zoom: props.zoom, editor, navigationRequest: findRequest??props.navigationRequest, onNavigationContext: findRequest?undefined:props.onNavigationContext, onNavigationResult: afterNavigation, onToolboxController: props.onToolboxController }), [editor, bodyDocument, props.zoom, findRequest, props.navigationRequest, props.onNavigationContext, afterNavigation, props.onToolboxController]);
+  return <section ref={root} className={'office-document-editor office-document-' + props.document.format}>
     {props.document.format === 'docx' && <WordDocument {...child} />}{props.document.format === 'pptx' && <PresentationDocument {...child} target={target} />}{props.document.format === 'xlsx' && <SpreadsheetDocument {...child} />}
   </section>;
 }

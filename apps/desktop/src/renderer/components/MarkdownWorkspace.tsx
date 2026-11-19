@@ -5,12 +5,12 @@ import '../markdown-workspace.css';
 
 type Entry = { path: string; name: string; kind: 'directory' | 'file'; size?: number };
 type Listing = { rootPath: string; relativePath: string; entries: Entry[]; limitReached: boolean };
-type SearchResult = { path: string; uri: string; line: number; preview: string };
+type SearchResult = { path: string; uri: string; line: number; column?:number; length?:number; preview: string };
 type SearchResponse = { results: SearchResult[]; limitReached: boolean };
 type ChangeAction = 'new-file' | 'new-folder' | 'rename' | 'move' | 'trash' | 'undo';
 type ChangeResponse = { transactionId?: string; uri?: string };
 type EditForm = { action: Exclude<ChangeAction, 'undo'>; path: string; value: string };
-type Props = { documentId: string; onOpen(uri: string, line?: number): void; onError(error: unknown): void };
+type Props = { intent:{sequence:number;mode:'tree'|'filename'|'content'}; documentId: string; beforeSearch():Promise<void>; onOpen(uri: string, line?: number,column?:number,length?:number): void; onError(error: unknown): void };
 const parentPath = (path: string) => path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
 const baseName = (path: string) => path.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '';
 const joinPath = (parent: string, name: string) => parent ? `${parent}/${name}` : name;
@@ -71,30 +71,21 @@ export function MarkdownWorkspace(props: Props) {
     return () => { live.current = false; generation.current++; searchGeneration.current++; };
   }, [documentId, refresh]);
   useEffect(() => { if (form && form.action !== 'trash') { input.current?.focus(); input.current?.select(); } }, [form?.action, form?.path]);
+  useEffect(()=>{setMode(props.intent.mode);queryField.current?.focus();queryField.current?.select();},[props.intent]);
   useEffect(() => { if (mode !== 'tree') queryField.current?.focus(); }, [mode]);
-  useEffect(() => {
-    const changeMode = (event: Event) => {
-      const detail = (event as CustomEvent<{ documentId: string; mode: 'quick' | 'search' | 'tree' }>).detail;
-      if (detail?.documentId !== documentId || !['quick', 'search', 'tree'].includes(detail.mode)) return;
-      setMode(detail.mode === 'quick' ? 'filename' : detail.mode === 'search' ? 'content' : 'tree'); setError('');
-      requestAnimationFrame(() => { queryField.current?.focus(); queryField.current?.select(); });
-    };
-    window.addEventListener('agentviewer:markdown-workspace-mode', changeMode);
-    return () => window.removeEventListener('agentviewer:markdown-workspace-mode', changeMode);
-  }, [documentId]);
   useEffect(() => {
     const sequence = ++searchGeneration.current, owner = generation.current;
     setMatches({ results: [], limitReached: false }); setActiveResult(0);
     if (mode === 'tree' || !query.trim() || !rootPath) { setSearching(false); return; }
-    setSearching(true);
+    setSearching(true);const token=crypto.randomUUID();
     const timer = setTimeout(() => {
-      void call<SearchResponse>('markdown-workspace-search', { documentId, query: query.trim(), mode, caseSensitive }).then(value => {
+      void current.current.beforeSearch().then(()=>searchGeneration.current===sequence?call<SearchResponse>('markdown-workspace-search',{documentId,query,mode,caseSensitive,owner:resultId,token}):{results:[],limitReached:false}).then(value => {
         if (valid(owner) && searchGeneration.current === sequence) setMatches(value);
       }).catch(cause => { if (valid(owner) && searchGeneration.current === sequence) failure(cause); }).finally(() => {
         if (valid(owner) && searchGeneration.current === sequence) setSearching(false);
       });
     }, mode === 'filename' ? 150 : 250);
-    return () => { clearTimeout(timer); if (searchGeneration.current === sequence) searchGeneration.current++; };
+    return () => { clearTimeout(timer);void call('markdown-workspace-stop',{owner:resultId,token}).catch(()=>{}); if (searchGeneration.current === sequence) searchGeneration.current++; };
   }, [documentId, mode, query, caseSensitive, rootPath, listings['']]);
   const rows = useMemo(() => {
     const visible: { entry: Entry; depth: number }[] = [];
@@ -163,7 +154,7 @@ export function MarkdownWorkspace(props: Props) {
     } catch (cause) { if (valid(owner)) failure(cause, true); }
     finally { if (live.current && current.current.documentId === documentId) setBusy(false); }
   };
-  const openResult = (index: number) => { const result = matches.results[index]; if (result) current.current.onOpen(result.uri, mode === 'content' ? result.line : undefined); };
+  const openResult = (index: number) => { const result = matches.results[index]; if (result) current.current.onOpen(result.uri, mode === 'content' ? result.line : undefined,result.column,result.length); };
   const searchKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === 'ArrowDown') { event.preventDefault(); setActiveResult(index => Math.min(Math.max(0, matches.results.length - 1), index + 1)); }
@@ -201,7 +192,7 @@ export function MarkdownWorkspace(props: Props) {
         {Object.values(listings).some(listing => listing.limitReached) && <p className="markdown-workspace-note">目录列表已达上限，请使用快速打开查找文件。</p>}
       </> : <>
         <label className="markdown-workspace-search"><Search size={14} aria-hidden="true" /><input ref={queryField} type="search" aria-label={mode === 'filename' ? '按文件名快速打开' : '搜索工作区全文'} placeholder={mode === 'filename' ? '按文件名查找' : '搜索文件内容'} value={query} onChange={event => { setQuery(event.target.value); setError(''); }} onKeyDown={searchKey} autoComplete="off" spellCheck={false} role="combobox" aria-autocomplete="list" aria-expanded={!!matches.results.length} aria-controls={`${resultId}-results`} aria-activedescendant={matches.results[activeResult] ? `${resultId}-${activeResult}` : undefined} />{mode === 'content' && <button type="button" className="icon-button" aria-label="区分大小写" aria-pressed={caseSensitive} title="区分大小写" onClick={() => setCaseSensitive(value => !value)}>Aa</button>}</label>
-        <div className="markdown-workspace-results" id={`${resultId}-results`} role="listbox" aria-label={mode === 'filename' ? '匹配的文件' : '全文搜索结果'}>{matches.results.map((result, index) => <button id={`${resultId}-${index}`} key={`${result.path}:${result.line}:${index}`} type="button" role="option" aria-selected={activeResult === index} title={result.path} onMouseEnter={() => setActiveResult(index)} onClick={() => openResult(index)}><span><FileText size={13} aria-hidden="true" />{baseName(result.path)}{mode === 'content' && result.line > 0 && <small>:{result.line}</small>}</span><small>{result.path}</small>{mode === 'content' && <p>{result.preview}</p>}</button>)}</div>
+        <div className="markdown-workspace-results" id={`${resultId}-results`} role="listbox" aria-label={mode === 'filename' ? '匹配的文件' : '全文搜索结果'}>{matches.results.map((result, index) => <div key={result.path+':'+index}>{mode==='content'&&matches.results[index-1]?.path!==result.path&&<strong className="tree-caption">{result.path}</strong>}<button id={`${resultId}-${index}`} key={`${result.path}:${result.line}:${index}`} type="button" role="option" aria-selected={activeResult === index} title={result.path} onMouseEnter={() => setActiveResult(index)} onClick={() => openResult(index)}><span><FileText size={13} aria-hidden="true" />{baseName(result.path)}{mode === 'content' && result.line > 0 && <small>:{result.line}:{result.column}</small>}</span>{mode==='filename'&&<small>{result.path}</small>}{mode === 'content' && <p>{result.preview}</p>}</button></div>)}</div>
         {searching && <p className="markdown-workspace-note" role="status">正在搜索…</p>}
         {!searching && query.trim() && !matches.results.length && !error && <p className="markdown-workspace-note">没有找到匹配内容。</p>}
         {matches.limitReached && <p className="markdown-workspace-note">结果已达上限，请缩小搜索范围。</p>}

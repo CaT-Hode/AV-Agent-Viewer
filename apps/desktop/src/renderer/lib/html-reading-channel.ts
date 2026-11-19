@@ -31,7 +31,7 @@ export function createHtmlReadingChannel(options: Options) {
       incoming.onmessage = event => {
         if (disposed || port !== incoming || !event.data || typeof event.data !== 'object' || Array.isArray(event.data)) return;
         if (event.data.type === 'agentviewer-html-channel-close') { release(true); return; }
-        if (event.data.type === 'agentviewer-html-context' || event.data.type === 'agentviewer-html-navigation-error') options.onMessage(event.data as ReadingMessage);
+        if (event.data.type === 'reader-find-reply' || event.data.type === 'reader-find-open' || event.data.type === 'reader-find-step' || event.data.type === 'agentviewer-html-context' || event.data.type === 'agentviewer-html-navigation-error') options.onMessage(event.data as ReadingMessage);
       };
       incoming.onmessageerror = () => { if (port === incoming) release(true); };
       incoming.start();
@@ -57,6 +57,9 @@ export function htmlReadingChannelScript(token: string) {
         if(readingChannelStopped||readingPort!==local)return;
         if(event.data?.type==='agentviewer-html-channel-ready'){
           if(readingChannelReady)return;readingChannelReady=true;clearTimeout(readingHandshakeTimer);send();
+        }else if(readingChannelReady&&event.data?.type==='reader-find'){
+          try{postReadingMessage({type:'reader-find-reply',id:event.data.id,value:readerFind(event.data)});}
+          catch(error){postReadingMessage({type:'reader-find-reply',id:event.data.id,error:String(error)});}
         }else if(readingChannelReady)navigateHtml(event.data);
       };
       local.start();parent.postMessage({type:'agentviewer-html-channel',token:${nonce}},'*',[channel.port2]);

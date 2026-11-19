@@ -10,5 +10,4 @@ html.native-toolbar-root #root > .workbench.native-toolbar,
 html.native-agent-root #root > .native-agent-slot { position: relative; top: var(--native-tooltip-offset-y,0px); }
 html.native-toolbar-root #root > .selection-tools { margin-top: var(--native-tooltip-offset-y,0px); }
 
-.app-tooltip .tab-preview-location { display:block; margin-top:3px; color:var(--muted); font-size:11px; font-weight:400; }
-.app-tooltip .tab-preview-image { display:block; width:160px; height:90px; object-fit:contain; border-radius:6px; margin-bottom:7px; }
+.app-tooltip .tab-format-detail { display:block; margin-top:3px; color:var(--muted); font-size:11px; font-weight:400; }

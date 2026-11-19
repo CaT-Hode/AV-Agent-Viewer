@@ -17,7 +17,8 @@ export async function startServer(core: ViewerCore, root: string, directory: str
   const markdownWorkspace = new MarkdownWorkspace(core, directory);
   core.extensions.set('markdown-workspace-root', async args => markdownWorkspace.resourceRoot(String(args.documentId)));
   core.extensions.set('markdown-workspace-list', async args => markdownWorkspace.list(String(args.documentId), String(args.path ?? '')));
-  core.extensions.set('markdown-workspace-search', async args => markdownWorkspace.search(String(args.documentId), String(args.query ?? ''), args.caseSensitive === true, String(args.mode ?? 'content')));
+  core.extensions.set('markdown-workspace-search', async args => markdownWorkspace.search(String(args.documentId), String(args.query ?? ''), args.caseSensitive === true, String(args.mode ?? 'content'),String(args.owner??''),String(args.token??'')));
+  core.extensions.set('markdown-workspace-stop',async args=>{markdownWorkspace.cancelSearch(String(args.owner),String(args.token));return {};});
   core.extensions.set('markdown-workspace-set-root', async (args, actor) => { if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '请选择工作文件夹。'); return markdownWorkspace.setRoot(String(args.documentId), String(args.path)); });
   core.extensions.set('markdown-workspace-change', async (args, actor) => { if (actor !== 'human') throw new ViewerError('AUTH_SCOPE_DENIED', '文件管理由阅读窗口发起。'); return markdownWorkspace.change(args as any); });
   core.extensions.set('agent-files-change',async(args,actor)=>markdownWorkspace.changeAuthorized(String(args.root),{action:String(args.action),path:args.path as string|undefined,destination:args.destination as string|undefined,transactionId:args.transactionId as string|undefined},actor));

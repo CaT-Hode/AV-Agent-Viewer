@@ -1,3 +1,7 @@
+import { editingKeys, inheritedKeys } from '../lib/markdown-shortcuts';
+import type {Locator} from '../../../../../packages/contracts/src/index';
+import { registerTextFind } from '../lib/markdown-find';
+import { findChanged } from '../lib/reader-find';
 import { useEffect, useRef, useState } from 'react';
 import { Compartment, EditorSelection, EditorState, Prec, Transaction } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
@@ -5,7 +9,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { languages } from '@codemirror/language-data';
 import { undo, redo, undoDepth, redoDepth, indentWithTab, isolateHistory } from '@codemirror/commands';
-import { openSearchPanel, search, selectNextOccurrence } from '@codemirror/search';
+import { search, selectNextOccurrence } from '@codemirror/search';
 import { LanguageSupport, syntaxTree } from '@codemirror/language';
 import { markdownLivePreview, refreshMarkdownPreview } from '../lib/markdown-live-preview';
 import { MARKDOWN_COMMANDS, markdownTransformRange, type MarkdownCommandEventDetail, type MarkdownCommandName } from '../../../../../packages/markdown/src/commands';
@@ -22,17 +26,9 @@ import { boundedMarkdownInput, markdownBlockEnter, markdownMathBracketInput, mar
 import { markdownEditorSetup } from '../lib/markdown-editor-setup';
 import '../markdown-editor.css';
 
-export type TextEditorContext = { text: string; from: number; to: number; scrollTop: number; visibleText: string; actor: 'human' | 'agent'; ready: boolean; composing: boolean; rect?: { x: number; y: number; width: number; height: number } };
-type Props = { value: string; format: string; live?: boolean; viewId?: string; documentId?: string; revision?: number; pending?: boolean; onChange(text: string, change?: TextEditorChange): void; onContext(update: TextEditorContext): void };
+export type TextEditorContext = { readingFrom?: number; text: string; from: number; to: number; scrollTop: number; visibleText: string; actor: 'human' | 'agent'; ready: boolean; composing: boolean; rect?: { x: number; y: number; width: number; height: number } };
+type Props = { initial?:Locator; value: string; format: string; live?: boolean; viewId?: string; documentId?: string; revision?: number; pending?: boolean; onChange(text: string, change?: TextEditorChange): void; onContext(update: TextEditorContext): void };
 const normalize = (text: string) => text.replace(/\r\n?/g, '\n');
-const editingKeys: [string, MarkdownCommandName][] = [
-  ['Mod-b', 'bold'], ['Mod-i', 'italic'], ['Mod-u', 'underline'], ['Alt-Shift-5', 'strike'], ['Mod-Shift-`', 'code'],
-  ['Mod-k', 'link'], ['Mod-Shift-i', 'image'], ['Mod-Shift-k', 'codeBlock'], ['Mod-Shift-m', 'mathBlock'], ['Mod-Shift-q', 'quote'],
-  ['Mod-Shift-[', 'ordered'], ['Mod-Shift-]', 'bullet'], ['Mod-t', 'table'], ['Mod-\\', 'clear'],
-  ...Array.from({ length: 7 }, (_, level) => ['Mod-' + level, 'heading' + level] as [string, MarkdownCommandName]),
-];
-const inheritedKeys: Record<string, string[]> = { undo: ['Mod-z'], redo: ['Mod-y', 'Mod-Shift-z'], find: ['Mod-f'] };
-
 /** One persistent source editor owns both the live document and source mode. */
 export function TextEditor(props: Props) {
   const host = useRef<HTMLDivElement>(null), editor = useRef<EditorView | null>(null), latest = useRef(props); latest.current = props;
@@ -84,10 +80,10 @@ export function TextEditor(props: Props) {
       latest.current.onContext({ actor, ready: !latest.current.pending && !composing.current && !localDirty && synchronized, composing: composing.current,
         rect: rect ? { x: rect.left, y: rect.top, width: Math.max(1, rect.right - rect.left), height: rect.bottom - rect.top } : undefined,
         text: view.state.doc.sliceString(selected.from, selected.to, eol.current), from: sourceOffset(view.state, selected.from), to: sourceOffset(view.state, selected.to),
-        scrollTop: scroll?.scrollTop ?? 0, visibleText: visible ? view.state.doc.sliceString(visible.from, Math.min(visible.to, visible.from + 24000), eol.current) : '',
+        readingFrom: sourceOffset(view.state, view.lineBlockAtHeight(Math.max(0,(scroll?.getBoundingClientRect().top ?? view.documentTop)-view.documentTop)).from), scrollTop: scroll?.scrollTop ?? 0, visibleText: visible ? view.state.doc.sliceString(visible.from, Math.min(visible.to, visible.from + 24000), eol.current) : '',
       });
       }
-      window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, canUndo: !!externalEdit || undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, spellcheck, autoPair, focus: !!host.current?.classList.contains('markdown-focus'), typewriter: !!host.current?.classList.contains('markdown-typewriter') } }));
+      window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, keybindings:preferences.keybindings, inTable: (()=>{let node=syntaxTree(view.state).resolveInner(view.state.selection.main.head,-1);for(;;){if(node.name==='Table')return true;if(!node.parent)return false;node=node.parent;}})(), canUndo: !!externalEdit || undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, spellcheck, autoPair, focus: !!host.current?.classList.contains('markdown-focus'), typewriter: !!host.current?.classList.contains('markdown-typewriter') } }));
       setStatistics(view.state.field(markdownStatistics));
     };
     const project = (view: EditorView, actor: 'human' | 'agent' = 'human', previous?: EditorState['doc'], changes?: MarkdownProjection['changes']) => {
@@ -115,7 +111,7 @@ export function TextEditor(props: Props) {
       }
       if (command === 'spellcheck') { spellcheck = !spellcheck; view.dispatch({ effects: spelling.reconfigure(EditorView.contentAttributes.of({ spellcheck: String(spellcheck) })) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, spellcheck } })); return true; }
       if (command === 'autoPair') { autoPair = !autoPair; view.dispatch({ effects: pairs.reconfigure(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets: autoPair ? ['(', '[', '{', '"', "'", '`'] : [] } }]))) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, autoPair } })); return true; }
-      if (command === 'find' || command === 'replace') { openSearchPanel(view); if (command === 'replace') queueMicrotask(() => view.dom.querySelector<HTMLInputElement>('.cm-search input[name="replace"]')?.focus()); return true; }
+      if (command === 'find' || command === 'replace') { window.dispatchEvent(new CustomEvent('reader-find-open',{detail:{viewId:identity.viewId,replace:command==='replace',query:view.state.selection.main.empty?undefined:view.state.sliceDoc(view.state.selection.main.from,Math.min(view.state.selection.main.to,view.state.selection.main.from+513))}})); return true; }
       if (command === 'focus' || command === 'typewriter') { const active = host.current?.classList.toggle('markdown-' + command); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, canUndo: undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, focus: host.current?.classList.contains('markdown-focus'), typewriter: host.current?.classList.contains('markdown-typewriter') } })); if (active && command === 'typewriter') view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: 'center' }) }); view.requestMeasure(); return true; }
       return format(view, command as MarkdownCommandName, value);
     };
@@ -138,6 +134,7 @@ export function TextEditor(props: Props) {
       ...(['undo', 'redo'] as const).filter(command => !Object.hasOwn(overrides, command)).flatMap(command => inheritedKeys[command].map(key => ({ key, run: () => execute(command), preventDefault: true }))),
       { key: 'Enter', run: (view: EditorView) => latest.current.format === 'markdown' && autoPair && !composing.current && !view.composing && markdownBlockEnter(view) },
       ...(latest.current.format === 'markdown' ? editingKeys.filter(([, command]) => !Object.hasOwn(overrides, command)).map(([key, command]) => ({ key, run: (view: EditorView) => format(view, command) })) : []),
+      ...(!Object.hasOwn(overrides,'find') ? [{key:'Mod-f',run:()=>execute('find')}] : []),
       ...(!Object.hasOwn(overrides, 'replace') ? [{ key: 'Mod-h', run: () => execute('replace') }] : []),
       { key: 'Mod-d', run: selectNextOccurrence }, ...(!Object.hasOwn(overrides, 'focus') ? [{ key: 'F8', run: () => execute('focus') }] : []), ...(!Object.hasOwn(overrides, 'typewriter') ? [{ key: 'F9', run: () => execute('typewriter') }] : []), indentWithTab,
     ]));
@@ -151,6 +148,7 @@ export function TextEditor(props: Props) {
         publishOutline(update.state);
         if (update.docChanged && !externalUpdate.current) { if (!localDirty) { localDirty = true; stateChanged(); } if (changeTimer) clearTimeout(changeTimer); changeTimer = setTimeout(() => { flush(view); emit(view); }, 120); }
         if (update.docChanged && externalUpdate.current) { emittedText = latest.current.value; synchronized = true; }
+        if (update.docChanged) findChanged(identity.viewId);
         if (update.docChanged) project(view, externalUpdate.current && !externalHuman ? 'agent' : 'human', update.startState.doc, update.changes);
         if (update.docChanged) for (const [id, range] of imports) imports.set(id, { from: update.changes.mapPos(range.from, -1), to: update.changes.mapPos(range.to, 1) });
         if (update.docChanged || update.selectionSet || update.viewportChanged) { if (contextFrame) cancelAnimationFrame(contextFrame); const actor = externalUpdate.current && !externalHuman ? 'agent' : 'human'; contextFrame = requestAnimationFrame(() => { contextFrame = 0; if (editor.current === view) emit(view, actor); }); }
@@ -175,6 +173,16 @@ export function TextEditor(props: Props) {
         },
       }),
     ] }) });
+    const unregisterFind=identity.viewId && registerTextFind(identity.viewId,view,()=>composing.current);
+    let restoreFrame=0;
+    const stopRestore=()=>cancelAnimationFrame(restoreFrame);
+    const saved=latest.current.initial;
+    if(saved){const port=view.dom.closest<HTMLElement>('.document-content');for(const type of ['pointerdown','wheel','keydown','beforeinput'])port?.addEventListener(type,stopRestore,{capture:true,once:true});
+      restoreFrame=requestAnimationFrame(()=>{if(saved.kind==='source-viewport'&&saved.from!==undefined){
+        const at=eol.current==='\r\n'?latest.current.value.slice(0,saved.from).replace(/\r\n/g,'\n').length:saved.from;
+        view.dispatch({effects:EditorView.scrollIntoView(Math.min(view.state.doc.length,at),{y:'start',yMargin:0})});
+      }else if(saved.scrollTop!==undefined){(view.scrollDOM.scrollHeight>view.scrollDOM.clientHeight?view.scrollDOM:port)?.scrollTo({top:saved.scrollTop});}});
+    }
     editor.current = view; emitRef.current = () => emit(view);
     synchronizeRef.current = () => {
       let humanHistory = false;
@@ -254,7 +262,7 @@ export function TextEditor(props: Props) {
       if (position !== undefined) { const anchor = Math.max(0, Math.min(view.state.doc.length, position)); view.dispatch({ ...(detail.select === false ? {} : { selection: { anchor } }), effects: EditorView.scrollIntoView(anchor, { y: 'start', yMargin: 96 }) }); if (detail.select !== false) view.focus(); }
     };
     const anchor = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; anchor: string }>).detail; if (detail?.viewId === identity.viewId) navigateAnchor(detail.anchor.startsWith('#') ? detail.anchor : '#' + detail.anchor); };
-    const revealLine = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; line: number }>).detail; if (detail?.viewId !== identity.viewId || !Number.isInteger(detail.line)) return; const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, detail.line))); view.dispatch({ selection: { anchor: line.from, head: line.to }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) }); view.focus(); };
+    const revealLine = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; line: number; column?:number; length?:number }>).detail; if (detail?.viewId !== identity.viewId || !Number.isInteger(detail.line)) return; const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, detail.line))); const from=Math.min(line.to,line.from+Math.max(0,(detail.column??1)-1)); view.dispatch({ selection: { anchor: from, head: detail.column?Math.min(line.to,from+(detail.length??0)):line.to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) }); view.focus(); };
     const preferenceChange = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; preferences: typeof preferences }>).detail; if (detail?.viewId !== identity.viewId || !detail.preferences) return; preferences = detail.preferences; try { view.dispatch({ effects: bindings.reconfigure(keybindings(preferences.keybindings)) }); } catch (error) { window.dispatchEvent(new CustomEvent('agentviewer:markdown-error', { detail: { viewId: identity.viewId, message: '快捷键配置无效：' + (error instanceof Error ? error.message : String(error)) } })); } };
     const outlineRequest = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string }>).detail; if (detail?.viewId === identity.viewId) publishOutline(view.state, true); };
     const observer = new MutationObserver(() => { if (editor.current === view && latest.current.live) view.dispatch({ effects: refreshMarkdownPreview.of(null) }); });
@@ -267,7 +275,7 @@ export function TextEditor(props: Props) {
     window.addEventListener('agentviewer:markdown-editor-state-request', editorStateRequest);
     window.dispatchEvent(new CustomEvent('agentviewer:markdown-preferences-request', { detail: { viewId: identity.viewId } }));
     emit(view);
-    return () => { if (changeTimer) clearTimeout(changeTimer); if (contextFrame) cancelAnimationFrame(contextFrame); if (!composing.current) { flushWidget(view); flush(view); } imports.clear(); observer.disconnect(); window.removeEventListener('agentviewer:markdown-command', command); window.removeEventListener('agentviewer:text-editor-barrier', barrier); window.removeEventListener('agentviewer:markdown-navigate', navigate); window.removeEventListener('agentviewer:markdown-anchor', anchor); window.removeEventListener('agentviewer:markdown-reveal-line', revealLine); window.removeEventListener('agentviewer:markdown-outline-request', outlineRequest); window.removeEventListener('agentviewer:markdown-preferences', preferenceChange); window.removeEventListener('agentviewer:markdown-preview-selection', previewSelection); window.removeEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent); window.removeEventListener(MARKDOWN_PROJECTION_REQUEST, projectionRequest); window.removeEventListener('agentviewer:markdown-editor-state-request', editorStateRequest); if (!composing.current) stateChanged(); view.destroy(); editor.current = null; };
+    return () => { stopRestore();for(const type of ['pointerdown','wheel','keydown','beforeinput'])view.dom.closest('.document-content')?.removeEventListener(type,stopRestore,true);if(unregisterFind)unregisterFind(); if (changeTimer) clearTimeout(changeTimer); if (contextFrame) cancelAnimationFrame(contextFrame); if (!composing.current) { flushWidget(view); flush(view); } imports.clear(); observer.disconnect(); window.removeEventListener('agentviewer:markdown-command', command); window.removeEventListener('agentviewer:text-editor-barrier', barrier); window.removeEventListener('agentviewer:markdown-navigate', navigate); window.removeEventListener('agentviewer:markdown-anchor', anchor); window.removeEventListener('agentviewer:markdown-reveal-line', revealLine); window.removeEventListener('agentviewer:markdown-outline-request', outlineRequest); window.removeEventListener('agentviewer:markdown-preferences', preferenceChange); window.removeEventListener('agentviewer:markdown-preview-selection', previewSelection); window.removeEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent); window.removeEventListener(MARKDOWN_PROJECTION_REQUEST, projectionRequest); window.removeEventListener('agentviewer:markdown-editor-state-request', editorStateRequest); if (!composing.current) stateChanged(); view.destroy(); editor.current = null; };
   }, [props.format, props.documentId, props.viewId]);
   useEffect(() => { const view = editor.current; if (view) view.dispatch({ effects: liveMode.current.reconfigure(props.live && props.format === 'markdown' ? markdownLivePreview(props.documentId ?? '') : []) }); }, [props.live, props.format, props.documentId]);
   useEffect(() => { synchronizeRef.current(); }, [props.value, props.revision]);

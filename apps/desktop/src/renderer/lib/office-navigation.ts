@@ -1,5 +1,5 @@
 export type OfficeNavigationTarget = { kind: 'slide'; slideId: string } | { kind: 'cell'; sheetId: string; address: string } | { kind: 'paragraph'; blockId: string } | { kind: 'html-heading'; blockId: string };
-export type OfficeNavigationRequest = { requestId: string; viewId: string; documentId: string; expectedRevision: number; target: OfficeNavigationTarget; actor: 'agent' };
+export type OfficeNavigationRequest = { requestId: string; viewId: string; documentId: string; expectedRevision: number; target: OfficeNavigationTarget; actor: 'agent' | 'human' };
 export type OfficeNavigationResult = { requestId: string; status: 'rendered' | 'failed'; error?: string };
 
 export function parseOfficeNavigationRequest(value: unknown): OfficeNavigationRequest | undefined {
