@@ -37,9 +37,11 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const { document: file, view } = props, identity = file.id + ':' + view.id;
   const [paintedIdentity,setPaintedIdentity]=useState<string>();
   const [presentedLease,setPresentedLease]=useState<string>();
-  const [presentedPart,setPresentedPart]=useState<number>();
+  const [presentedFrame,setPresentedFrame]=useState<OfficeSurfaceState>();
+  const presentedPart=presentedFrame?.partIndex;
   const presentedLeaseRef=useRef<string|undefined>(undefined);
-  const startupDocument=useMemo(()=>file,[identity]);
+  const hasStartupModel = !!(file.model.blocks || file.model.sheets || file.model.slides);
+  const startupDocument=useMemo(()=>file,[identity,hasStartupModel]);
   const startupLocation=useRef<OfficeStartupPreviewLocation|undefined>(undefined);
   const startupHandoff=useRef<string|undefined>(undefined);
   const presentationFlight=useRef(false);
@@ -48,7 +50,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const latest = useRef(props); latest.current = props;
   const displayOwner=useRef<{leaseId:string;ready:Promise<unknown>}|undefined>(undefined);
   useLayoutEffect(()=>{
-    presentedLeaseRef.current=undefined;setPresentedLease(undefined);setPresentedPart(undefined);
+    presentedLeaseRef.current=undefined;setPresentedLease(undefined);setPresentedFrame(undefined);
     if(props.obscured){displayOwner.current=undefined;return;}
     const leaseId=crypto.randomUUID(),owner={leaseId,ready:call('office-display',{viewId:view.id,leaseId,action:'acquire'})};displayOwner.current=owner;
     return()=>{if(displayOwner.current===owner)displayOwner.current=undefined;void call('office-display',{viewId:view.id,leaseId,action:'release'}).catch(()=>{});};
@@ -132,7 +134,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     const sourceChanged=!previous||!sameIdentity(previous,next),renderChanged=sourceChanged||next.renderGeneration!==previous.renderGeneration;
     if(renderChanged){cache.clear();if(sourceChanged){lastInvalidationSequence.current=-1;if(previous){retiredSessions.current.add(previous.sessionId+':'+previous.engineEpoch);if(retiredSessions.current.size>32)retiredSessions.current.delete(retiredSessions.current.values().next().value!);}}}
     if(renderChanged||next.partIndex!==previous?.partIndex)generation.current++;
-    if(!previous||!sameIdentity(previous,next)){presenter.clear();setPresentedPart(undefined);const target=canvas.current;target?.getContext('2d')?.clearRect(0,0,target.width,target.height);}
+    if(!previous||!sameIdentity(previous,next)){presenter.clear();setPresentedFrame(undefined);const target=canvas.current;target?.getContext('2d')?.clearRect(0,0,target.width,target.height);}
     if (previous && next.partIndex !== previous.partIndex) { const host = scroll.current; if (host) { host.scrollTop = 0; host.scrollLeft = 0; } lastLayout.current = ''; }
     current.current = next; layoutRevision.current = Math.max(layoutRevision.current, next.layoutRevision); setSurface(next); if (next.status === 'ready' && !inputFailure.current) setFailure('');
   }, [cache,presenter]);
@@ -230,7 +232,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
       for(const spec of visibleSpecs){const bitmap=cache.get(prefix+spec.key);if(bitmap)drawOfficeFrameTile(context,bitmap,{x:geometry.offsetX+spec.rectTwips.x*scale-geometry.scrollX,y:geometry.offsetY+spec.rectTwips.y*scale-geometry.scrollY,width:spec.rectTwips.width*scale,height:spec.rectTwips.height*scale},replacing);}
     }});
     if(presented.changed){target.dataset.officeFrameReused=String(presented.reused);target.dataset.officeFrameRevision=String(state.engineRevision);target.dataset.officeFrameZoom=String(geometry.zoom);target.dataset.officeFramePart=String(state.partIndex);}
-    if(complete)setPresentedPart(state.partIndex);
+    if(complete)setPresentedFrame(previous=>previous && sameIdentity(previous,state) && previous.partIndex===state.partIndex && previous.engineRevision===state.engineRevision ? previous : state);
     // Calc starts with a genuine cell selection. Its contextual toolbar needs
     // a stable OOXML snapshot, but must not export it before any real pixels
     // are on screen. The same native selection is published after first paint.
@@ -378,7 +380,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   const modalOpen = !!surface?.windows?.some(window => window.visible && window.modal === true);
   const pointerEvent = (event: React.PointerEvent<HTMLDivElement>, phase: 'down' | 'move' | 'up' | 'cancel') => {
     if (latest.current.obscured || modalOpen || !nativePresented || !current.current || current.current.status !== 'ready' || inputController.failure || !presenter.hasPresentedPart(current.current)) return;
-    if (phase === 'down') { if (composition.current) return;pendingScroll.current.clear(); event.preventDefault(); pointer.current = { id: event.pointerId, button: event.button, clickCount: clicks.current.down(event) }; event.currentTarget.setPointerCapture(event.pointerId); takeFocus(); }
+    if (phase === 'down') { if (composition.current || !presenter.hasPresentedRevision(current.current)) return; pendingScroll.current.clear(); event.preventDefault(); pointer.current = { id: event.pointerId, button: event.button, clickCount: clicks.current.down(event) }; event.currentTarget.setPointerCapture(event.pointerId); takeFocus(); }
     if (phase !== 'down' && pointer.current?.id !== event.pointerId && event.buttons) return;
     if (phase !== 'down' && phase !== 'move' && pointer.current?.id !== event.pointerId) return;
     if (phase === 'move') clicks.current.move(event); if (phase === 'cancel') clicks.current.reset();
@@ -396,7 +398,10 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
   };
   const selectionHandle = (event: React.PointerEvent<HTMLButtonElement>, edge: 'start' | 'end', phase: 'down' | 'move' | 'up' | 'cancel') => {
     event.preventDefault(); event.stopPropagation(); if (composition.current || inputController.failure || props.obscured || modalOpen || !nativePresented || !current.current || !presenter.hasPresentedPart(current.current)) return;
-    if (phase === 'down') { event.currentTarget.setPointerCapture(event.pointerId); takeFocus(); }
+    if (phase === 'down') {
+      if (!presenter.hasPresentedRevision(current.current)) return;
+      event.currentTarget.setPointerCapture(event.pointerId); takeFocus();
+    }
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     const geometry = measure(); if (geometry && phase !== 'cancel') post({ kind: 'selection-handle', edge, pointTwips: officeDocumentPoint(event.clientX, event.clientY, geometry) });
     if (phase === 'up' || phase === 'cancel') event.currentTarget.releasePointerCapture(event.pointerId);
@@ -405,6 +410,7 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
     try { await formulaDraft.current?.flush(); await inputController.barrier(); const state = current.current; if (!state) return; await call('office-navigate', { viewId: view.id, expectedEngineEpoch: state.engineEpoch, expectedEngineRevision: state.engineRevision, expectedSelectionEpoch: state.selectionEpoch, idempotencyKey: crypto.randomUUID(), target: { kind: file.format === 'xlsx' ? 'sheet' : 'slide', index } }); await refresh(); } catch (cause) { fail(cause); }
   };
   void viewportVersion;
+  const overlay = surface && presentedFrame && sameIdentity(surface,presentedFrame) && surface.engineRevision!==presentedFrame.engineRevision ? presentedFrame : surface;
   const showStartupPreview=!displayScope||paintedIdentity!==displayScope;
   return <section className={'embedded-office-document embedded-office-' + file.format} data-office-engine="libreofficekit" data-office-ready={surface?.status === 'ready'&&nativePresented} aria-busy={!nativePresented} data-office-render-mode={showStartupPreview?'preview':'native'} data-office-actor={surface?.actor} data-office-agent-active={!!view.agentState} data-office-fit-mode={presentationFit?(presentationFit.enabled?'page':'manual'):undefined}>
     {file.format === 'xlsx' && formulaHost && createPortal(<NativeOfficeFormulaBar documentId={file.id} viewId={view.id} state={surface} active={surface?.status === 'ready' && nativePresented && !props.obscured && !modalOpen} onState={next => { if (isOfficeSurfaceState(next)) accept(next); else void refresh().catch(fail); }} onError={props.reportError} onDraftController={controller => { formulaDraft.current = controller; }} onDraftChange={dirty => latest.current.onOfficeDraftChange?.({ viewId: view.id, dirty: dirty || inputController.pendingEdit || inputController.compositionActive || !!current.current?.pendingInput })} />,formulaHost)}
@@ -413,13 +419,15 @@ export function EmbeddedOfficeDocument(props: EmbeddedOfficeDocumentProps) {
         {(surface.pages?.length ? surface.pages : file.format === 'pptx' ? [{ x: 0, y: 0, ...size }] : []).map((rect, index) => <span key={index} className="embedded-office-paper-base" style={rectStyle(rect)} />)}
         <canvas ref={bindCanvas} className="embedded-office-canvas" aria-hidden="true" style={{ width: geometry?.viewport.width ?? '100%', height: geometry?.viewport.height ?? '100%' }} />
         <div className="embedded-office-interaction" style={{ cursor: surface?.mousePointer ?? 'text', visibility: nativePresented ? undefined : 'hidden' }} onPointerDown={event => pointerEvent(event, 'down')} onPointerMove={event => pointerEvent(event, 'move')} onPointerUp={event => pointerEvent(event, 'up')} onPointerCancel={event => pointerEvent(event, 'cancel')} onContextMenu={event => event.preventDefault()}>
-          {surface.selectionRects.map((rect, index) => <span key={index} className="embedded-office-selection" style={rectStyle(rect)} />)}
-          {surface.cellCursor && <span className="embedded-office-cell-cursor" style={rectStyle(surface.cellCursor)} />}
-          {surface.cellSelection && <span className="embedded-office-cell-selection" style={rectStyle(surface.cellSelection)} />}
-          {surface.cellAutoFill && <span className="embedded-office-auto-fill" style={rectStyle(surface.cellAutoFill)} />}
-          {surface.graphicSelection && <span className="embedded-office-object-selection" style={rectStyle(surface.graphicSelection.rect)} />}
-          {surface.caret && surface.caretVisible !== false && <span className="embedded-office-caret" style={rectStyle(surface.caret)} />}
-          {surface.selectionRects.length > 0 && (['start', 'end'] as const).map(edge => { const rect = edge === 'start' ? surface.selectionStart : surface.selectionEnd; return rect && <button key={edge} type="button" className="embedded-office-selection-handle" aria-label={edge === 'start' ? '调整选区开始位置' : '调整选区结束位置'} style={{ left: offsetX + rect.x * scale - 5, top: offsetY + (edge === 'start' ? rect.y : rect.y + rect.height) * scale - 5 }} onPointerDown={event => selectionHandle(event, edge, 'down')} onPointerMove={event => selectionHandle(event, edge, 'move')} onPointerUp={event => selectionHandle(event, edge, 'up')} onPointerCancel={event => selectionHandle(event, edge, 'cancel')} />; })}
+          {overlay && <>
+          {overlay.selectionRects.map((rect, index) => <span key={index} className="embedded-office-selection" style={rectStyle(rect)} />)}
+          {overlay.cellCursor && <span className="embedded-office-cell-cursor" style={rectStyle(overlay.cellCursor)} />}
+          {overlay.cellSelection && <span className="embedded-office-cell-selection" style={rectStyle(overlay.cellSelection)} />}
+          {overlay.cellAutoFill && <span className="embedded-office-auto-fill" style={rectStyle(overlay.cellAutoFill)} />}
+          {overlay.graphicSelection && <span className="embedded-office-object-selection" style={rectStyle(overlay.graphicSelection.rect)} />}
+          {overlay.caret && overlay.caretVisible !== false && <span className="embedded-office-caret" style={rectStyle(overlay.caret)} />}
+          {overlay.selectionRects.length > 0 && (['start', 'end'] as const).map(edge => { const rect = edge === 'start' ? overlay.selectionStart : overlay.selectionEnd; return rect && <button key={edge} type="button" className="embedded-office-selection-handle" aria-label={edge === 'start' ? '调整选区开始位置' : '调整选区结束位置'} style={{ left: offsetX + rect.x * scale - 5, top: offsetY + (edge === 'start' ? rect.y : rect.y + rect.height) * scale - 5 }} onPointerDown={event => selectionHandle(event, edge, 'down')} onPointerMove={event => selectionHandle(event, edge, 'move')} onPointerUp={event => selectionHandle(event, edge, 'up')} onPointerCancel={event => selectionHandle(event, edge, 'cancel')} />; })}
+          </>}
         </div>
         <textarea ref={input} className="embedded-office-input" aria-label={file.title + ' 文本输入'} aria-describedby="embedded-office-input-help" autoCapitalize="off" autoComplete="off" autoCorrect="off" spellCheck={false} disabled={!surface || !nativePresented || surface.status !== 'ready' || !!inputController.failure || !!props.obscured || modalOpen} style={surface.caret ? { left: offsetX + surface.caret.x * scale, top: offsetY+surface.caret.y * scale } : { left: offsetX, top: offsetY }} onFocus={() => void synchronizeLayout().catch(fail)} onBlur={() => void synchronizeLayout().catch(fail)} onKeyDown={event => keyEvent(event, 'down')} onKeyUp={event => keyEvent(event, 'up')} onInput={event => { if (!composition.current) event.currentTarget.value = ''; }} onCompositionStart={() => { const session = { id: crypto.randomUUID(), text: '' }; composition.current = session; post({ kind: 'composition', compositionId: session.id, phase: 'start', text: '' }); }} onCompositionUpdate={event => { const session = composition.current; if (session) { session.text = event.data; post({ kind: 'composition', compositionId: session.id, phase: 'update', text: event.data }); } }} onCompositionEnd={event => { const session = composition.current; if (!session) return; composition.current = undefined; lastCompositionCommit.current = { text: event.data, at: performance.now() }; post({ kind: 'composition', compositionId: session.id, phase: event.data ? 'end' : 'cancel', text: event.data }); event.currentTarget.value = ''; }} onPaste={event => {
           event.preventDefault(); if (composition.current) return;

@@ -10,7 +10,7 @@ export interface NativeBackdropFrameSource {
   removeListener(event: 'destroyed', listener: () => void): unknown;
 }
 
-export type NativeBackdropFrame = Readonly<{ image: NativeImage; presentedAt: number }>;
+export type NativeBackdropFrame = Readonly<{ image: NativeImage; presentedAt: number; sequence: number }>;
 export type NativeBackdropFrameListener = (image: NativeImage, presentedAt: number) => void;
 export type NativeBackdropFrameHubStats = {
   /** Cumulative successfully started page subscriptions, including retired ones. */
@@ -89,8 +89,7 @@ export class NativeBackdropFrameHub {
   private present(entry: SourceEntry, image: NativeImage): void {
     if (entry.retired || this.entries.get(entry.source.id) !== entry) return;
     const presentedAt = this.now();
-    entry.latest = { image, presentedAt };
-    this.counts.receivedFrames++;
+    entry.latest = { image, presentedAt, sequence: ++this.counts.receivedFrames };
     // Membership may change inside a listener. A newly added consumer starts
     // on the next presentation, and a removed consumer receives no late frame.
     for (const consumer of [...entry.consumers]) {

@@ -34,7 +34,7 @@ export class NativeOfficeHost implements NativeOfficeDriver {
   private watchers = new Map<BrowserWindow,()=>void>();
   private timer: ReturnType<typeof setInterval>;
   get exited() { return this.workerExited; }
-  constructor(private core: ViewerCore, appRoot: string, dataDir: string, private windowFor: (viewId: string) => BrowserWindow | undefined, appearance?: NativeOfficeAppearance) {
+  constructor(private core: ViewerCore, appRoot: string, dataDir: string, private windowFor: (viewId: string) => BrowserWindow | undefined, appearance?: NativeOfficeAppearance, private windowById?: (id:string)=>BrowserWindow|undefined) {
     this.runtime = new NativeOfficeRuntime({ appRoot, dataDir, appearance });
     this.runtime.on('surface', (event: any) => {
       const viewId = event.viewId ?? event.state?.viewId, entry = this.views.get(viewId), owner = entry?.layout?.owner;
@@ -146,9 +146,9 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     if (result.changed && result.ticket) this.withdrawDisplay(result.ticket);
     return { viewId, leaseId, generation: result.ticket?.generation ?? this.displays.current(viewId)?.generation ?? 0, active: false };
   }
-  private layoutFor(viewId: string): Layout {
+  private layoutFor(viewId: string, openingOwner?: BrowserWindow): Layout {
     const found = this.layouts.get(viewId); if (found) return found;
-    const owner = this.windowFor(viewId); if (!owner || owner.isDestroyed()) throw new Error('原生文档所属窗口不可用。');
+    const owner = openingOwner ?? this.windowFor(viewId); if (!owner || owner.isDestroyed()) throw new Error('原生文档所属窗口不可用。');
     const box = owner.getContentBounds(); return { owner, bounds: { x: 80, y: 64, width: Math.max(300, box.width - 160), height: Math.max(240, box.height - 80) }, visible: false };
   }
   /** Reuses only derived strings, never acceptance, Core validation, or native state. */
@@ -203,10 +203,25 @@ export class NativeOfficeHost implements NativeOfficeDriver {
     return state;
   }
   async setAppearance(appearance: NativeOfficeAppearance) { this.observationKeys.clear(); await this.runtime.setAppearance(appearance); await this.poll(); }
-  async open(request: {documentId:string;viewId:string;format:NativeOfficeFormat;bytes:Uint8Array;revision:number}) {
-    const sessionId = this.documents.get(request.documentId) ?? randomUUID(), layout = this.layoutFor(request.viewId);
+  openForDisplay({windowId,...request}: Parameters<NonNullable<NativeOfficeDriver['openForDisplay']>>[0]) {
+    const owner = this.windowById?.(windowId);
+    if (!owner || owner.isDestroyed()) throw new Error('原生文档所属窗口不可用。');
+    return this.openOrAttach(request, owner);
+  }
+  prepare() { return this.runtime.warmup(); }
+  convertLegacy(path: string, extension: 'doc' | 'xls' | 'ppt') { return this.runtime.convertLegacy(path, extension); }
+  attachView(request: {documentId:string;viewId:string;sessionId:string;format:NativeOfficeFormat;revision:number}) {
+    return this.openOrAttach(request);
+  }
+  open(request: {documentId:string;viewId:string;format:NativeOfficeFormat;bytes:Uint8Array;revision:number}) {
+    return this.openOrAttach(request);
+  }
+  private async openOrAttach(request: {documentId:string;viewId:string;format:NativeOfficeFormat;revision:number} & ({bytes:Uint8Array} | {sessionId:string}), openingOwner?:BrowserWindow) {
+    const sessionId = 'sessionId' in request ? request.sessionId : this.documents.get(request.documentId) ?? randomUUID();
+    const layout = this.layoutFor(request.viewId, openingOwner);
     // A slow import must never flash above a tab the user has already left.
-    const state = await this.runtime.open({ ...request, sessionId, ownerHwnd: this.hwnd(layout.owner), ownerViewport: this.ownerViewport(layout.owner), bounds: layout.bounds, visible: false });
+    const binding = { ...request, sessionId, ownerHwnd: this.hwnd(layout.owner), ownerViewport: this.ownerViewport(layout.owner), bounds: layout.bounds, visible: false };
+    const state = 'bytes' in request ? await this.runtime.open({ ...binding, bytes: request.bytes }) : await this.runtime.attachView(binding);
     const currentLayout = this.layouts.get(request.viewId) ?? { ...layout, visible: false };
     this.documents.set(request.documentId, sessionId); this.views.set(request.viewId, { sessionId, state, layout: currentLayout });
     return state;

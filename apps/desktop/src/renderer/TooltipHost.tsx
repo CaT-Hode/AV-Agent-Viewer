@@ -1,3 +1,4 @@
+import { readTabSlide } from './lib/tab-preview';
 import { MotionPresence } from './components/MotionPresence';
 import { LiquidGlassSurface } from './components/LiquidGlassSurface';
 import { motionDuration, motionSnapshot } from './lib/motion';
@@ -7,7 +8,7 @@ import { call } from './lib/transport';
 import { floatingOwnerGroup } from './lib/floating-hitboxes';
 import './tooltip.css';
 
-type Tip = TooltipPlacement & { text: string; target: HTMLElement; sequence: number; ready: boolean };
+type Tip = TooltipPlacement & { detail?:string; image?:string; text: string; target: HTMLElement; sequence: number; ready: boolean };
 type NativeLayout = { ticket: number; offsetY: number; viewId?: unknown; placement?: TooltipPlacement };
 const native = location.hash.includes('-toolbar') && !location.hash.includes('ai-result-toolbar');
 let nativeOffsetY = 0;
@@ -46,8 +47,9 @@ export function TooltipHost() {
       hide(!continuing); if (!next || !(next.getAttribute('title') || next.getAttribute('aria-label'))?.trim()) return;
       target = next; pointer=point(event);titleBefore=next.getAttribute('title'); describedBefore=next.getAttribute('aria-describedby'); original = next.getAttribute('title') || next.getAttribute('aria-label') || ''; if (!next.hasAttribute('aria-label') && !next.textContent?.trim()) next.setAttribute('aria-label', original); next.setAttribute('title','');
       const current=sequence.current;
-      const reveal = () => { if (!target?.isConnected || sequence.current!==current) return; warmGroup = nextGroup; target.setAttribute('aria-describedby', [describedBefore,'app-tooltip'].filter(Boolean).join(' ')); setTip({ text: original, target, sequence:current, ready:false, x:0, y:0, above:false }); };
-      if (immediate) reveal(); else timer = setTimeout(reveal, 420);
+      const reveal = () => { if (!target?.isConnected || sequence.current!==current) return; warmGroup = nextGroup; target.setAttribute('aria-describedby', [describedBefore,'app-tooltip'].filter(Boolean).join(' ')); setTip({ text: original, detail:target.dataset.tabDetail, image:readTabSlide(target.dataset.tabSlide), target, sequence:current, ready:false, x:0, y:0, above:false }); };
+      if (event.type === 'focusin' || immediate && !next.dataset.tabDetail) reveal();
+      else timer = setTimeout(reveal, next.dataset.tabDetail ? 600 : 420);
     };
     const leave = (event: Event) => { if(relocation(event))return;const related=(event as MouseEvent).relatedTarget,continuing=related instanceof Node&&!!warmGroup?.contains(related);if(!continuing)warmGroup=null;if(target&&(!(related instanceof Node)||!target.contains(related))||!continuing&&nativeOpen.current)hide(!continuing); };
     const dismiss = () => { warmGroup=null;hide(); };
@@ -67,5 +69,5 @@ export function TooltipHost() {
     nativeOpen.current=true;
     void call<NativeLayout>('toolbar-tooltip',{open:true,anchor:rect,size:measured}).then(async layout=>{if(sequence.current!==current||!tip.target.isConnected||!layout.placement)return;await commitNativeLayout(layout);if(sequence.current===current)setTip(previous=>previous?.sequence===current?{...previous,...layout.placement!,ready:true}:previous);}).catch(()=>{if(sequence.current===current)setTip(undefined);});
   },[tip?.sequence,tip?.ready]);
-  return <MotionPresence show={!!tip} surface="tooltip" duration={160}>{tip && <div ref={bubble} id="app-tooltip" role="tooltip" className={'app-tooltip material-host ' + (tip.above ? 'above' : '')} data-floating-owner={floatingOwnerGroup(tip.target)} data-tooltip-ready={tip.ready} style={{ left: tip.x, top: tip.y, maxWidth:Math.max(24,Math.min(280,innerWidth-12)),visibility:tip.ready?'visible':'hidden' } as CSSProperties}><LiquidGlassSurface variant="tooltip" effect="frosted" /><span className="app-tooltip-content">{tip.text}</span></div>}</MotionPresence>;
+  return <MotionPresence show={!!tip} surface="tooltip" duration={160}>{tip && <div ref={bubble} id="app-tooltip" role="tooltip" className={'app-tooltip material-host ' + (tip.above ? 'above' : '')} data-floating-owner={floatingOwnerGroup(tip.target)} data-tooltip-ready={tip.ready} style={{ left: tip.x, top: tip.y, maxWidth:Math.max(24,Math.min(280,innerWidth-12)),visibility:tip.ready?'visible':'hidden' } as CSSProperties}><LiquidGlassSurface variant="tooltip" effect="frosted" /><span className="app-tooltip-content">{tip.image && <img className="tab-preview-image" src={tip.image} alt=""/>}{tip.text}{tip.detail && <small className="tab-preview-location">{tip.detail}</small>}</span></div>}</MotionPresence>;
 }

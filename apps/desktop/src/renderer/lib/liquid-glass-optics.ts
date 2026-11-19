@@ -1,5 +1,5 @@
 import { glassOpticsKey, type GlassOptics, type GlassOpticsBlobs, type GlassOpticsOptions, type GlassWorkerResponse } from './liquid-glass-optics-model';
-export { glassOpticsKey, glassGeometryStyleSignature, readGlassRadii, normalizeGlassRadii, glassRoundedPath, glassBoundary, glassBevelDisplacement } from './liquid-glass-optics-model';
+export { glassOpticsKey, glassGeometryStyleSignature, readGlassRadii, normalizeGlassRadii, glassBoundary, glassBevelDisplacement } from './liquid-glass-optics-model';
 export type { GlassProfile, GlassRadius, GlassRadii, GlassGeometry, GlassOpticsOptions, GlassOptics } from './liquid-glass-optics-model';
 
 export const GLASS_OPTICS_CACHE_LIMITS = { entries: 64, decodedBytes: 64 * 1024 * 1024, encodedBytes: 8 * 1024 * 1024, pending: 12 } as const;
@@ -58,7 +58,7 @@ function engine() {
       const result = data.result;
       if (result && job.consumers.size) {
         const blobs = result.optics;
-        const encodedBytes = blobs.map.size + blobs.highlight.size + (blobs.centerMap?.size ?? 0) + (blobs.ring.length + blobs.centerClip.length) * 2;
+        const encodedBytes = blobs.map.size + blobs.highlight.size + (blobs.centerMap?.size ?? 0);
         if (makeRoom(job.decodedBytes, encodedBytes, 1)) {
           const asset = { optics: materialize(blobs), decodedBytes: job.decodedBytes, encodedBytes, references: 0 };
           cache.set(job.key, asset); counters.decodedBytes += asset.decodedBytes; counters.encodedBytes += encodedBytes;

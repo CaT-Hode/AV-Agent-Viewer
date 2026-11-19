@@ -1,7 +1,7 @@
 import { ViewerError } from '../../contracts/src/index';
 import type { NativeOfficeDriver } from '../../contracts/src/native-office';
 
-const methods = new Set(['open','state','snapshot','commands','commandStatus','query','inspect','execute','undo','navigate','exportCopy','ackSaved','close','detachView','input','captureNative','zoom','authoringQuery','authoringExecute']);
+const methods = new Set(['open','openForDisplay','attachView','convertLegacy','prepare','state','snapshot','commands','commandStatus','query','inspect','execute','undo','navigate','exportCopy','ackSaved','close','detachView','input','captureNative','zoom','authoringQuery','authoringExecute']);
 /** Only documented errors from a registered native driver cross the public error boundary. */
 const nativeCodes = new Set([
   'BACKGROUND_EDIT_UNSUPPORTED','NATIVE_READBACK_FAILED',

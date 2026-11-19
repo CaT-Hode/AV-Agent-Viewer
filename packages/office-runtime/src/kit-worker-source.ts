@@ -819,6 +819,26 @@ def warmup_step(args):
             buffer=(C.c_ubyte*(256*256*4))();doc_call(warmup_document,'setClientZoom',None,I,I,I,I)(256,256,3840,3840);doc_call(warmup_document,'paintTile',None,P,I,I,I,I,I,I)(buffer,256,256,0,0,3840,3840);warmup_document['stage']='paint'
         else:fail('INVALID_OFFICE_WARMUP','Office 预热阶段顺序无效。')
     return {'completed':True}
+def convert_legacy(args):
+    extension=args['extension']
+    format,filter_name={'doc':('docx','Office Open XML Text'),'xls':('xlsx','Calc MS Excel 2007 XML'),'ppt':('pptx','Impress MS PowerPoint 2007 XML')}[extension]
+    identifier=str(uuid.UUID(args['id']))
+    source=ROOT/(identifier+'.'+extension);output=ROOT/(identifier+'.'+format)
+    if source.stat().st_size>100*1024*1024:fail('NATIVE_DOCUMENT_LIMIT','旧格式文件过大。')
+    doc=None
+    try:
+        doc=desktop.loadComponentFromURL(source.as_uri(),'_blank',0,props({'Hidden':True,'ReadOnly':True,'AsTemplate':True,'MacroExecutionMode':uno.Any('short',0),'UpdateDocMode':uno.Any('short',0),'InteractionHandler':SafeImportInteraction()}))
+        if not doc:fail('NATIVE_OPEN_FAILED','无法导入旧格式文档。')
+        doc.storeToURL(output.as_uri(),props({'FilterName':filter_name,'Overwrite':False}))
+        if not 0<output.stat().st_size<=100*1024*1024:fail('NATIVE_DOCUMENT_LIMIT','旧格式转换结果大小无效。')
+        with zipfile.ZipFile(output) as package:package.getinfo({'doc':'word/document.xml','xls':'xl/workbook.xml','ppt':'ppt/presentation.xml'}[extension])
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+    finally:
+        if doc:doc.close(True)
+        source.unlink(missing_ok=True)
+    return True
 def open_session(args):
     close_warmup_document()
     existing=next((s for s in sessions.values() if s['documentId']==args['documentId']),None)
@@ -831,9 +851,10 @@ def open_session(args):
         view=attach_kit_view(existing,new[0],args,identifier);return view
     format=args['format']
     if format not in ['docx','xlsx','pptx']:fail('NATIVE_FORMAT_UNSUPPORTED','Office 文档格式不受支持。')
-    decode_started=time.monotonic();data=base64.b64decode(args['bytes'],validate=True);open_trace(args,'decode-bytes',decode_started)
-    if len(data)>100*1024*1024:fail('NATIVE_DOCUMENT_LIMIT','Office 文档内容过大。')
-    write_started=time.monotonic();path=ROOT/(str(uuid.uuid4())+'.'+format);path.write_bytes(data);open_trace(args,'write-managed-file',write_started)
+    if not args.get('fileId'):fail('NATIVE_SESSION_NOT_FOUND','附加视图的原生模型已经关闭。')
+    path=ROOT/(str(uuid.UUID(args['fileId']))+'.'+format)
+    if path.stat().st_size>100*1024*1024:fail('NATIVE_DOCUMENT_LIMIT','Office 文档内容过大。')
+    data=path.read_bytes()
     load_started=time.monotonic();pointer=office_call('documentLoadWithOptions',P,S,S)(path.as_uri().encode(),b'MacroSecurityLevel=3,EnableMacrosExecution=false');open_trace(args,'load-document',load_started)
     if not pointer:fail('NATIVE_OPEN_FAILED','Office 内置引擎未打开文档。')
     provisional={'kit':pointer};expected_type={'docx':0,'xlsx':1,'pptx':2}[format]
@@ -868,6 +889,8 @@ def close_session(session,discard=False):
     # The model has synchronously disposed its controllers/listeners. Global
     # callback roots must no longer retain their source bytes and receipt trees.
     for view in session['views'].values():view['disposed']=True;release_kit_callback(view)
+    try:session['path'].unlink(missing_ok=True)
+    except OSError:emit({'type':'diagnostic','code':'OFFICE_MANAGED_FILE_RETAINED'})
 def detach_kit_view(session,view):
     require_kit_session_available(session)
     if len(session['views'])==1:fail('NATIVE_LAST_VIEW','请通过文档会话关闭最后一个视图。')
@@ -1148,7 +1171,8 @@ def handle_request(request):
         for session in sessions.values():
             for view in session['views'].values():invalidate(session,view)
         return result
-    if method=='open':
+    if method=='convertLegacy':return convert_legacy(args)
+    if method in ('open','attachView'):
         args['_openRequestId']=identifier;open_trace(args,'worker-queue',request.get('_queuedAt'))
         open_session(args);yield
         state_started=time.monotonic();result=state(sessions[args['sessionId']],sessions[args['sessionId']]['views'][args['viewId']]);open_trace(args,'initial-state',state_started);return result

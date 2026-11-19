@@ -5,7 +5,7 @@ export type GlassRadius = { x: number; y: number };
 export type GlassRadii = { topLeft: GlassRadius; topRight: GlassRadius; bottomRight: GlassRadius; bottomLeft: GlassRadius };
 export type GlassGeometry = { width: number; height: number; radii: GlassRadii };
 export type GlassOpticsOptions = GlassGeometry & { density: number; bezelWidth: number; glassThickness?: number; refractiveIndex?: number; strength: number; profile: GlassProfile; concave: boolean; overscan: number };
-export type GlassOptics = { width: number; height: number; overscan: number; edgeScale: number; centerScale: number; maximumDisplacement: number; map: string; centerMap?: string; ring: string; highlight: string; centerClip: string };
+export type GlassOptics = { width: number; height: number; overscan: number; edgeScale: number; centerScale: number; maximumDisplacement: number; map: string; centerMap?: string; highlight: string };
 
 
 export type GlassOpticsBlobs = Omit<GlassOptics, 'map' | 'highlight' | 'centerMap'> & { map: Blob; highlight: Blob; centerMap?: Blob };
@@ -25,7 +25,7 @@ export function glassOpticsKey(options: GlassOpticsOptions) {
  * Keep unknown custom properties because CSS may use them in size/radius. */
 export function glassGeometryStyleSignature(style: CSSStyleDeclaration) {
   const cosmetic = new Set(['transform', 'scale', 'translate', 'rotate', 'opacity', 'will-change', 'box-shadow', 'background-color', 'transition']);
-  return Array.from(style).filter(name => !cosmetic.has(name) && !name.startsWith('--glass-elastic-') && !name.startsWith('--glass-material-')).sort().map(name => `${name}:${style.getPropertyValue(name)}!${style.getPropertyPriority(name)}`).join(';');
+  return Array.from(style).filter(name => !cosmetic.has(name) && !['--glass-elastic-','--glass-material-','--translation-stretch-','--liquid-glass-optics-','--liquid-glass-capsule-','--liquid-glass-source-'].some(prefix=>name.startsWith(prefix))).sort().map(name => `${name}:${style.getPropertyValue(name)}!${style.getPropertyPriority(name)}`).join(';');
 }
 
 /** Match the host's used corner geometry, including percentages and ellipses. */
@@ -41,15 +41,6 @@ export function normalizeGlassRadii(radii: GlassRadii, width: number, height: nu
   const factor = Math.min(1, width / Math.max(1, tl.x + tr.x), width / Math.max(1, bl.x + br.x), height / Math.max(1, tl.y + bl.y), height / Math.max(1, tr.y + br.y));
   return Object.fromEntries(Object.entries(radii).map(([key, radius]) => [key, { x: radius.x * factor, y: radius.y * factor }])) as GlassRadii;
 }
-function insetRadii(radii: GlassRadii, inset: number, width: number, height: number): GlassRadii {
-  return normalizeGlassRadii(Object.fromEntries(Object.entries(radii).map(([key, radius]) => [key, { x: Math.max(0, radius.x - inset), y: Math.max(0, radius.y - inset) }])) as GlassRadii, width, height);
-}
-export function glassRoundedPath(x: number, y: number, width: number, height: number, radii: GlassRadii): string {
-  const { topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl } = radii;
-  const arc = (radius: GlassRadius, endX: number, endY: number) => radius.x && radius.y ? `A${radius.x},${radius.y} 0 0 1 ${endX},${endY}` : `L${endX},${endY}`;
-  return `M${x + tl.x},${y}H${x + width - tr.x}${arc(tr, x + width, y + tr.y)}V${y + height - br.y}${arc(br, x + width - br.x, y + height)}H${x + bl.x}${arc(bl, x, y + height - bl.y)}V${y + tl.y}${arc(tl, x + tl.x, y)}Z`;
-}
-
 /** Continuous edge normals: straight sides meet circular/elliptical corners
  * tangentially. Ellipse distance is a near-surface SDF approximation. */
 export function glassBoundary(x: number, y: number, geometry: GlassGeometry) {
@@ -121,7 +112,8 @@ export async function buildGlassOptics(options: GlassOpticsOptions, cancelled: (
       const { depth, nx, ny } = glassBoundary(x, y, options);
       let displacementX = 0, displacementY = 0;
       if (depth > 0 && depth < bezelWidth) {
-        const magnitude = radial[Math.min(127, Math.floor(depth / bezelWidth * 128))];
+        const position = depth / bezelWidth * radial.length, index = Math.floor(position);
+        const magnitude = radial[index] + ((radial[index + 1] ?? 0) - radial[index]) * (position - index);
         displacementX = -nx * magnitude;
         displacementY = -ny * magnitude;
       }
@@ -143,13 +135,7 @@ export async function buildGlassOptics(options: GlassOpticsOptions, cancelled: (
   if (cancelled()) return;
   let centerMap: Blob | undefined; if (center) { context.putImageData(center, 0, 0); centerMap = await canvas.convertToBlob({type: 'image/png'}); }
   if (cancelled()) return;
-  const innerWidth = Math.max(0, width - bezelWidth * 2), innerHeight = Math.max(0, height - bezelWidth * 2);
-  const innerRadii = insetRadii(radii, bezelWidth, innerWidth, innerHeight);
-  const outerPath = glassRoundedPath(overscan, overscan, width, height, radii);
-  const innerPath = innerWidth && innerHeight ? glassRoundedPath(overscan + bezelWidth, overscan + bezelWidth, innerWidth, innerHeight, innerRadii) : '';
-  const ringSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="${totalHeight}" viewBox="0 0 ${totalWidth} ${totalHeight}"><path fill="white" fill-rule="evenodd" d="${outerPath}${innerPath}"/></svg>`;
-  const { topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl } = innerRadii;
-  const optics: GlassOpticsBlobs = { width, height, overscan, edgeScale, centerScale, maximumDisplacement, map, centerMap, highlight, ring: `url("data:image/svg+xml,${encodeURIComponent(ringSvg)}")`, centerClip: `inset(${overscan + bezelWidth}px round ${tl.x}px ${tr.x}px ${br.x}px ${bl.x}px / ${tl.y}px ${tr.y}px ${br.y}px ${bl.y}px)` };
+  const optics: GlassOpticsBlobs = { width, height, overscan, edgeScale, centerScale, maximumDisplacement, map, centerMap, highlight };
   const pixels = canvas.width * canvas.height;
   canvas.width = canvas.height = 0;
   return { optics, pixels, pngEncodes: center ? 3 : 2 };

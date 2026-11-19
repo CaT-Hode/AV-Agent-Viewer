@@ -89,10 +89,6 @@
   -webkit-backdrop-filter: var(--navigation-refraction-filter);
   backdrop-filter: var(--navigation-refraction-filter);
   filter: none;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
 }
 .floating-capsule.navigation-capsule .navigation-glass[data-source="sampled"] .navigation-glass-center {
   -webkit-backdrop-filter: none;

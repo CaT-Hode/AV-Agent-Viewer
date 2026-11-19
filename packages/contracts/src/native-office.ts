@@ -75,6 +75,10 @@ export interface NativeOfficeCapture { mimeType: 'image/png'; data: string; widt
 export interface NativeOfficeDriver {
   authoringQuery?(sessionId: string, viewId: string, target: import('../../office-runtime/src/authoring').OfficeAuthoringQuery): Promise<{state: NativeOfficeState; data: unknown}>;
   authoringExecute?(request: import('../../office-runtime/src/authoring').OfficeAuthoringExecuteRequest): Promise<import('../../office-runtime/src/authoring').OfficeAuthoringReadback>;
+  prepare?(): Promise<void>;
+  openForDisplay?(request: {documentId:string; viewId:string; windowId:string; format:NativeOfficeFormat; bytes:Uint8Array; revision:number}): Promise<NativeOfficeState>;
+  convertLegacy?(path: string, extension: 'doc' | 'xls' | 'ppt'): Promise<{format: NativeOfficeFormat; bytes: Uint8Array; warnings: string[]}>;
+  attachView?(request: { documentId: string; viewId: string; sessionId: string; format: NativeOfficeFormat; revision: number }): Promise<NativeOfficeState>;
   open(request: { documentId: string; viewId: string; format: NativeOfficeFormat; bytes: Uint8Array; revision: number; sourcePath?: string }): Promise<NativeOfficeState>;
   state(sessionId: string, viewId?: string): Promise<NativeOfficeState>;
   snapshot(sessionId: string, reuse?: NativeOfficeSnapshotReuse): Promise<NativeOfficeSnapshot>;

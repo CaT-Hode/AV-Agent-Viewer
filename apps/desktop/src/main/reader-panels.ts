@@ -8,7 +8,7 @@ import { readerPanelDestination, validReaderPanelRect } from './reader-panel-pol
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Side = 'left' | 'right' | 'translation';
-type Entry = { owner: BrowserWindow; side: Side; popup: BrowserWindow; boundViewId: string; viewId?: string; bounds?: Rect; visible: boolean; ready: boolean; source?: string; unsubscribe?: () => void; frameSource?: WebContents; sampling: boolean; pending: boolean; timer?: ReturnType<typeof setTimeout>; sampledAt: number; signature?: string; pixels?: string; image?: string; rect?: Rect; generation: number };
+type Entry = { owner: BrowserWindow; side: Side; popup: BrowserWindow; boundViewId: string; viewId?: string; bounds?: Rect; windowBounds?: string; visible: boolean; ready: boolean; source?: string; unsubscribe?: () => void; frameSource?: WebContents; sampling: boolean; pending: boolean; timer?: ReturnType<typeof setTimeout>; sampledAt: number; signature?: string; pixels?: string; image?: string; rect?: Rect; sample?: { identity: string; sequence?: number; capture: Rect }; generation: number };
 const GUTTER = 12, FROST_FRAME_MS = 180;
 const intersection = (a: Rect, b: Rect): Rect | undefined => { const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y), right = Math.min(a.x + a.width, b.x + b.width), bottom = Math.min(a.y + a.height, b.y + b.height); return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : undefined; };
 
@@ -73,7 +73,7 @@ export class ReaderPanelHost {
       // Reuse the last source pixels in document coordinates while a drag is
       // sampled. They must not appear glued to the moving native window.
       if (entry.side === 'translation' && entry.bounds && bounds && entry.rect) { entry.rect = { ...entry.rect, x: entry.rect.x+entry.bounds.x-bounds.x, y: entry.rect.y+entry.bounds.y-bounds.y }; this.send(entry); }
-      entry.generation++; entry.signature = undefined; entry.pixels = undefined;
+      entry.generation++; entry.signature = undefined;
     }
     entry.viewId = layout?.viewId; entry.bounds = entry.boundViewId === layout?.viewId ? bounds : undefined;
     this.sync(entry);
@@ -81,7 +81,8 @@ export class ReaderPanelHost {
   private position(entry: Entry) {
     if (entry.owner.isDestroyed() || entry.popup.isDestroyed() || !entry.bounds) return;
     const owner = entry.owner.getContentBounds(), b = entry.bounds, gutter = entry.side === 'translation' ? TRANSLATION_CAPSULE_METRICS.shadowGutter : GUTTER;
-    entry.popup.setBounds({ x: owner.x + Math.round(b.x) - gutter, y: owner.y + Math.round(b.y) - gutter, width: Math.ceil(b.width) + 2 * gutter, height: Math.ceil(b.height) + 2 * gutter });
+    const bounds = { x: owner.x + Math.round(b.x) - gutter, y: owner.y + Math.round(b.y) - gutter, width: Math.ceil(b.width) + 2 * gutter, height: Math.ceil(b.height) + 2 * gutter }, key = JSON.stringify(bounds);
+    if (key !== entry.windowBounds) { entry.windowBounds = key; entry.popup.setBounds(bounds); }
   }
   private documentSource(entry: Entry) {
     const candidate = entry.viewId ? this.web(entry.viewId) : undefined;
@@ -97,7 +98,7 @@ export class ReaderPanelHost {
     const source = web.navigationId;
     this.position(entry);
     if (entry.source !== source) {
-      this.hide(entry); entry.source = source; entry.generation++; entry.signature = undefined; entry.image = undefined; entry.rect = undefined; entry.pixels = undefined; this.send(entry);
+      this.hide(entry); entry.source = source; entry.generation++; entry.signature = undefined; entry.image = undefined; entry.rect = undefined; entry.pixels = undefined; entry.sample = undefined; this.send(entry);
     }
     if (!entry.visible || !entry.popup.isVisible()) { entry.popup.showInactive(); this.raised(entry.owner); }
     entry.visible = true;
@@ -109,7 +110,7 @@ export class ReaderPanelHost {
     this.sample(entry);
   }
   private hide(entry: Entry) {
-    entry.visible = false; entry.generation++; clearTimeout(entry.timer); entry.timer = undefined; entry.unsubscribe?.(); entry.unsubscribe = undefined; entry.frameSource = undefined; entry.pending = false;
+    entry.visible = false; entry.generation++; clearTimeout(entry.timer); entry.timer = undefined; entry.unsubscribe?.(); entry.unsubscribe = undefined; entry.frameSource = undefined; entry.pending = false; entry.sample = undefined;
     if (!entry.popup.isDestroyed()) entry.popup.hide();
   }
   private send(entry: Entry) {
@@ -118,7 +119,7 @@ export class ReaderPanelHost {
   private sample(entry: Entry, force = false) {
     if (!this.frostEnabled() || !entry.visible || !entry.viewId || !entry.bounds || entry.owner.isDestroyed() || entry.popup.isDestroyed()) return;
     if (entry.sampling) { entry.pending = true; return; }
-    const delay = FROST_FRAME_MS - (Date.now() - entry.sampledAt);
+    const delay = entry.side === 'translation' ? 0 : FROST_FRAME_MS - (Date.now() - entry.sampledAt);
     if (delay > 0) { if (!entry.timer) entry.timer = setTimeout(() => { entry.timer = undefined; this.sample(entry, true); }, delay); return; }
     const web = this.documentSource(entry); if (!web) return;
     const sourceBounds = web.view.getBounds(), panel = entry.bounds, gutter = entry.side === 'translation' ? TRANSLATION_CAPSULE_METRICS.shadowGutter : GUTTER;
@@ -128,22 +129,44 @@ export class ReaderPanelHost {
     const local = { x: area.x - sourceBounds.x, y: area.y - sourceBounds.y, width: area.width, height: area.height };
     const density = screen.getDisplayMatching(entry.owner.getBounds()).scaleFactor;
     const capture = alignFrameCapture(local, sourceBounds, density) ?? { x: Math.floor(local.x), y: Math.floor(local.y), width: Math.ceil(local.width), height: Math.ceil(local.height) };
-    const signature = JSON.stringify([web.navigationId, web.layoutRevision, web.revision, web.scrollX, web.scrollY, slot, capture]);
+    const latest = nativeBackdropFrames.peek(web.view.webContents.id);
+    const zoom=web.view.webContents.getZoomFactor();
+    const identity = JSON.stringify([web.view.webContents.id,web.navigationId,web.layoutRevision,web.revision,web.scrollX,web.scrollY,sourceBounds,density,zoom]);
+    const signature = JSON.stringify([identity, slot, capture]);
     if (!force && entry.signature === signature) return;
+    // The translation's source image already includes 84px of overscan. Its
+    // 8px blur/refraction needs 44px; moving inside that coverage only changes
+    // the image origin, not its pixels or encoding.
+    const required = intersection({x:slot.x-44,y:slot.y-44,width:slot.width+88,height:slot.height+88},sourceBounds), previous = entry.sample;
+    if (entry.side === 'translation' && latest && previous?.sequence === latest.sequence && previous.identity === identity && required && entry.image) {
+      const absolute = { ...previous.capture, x: sourceBounds.x+previous.capture.x, y: sourceBounds.y+previous.capture.y };
+      if (absolute.x <= required.x && absolute.y <= required.y && absolute.x+absolute.width >= required.x+required.width && absolute.y+absolute.height >= required.y+required.height) {
+        entry.signature = signature; return;
+      }
+    }
     const generation = entry.generation;
     entry.sampling = true; entry.pending = false; entry.sampledAt = Date.now();
-    const latest = nativeBackdropFrames.peek(web.view.webContents.id), crop = physicalFrameCrop(capture, density);
+    const crop = physicalFrameCrop(capture, density);
     const frameSize = latest?.image.getSize();
-    const image: Promise<{ image: NativeImage; rect: Rect }> = latest && crop && frameSize && crop.x + crop.width <= frameSize.width && crop.y + crop.height <= frameSize.height ? Promise.resolve({ image: latest.image.crop(crop), rect: capture }) : web.view.webContents.capturePage(capture).then(image => ({ image, rect: capture }));
+    const image: Promise<{ image: NativeImage; rect: Rect; sequence?: number }> = latest && crop && frameSize && crop.x + crop.width <= frameSize.width && crop.y + crop.height <= frameSize.height ? Promise.resolve({ image: latest.image.crop(crop), rect: capture, sequence: latest.sequence }) : web.view.webContents.capturePage(capture).then(image => ({ image, rect: capture }));
     void image.then(value => {
       if (!entry.visible || generation !== entry.generation || entry.popup.isDestroyed()) return;
-      // Refraction needs CSS-pixel detail. Tall frosted sidebars use half-DIP.
-      const ratio = entry.side === 'translation' ? 1 : .5;
+      const live=this.documentSource(entry);
+      if (!live || live.view!==web.view || live.navigationId!==web.navigationId || live.layoutRevision!==web.layoutRevision ||
+          live.revision!==web.revision || live.scrollX!==web.scrollX || live.scrollY!==web.scrollY ||
+          live.view.webContents.getZoomFactor()!==zoom || screen.getDisplayMatching(entry.owner.getBounds()).scaleFactor!==density) {
+        entry.pending=true;return;
+      }
+      // The eight-pixel translation blur removes sub-DIP detail. Backgrounds
+      // use half-DIP sampling while foreground text stays at native density.
+      const ratio = .5;
       const reduced = value.image.resize({ width: Math.max(1, Math.ceil(value.rect.width * ratio)), height: Math.max(1, Math.ceil(value.rect.height * ratio)), quality: 'good' });
-      const hash = createHash('sha256').update(reduced.toBitmap()).digest('hex');
+      const reducedSize=reduced.getSize(), hash = createHash('sha256').update(`${reducedSize.width}:${reducedSize.height}:`).update(reduced.toBitmap()).digest('hex');
       entry.signature = signature;
-      if (hash === entry.pixels && entry.image) return;
-      entry.pixels = hash; entry.image = reduced.toDataURL(); entry.rect = { x: sourceBounds.x + value.rect.x - slot.x - gutter, y: sourceBounds.y + value.rect.y - slot.y - gutter, width: value.rect.width, height: value.rect.height }; this.send(entry);
+      entry.sample={identity,sequence:value.sequence,capture:value.rect};
+      const rect = { x: sourceBounds.x + value.rect.x - slot.x - gutter, y: sourceBounds.y + value.rect.y - slot.y - gutter, width: value.rect.width, height: value.rect.height },sameRect=JSON.stringify(rect)===JSON.stringify(entry.rect);
+      if (hash === entry.pixels && entry.image) { if(!sameRect){entry.rect=rect;this.send(entry);} return; }
+      entry.pixels = hash; entry.image = reduced.toDataURL(); entry.rect = rect; this.send(entry);
     }).catch(() => {}).finally(() => { entry.sampling = false; if (entry.pending) this.sample(entry, true); });
   }
 }

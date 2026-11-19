@@ -1,5 +1,5 @@
 import type { Rect } from '../../../../../packages/contracts/src/index';
-export const TRANSLATION_CAPSULE_METRICS = { width:340,height:118,maxWidth:560,maxHeight:420,horizontalInset:112,verticalInset:66,growthRatio:1,shadowGutter:24 } as const;
+export const TRANSLATION_CAPSULE_METRICS = { width:460,height:118,maxWidth:800,maxHeight:420,horizontalInset:112,verticalInset:66,growthRatio:1,shadowGutter:24,blur:8 } as const;
 
 /** Cache font measurements once per result. Fitting reuses widths and never
  * copies/parses the document or measures the DOM at intermediate spring sizes. */
@@ -38,10 +38,11 @@ export function fitTranslationCapsule(viewport:Rect,textHeight:(width:number)=>n
 }
 
 /** The translation owns the bottom-center lane, below the Agent capsule. */
-export function placeTranslationPopover(viewport: Rect, size: { width: number; height: number }) {
+export function placeTranslationPopover(viewport: Rect, size: { width: number; height: number }, centerX?: number) {
   if (![viewport.x, viewport.y, viewport.width, viewport.height, size.width, size.height].every(Number.isFinite) || size.width <= 0 || size.height <= 0 || viewport.width < 100 || viewport.height < 100) return;
   const inset = 12, width = Math.min(size.width, viewport.width - inset * 2), maxHeight = Math.min(TRANSLATION_CAPSULE_METRICS.maxHeight,viewport.height * .52), height = Math.min(size.height,maxHeight);
-  return { x: viewport.x+(viewport.width-width)/2, y: viewport.y+viewport.height-height-18, width,height,maxHeight,edge:'bottom' as const };
+  const center = Number.isFinite(centerX) ? centerX! : viewport.x+viewport.width/2;
+  return { x: Math.max(viewport.x+inset,Math.min(viewport.x+viewport.width-inset-width,center-width/2)), y: viewport.y+viewport.height-height-18, width,height,maxHeight,edge:'bottom' as const };
 }
 export function translationDragShape(x: number, y: number) {
   const pull = Math.min(.075, Math.hypot(x, y) / 1800), vertical = Math.abs(y) >= Math.abs(x);

@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 import type { Writable } from 'node:stream';
@@ -245,7 +245,7 @@ export class NativeOfficeRuntime extends EventEmitter {
     if (!this.rpc || this.kitTransport === 'failed') throw new NativeOfficeError('NATIVE_CONNECTION_LOST', '内嵌 Office 连接已中断。');
     if (mutation && this.uncertain) throw new NativeOfficeError('NATIVE_OUTCOME_UNKNOWN', '上一原生操作尚未确认，请保留恢复内容并重新读取。');
     const id = requestId ?? randomUUID();
-    if (method === 'open') this.recordOpenStage(String(args.sessionId), String(args.viewId), 'runtime-ready', performance.now() - requested);
+    if (method === 'open' || method === 'attachView') this.recordOpenStage(String(args.sessionId), String(args.viewId), 'runtime-ready', performance.now() - requested);
     const metrics = this.timings[method] ??= { count: 0, completed: 0, totalMs: 0, maximumMs: 0 }, started = requested; metrics.count++;
     return new Promise<T>((resolveResult, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); this.retirePixelRequest(id, method); if (mutation) this.uncertain = true; reject(new NativeOfficeError('NATIVE_REQUEST_TIMEOUT', '原生操作超时；不会自动重复执行修改。')); }, this.options.requestTimeoutMs ?? 120000);
@@ -255,21 +255,45 @@ export class NativeOfficeRuntime extends EventEmitter {
       });
     }).finally(() => { const elapsed=performance.now()-started;metrics.completed++;metrics.totalMs+=elapsed;metrics.maximumMs=Math.max(metrics.maximumMs,elapsed); });
   }
-  async open(value: NativeOfficeOpen): Promise<NativeOfficeState> {
+  async convertLegacy(path: string, extension: 'doc' | 'ppt' | 'xls') {
+    const format = ({doc:'docx',ppt:'pptx',xls:'xlsx'} as const)[extension];
+    const id = randomUUID();
+    const source = join(this.workerDirectory, id + '.' + extension), output = join(this.workerDirectory, id + '.' + format);
+    await mkdir(this.workerDirectory, {recursive:true});
+    await copyFile(path, source);
+    // A timed-out native call can still be using both private files.
+    await this.request('convertLegacy', {id, extension});
+    try {
+      return {bytes: new Uint8Array(await readFile(output)), format, warnings:['旧格式已转换；请另存现代格式并检查字体、对象和公式的保真。']};
+    } finally { await unlink(output); }
+  }
+  attachView(value: Omit<NativeOfficeOpen, 'bytes'>) { return this.openOrAttach(value); }
+  open(value: NativeOfficeOpen) { return this.openOrAttach(value); }
+  private async openOrAttach(value: Omit<NativeOfficeOpen,'bytes'> & {bytes?:Uint8Array}): Promise<NativeOfficeState> {
     const layout = validateNativeOfficeLayout(value);
-    if (!['docx', 'pptx', 'xlsx'].includes(value.format) || !value.sessionId || !value.documentId || !value.viewId || !Number.isSafeInteger(value.revision) || value.revision < 0 || value.bytes.byteLength > 100 * 1024 * 1024) throw new NativeOfficeError('INVALID_NATIVE_DOCUMENT', '原生文档身份或内容无效。');
+    if (!['docx', 'pptx', 'xlsx'].includes(value.format) || !value.sessionId || !value.documentId || !value.viewId || !Number.isSafeInteger(value.revision) || value.revision < 0 || (value.bytes?.byteLength ?? 0) > 100 * 1024 * 1024) throw new NativeOfficeError('INVALID_NATIVE_DOCUMENT', '原生文档身份或内容无效。');
     const existingId = this.documentSessions.get(value.documentId);
     if (existingId && existingId !== value.sessionId) throw new NativeOfficeError('NATIVE_DUPLICATE_WRITER', '同一文档只能有一个原生写入会话。');
     let record = this.sessions.get(value.sessionId);
     if (record && record.documentId !== value.documentId) throw new NativeOfficeError('NATIVE_SESSION_MISMATCH', '原生会话属于另一文档。');
     if (record?.promise) await record.promise;
+    if (!record && !value.bytes) throw new NativeOfficeError('NATIVE_SESSION_NOT_FOUND', '附加视图的原生文档已经关闭。');
     if (!record) { record = { documentId: value.documentId, viewIds: new Set() }; this.sessions.set(value.sessionId, record); this.documentSessions.set(value.documentId, value.sessionId); }
     const requestId = randomUUID(), startedAt = performance.now();
     this.openTraces.set(requestId, { requestId, sessionId: value.sessionId, documentId: value.documentId, viewId: value.viewId, format: value.format, startedAt, stages: [] });
     while (this.openTraces.size > 32) this.openTraces.delete(this.openTraces.keys().next().value!);
-    const bytes = Buffer.from(value.bytes.buffer, value.bytes.byteOffset, value.bytes.byteLength).toString('base64');
-    this.recordOpenStage(value.sessionId, value.viewId, 'encode-bytes', performance.now() - startedAt);
-    const opening = this.request<NativeOfficeState>('open', { ...value, ...layout, bytes }, true, requestId); record.promise = opening;
+    const { bytes, ...binding } = value;
+    const attaching = record.viewIds.size > 0;
+    const opening = (async () => {
+      let fileId: string | undefined;
+      if (!attaching) {
+        fileId = requestId;
+        await mkdir(this.workerDirectory, {recursive:true});
+        await writeFile(join(this.workerDirectory, fileId + '.' + value.format), bytes!, {flag:'wx'});
+        this.recordOpenStage(value.sessionId, value.viewId, 'write-managed-file', performance.now() - startedAt);
+      }
+      return this.request<NativeOfficeState>(attaching ? 'attachView' : 'open', { ...binding, ...layout, fileId }, true, requestId);
+    })(); record.promise = opening;
     try { const state = await opening; this.recordOpenStage(value.sessionId, value.viewId, 'open-reply'); record.viewIds.add(value.viewId); return state; }
     catch (error) { if (!record.viewIds.size) { this.sessions.delete(value.sessionId); this.documentSessions.delete(value.documentId); } throw error; }
     finally { if (record.promise === opening) record.promise = undefined; }

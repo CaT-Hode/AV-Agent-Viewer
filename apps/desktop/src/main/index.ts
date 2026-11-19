@@ -136,7 +136,7 @@ async function openDroppedPaths(owner: BrowserWindow, paths: unknown) {
     seen.add(path.toLowerCase());
     try {
       if (!supportedDocument.test(path)) throw new Error('不支持此文件类型');
-      views.push(await core.openFile(path, ownerId));
+      views.push(await core.openFile(path, ownerId, true, true));
     } catch (error) { errors.push(String(error)); }
   }
   return { views, errors };
@@ -198,7 +198,7 @@ void app.whenReady().then(async () => {
   core = new ViewerCore(new JsonWorkspaceRepository(join(directory, 'workspace.json')), createRegistry({officeModelWorkerPath:join(root,'dist/main/office-model-worker.cjs')})); await core.initialize();
   const media = new MarkdownMediaHost(core);
   core.extensions.set('markdown-media', async args => media.resolve(String(args.documentId), String(args.path)));
-  office = new NativeOfficeHost(core,root,directory,viewId=>windows.get(core.getView(viewId).windowId),officeAppearance());
+  office = new NativeOfficeHost(core,root,directory,viewId=>windows.get(core.getView(viewId).windowId),officeAppearance(),id=>windows.get(id));
   office.runtime.on('application-action',(event:{action?:string;sessionId?:string;viewId?:string;paths?:unknown})=>{
     if(event.action!=='open-files'||!event.viewId)return;
     const source=office?.source(event.viewId);if(!source||source.entry.sessionId!==event.sessionId||source.layout.owner.isDestroyed())return;
@@ -494,7 +494,7 @@ void app.whenReady().then(async () => {
     if (method === 'translation-resume') return translations.resume(String(args.jobId));
     if (method === 'web-translation-restore') { webTranslationSuspended.add(String(args.viewId)); return (core.browser as ElectronBrowserRuntime).restoreTranslation(String(args.viewId)); }
     if (method === 'web-translation-apply') { webTranslationSuspended.delete(String(args.viewId)); return applyWebTranslation(String(args.viewId), args.scope === 'selection' ? 'selection' : 'page', String(args.targetLanguage ?? settings.get('translation.targetLanguage'))); }
-    if (method === 'choose-file') { const result = await dialog.showOpenDialog(owner, { properties: ['openFile'], filters: [{ name: '文档', extensions: ['md', 'markdown', 'mdown', 'txt', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf', 'html', 'htm'] }] }); if (result.canceled) return null; const activate = args.activate !== false, view = await core.openFile(result.filePaths[0], String(args.windowId ?? 'main'), activate); if (activate) core.activate(view.id); return view; }
+    if (method === 'choose-file') { const result = await dialog.showOpenDialog(owner, { properties: ['openFile'], filters: [{ name: '文档', extensions: ['md', 'markdown', 'mdown', 'txt', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf', 'html', 'htm'] }] }); if (result.canceled) return null; const activate = args.activate !== false, view = await core.openFile(result.filePaths[0], String(args.windowId ?? 'main'), activate, true); if (activate) core.activate(view.id); return view; }
     if (method === 'choose-save') { const document = core.getDocument(String(args.documentId)); const result = await dialog.showSaveDialog(owner, { defaultPath: document.info.path ?? document.info.title }); if (result.canceled || !result.filePath) return null; return core.save(document.info.id, result.filePath, true); }
     if (method === 'new-window') { const id = randomUUID(); const view = args.viewId ? core.getView(String(args.viewId)) : undefined; const next = view ? core.addView(view.documentId, id) : undefined; await createWindow(id); if (next) { const document = core.getDocument(next.documentId).info; if (document.format === 'web' && document.model.url) await core.browser?.open(next.id, document.model.url); } return { windowId: id }; }
     if (method === 'window-control') { if (args.action === 'minimize') owner.minimize(); else if (args.action === 'maximize') owner.isMaximized() ? owner.unmaximize() : owner.maximize(); else owner.close(); return {}; }

@@ -88,7 +88,15 @@ export class ViewerCore extends EventEmitter {
     // load transfers its restored objects to Core (including info/model). Keep
     // the owned byte identity too, so the repository can reuse verified blobs
     // on the first metadata checkpoint instead of freezing every file again.
-    for (const entry of saved.documents) { delete entry.info.nativeOffice; this.documents.set(entry.info.id, { info: entry.info, bytes: entry.bytes, sourceHash: entry.sourceHash }); }
+    for (const entry of saved.documents) {
+      delete entry.info.nativeOffice;
+      // A checkpoint taken between native import and projection has the complete source.
+      if (['docx','xlsx','pptx'].includes(entry.info.format) && Object.keys(entry.info.model).length === 1) {
+        try { entry.info.model = await this.registry.resolve(entry.info.format).open(entry.bytes, entry.info.format); }
+        catch { entry.info.warnings.push('快速预览不可用，可使用原生编辑器打开。'); }
+      }
+      this.documents.set(entry.info.id, {info:entry.info,bytes:entry.bytes,sourceHash:entry.sourceHash});
+    }
     for (const entry of this.documents.values()) if (entry.info.format !== 'web') entry.info.capabilities = this.registry.resolve(entry.info.format).capabilities(entry.info.format);
     for (const savedView of saved.views) { const { agentState: _onlineState, ...view } = savedView; this.views.set(view.id, { ...view, windowId: 'main', context: view.context ? { ...view.context, quality: 'last-confirmed' } : undefined }); }
     for (const annotation of saved.annotations ?? []) this.annotations.set(annotation.id, annotation);
@@ -105,7 +113,9 @@ export class ViewerCore extends EventEmitter {
       // Closed Office library entries need metadata only. A preview in any
       // window still needs its full model; omit unused bodies before cloning.
       const closedOffice = !documentsWithViews.has(info.id) && (info.format === 'docx' || info.format === 'pptx' || info.format === 'xlsx');
-      return this.nativeOfficeBindings.has(info.id) || closedOffice || knownDocuments[info.id] === info.revision ? { ...info, model: { format: info.format }, displayMetadataOnly: true } : info;
+      const binding = this.nativeOfficeBindings.get(info.id);
+      const nativeOwnsPreview = binding && (binding.mirrorEngineRevision >= 0 || binding.state.engineRevision !== binding.openingEngineRevision);
+      return nativeOwnsPreview || closedOffice || knownDocuments[info.id] === info.revision ? { ...info, model: { format: info.format }, displayMetadataOnly: true } : info;
     });
     return clone({ protocolVersion: PROTOCOL_VERSION, documents, views, agentStates: views.flatMap(view => view.agentState ? [view.agentState] : []), activeViewId: this.activeViewId, eventsSeq: this.eventLog.at(-1)?.seq ?? 0, tasks: [...this.tasks.values()] });
   }
@@ -244,9 +254,9 @@ export class ViewerCore extends EventEmitter {
   async ensureNativeOfficeBoundForHost(viewId: string): Promise<void> {
     await this.openNativeOfficeInside(viewId, { deferInitialMirror: true }, 'binding');
   }
-  private openNativeOfficeInside(viewId: string, options: { deferInitialMirror?: boolean }, result: 'state'): Promise<NativeOfficeState>;
-  private openNativeOfficeInside(viewId: string, options: { deferInitialMirror?: boolean }, result: 'binding'): Promise<undefined>;
-  private async openNativeOfficeInside(viewId: string, options: { deferInitialMirror?: boolean }, result: 'state' | 'binding'): Promise<NativeOfficeState | undefined> {
+  private openNativeOfficeInside(viewId: string, options: { deferInitialMirror?: boolean; prepared?: Promise<NativeOfficeState> }, result: 'state'): Promise<NativeOfficeState>;
+  private openNativeOfficeInside(viewId: string, options: { deferInitialMirror?: boolean; prepared?: Promise<NativeOfficeState> }, result: 'binding'): Promise<undefined>;
+  private async openNativeOfficeInside(viewId: string, options: { deferInitialMirror?: boolean; prepared?: Promise<NativeOfficeState> }, result: 'state' | 'binding'): Promise<NativeOfficeState | undefined> {
     const view = this.getView(viewId), documentId = view.documentId;
     const pending = this.nativeOfficeOpenings.get(viewId);
     if (pending) {
@@ -260,7 +270,7 @@ export class ViewerCore extends EventEmitter {
       return result === 'state' ? state ?? this.nativeOfficeState(viewId) : undefined;
     }
     const opening = this.serial(documentId, async () => {
-      if (!this.views.has(viewId)) throw new ViewerError('NATIVE_OPEN_CANCELLED', '页面已关闭，已取消本次文档加载。');
+      if (!this.views.has(viewId) && !options.prepared) throw new ViewerError('NATIVE_OPEN_CANCELLED', '页面已关闭，已取消本次文档加载。');
       const doc = this.getDocument(documentId);
       if (!['docx','pptx','xlsx'].includes(doc.info.format)) throw new ViewerError('CAPABILITY_UNSUPPORTED', '完整原生Office仅支持Word、PPT和Excel文档。');
       const driver = this.nativeDriver(), previous = this.nativeOfficeBindings.get(documentId);
@@ -272,7 +282,10 @@ export class ViewerCore extends EventEmitter {
       // must retire before reimporting the latest library bytes, rather than
       // letting the host adopt an obsolete model after a failed close.
       if (!previous) for (const [key, retirement] of [...this.nativeOfficeRetirements]) if (retirement.documentId === documentId) await this.retireNativeOffice(key);
-      const state = await driver.open({ documentId, viewId, format: doc.info.format as NativeOfficeState['format'], bytes: doc.bytes.slice(), revision: doc.info.revision, sourcePath: doc.info.path });
+      const target = { documentId, viewId, format: doc.info.format as NativeOfficeState['format'], revision: doc.info.revision };
+      const state = options.prepared ? await options.prepared : previous && driver.attachView
+        ? await driver.attachView({ ...target, sessionId: previous.state.sessionId })
+        : await driver.open({ ...target, bytes: doc.bytes.slice(), sourcePath: doc.info.path });
       if (state.documentId !== documentId || state.format !== doc.info.format || !state.sessionId || !state.engineEpoch || !Number.isInteger(state.engineRevision) || state.engineRevision < 0) throw new ViewerError('NATIVE_STATE_INVALID', '原生引擎返回了不匹配的文档身份或版本。');
       if (previous && (previous.state.sessionId !== state.sessionId || previous.state.engineEpoch !== state.engineEpoch)) throw new ViewerError('NATIVE_WRITER_CONFLICT', '同一文档不能建立第二个独立的原生编辑源。');
       // Closing a still-loading tab removes its UI immediately. Retire only the
@@ -738,33 +751,61 @@ export class ViewerCore extends EventEmitter {
     if (!view) throw new ViewerError('TARGET_NOT_FOUND', '没有有效阅读视图。请打开文档或指定 viewId。');
     return view;
   }
-  async openFile(path: string, windowId = 'main', activate = true) {
+  async openFile(path: string, windowId = 'main', activate = true, forDisplay = false) {
     const fullPath = resolve(path);
     const existing = [...this.documents.values()].find(d => d.info.path?.toLowerCase() === fullPath.toLowerCase());
     if (existing) return this.addView(existing.info.id, windowId, activate);
     const extension = extname(fullPath).slice(1).toLowerCase();
+    if (forDisplay && ['doc','xls','ppt','docx','xlsx','pptx'].includes(extension)) {
+      void this.wrappedNativeOfficeDriver?.prepare?.().catch(error => this.emit('diagnostic', error));
+    }
     const source = await stat(fullPath);
     if (!source.isFile()) throw new ViewerError('INVALID_TARGET', '请选择普通文档文件。');
     if (source.size > 100 * 1024 * 1024) throw new ViewerError('FILE_TOO_LARGE', '首版单文件上限为 100 MB。');
     if (['doc', 'ppt', 'xls'].includes(extension)) {
       // The converter reads the path itself; retaining a complete unused copy
       // across the external process only wastes memory, including rejected files.
-      const converted = await convertLegacy(fullPath, extension);
-      const view = await this.openBytes(basename(fullPath).replace(/\.[^.]+$/, '.' + converted.format), converted.bytes, converted.format as Format, undefined, windowId, activate);
+      const convert = this.wrappedNativeOfficeDriver?.convertLegacy;
+      const converted = convert ? await convert(fullPath, extension as 'doc' | 'xls' | 'ppt') : await convertLegacy(fullPath, extension);
+      const view = await this.openBytes(basename(fullPath).replace(/\.[^.]+$/, '.' + converted.format), converted.bytes, converted.format as Format, undefined, windowId, activate, forDisplay);
       this.getDocument(view.documentId).info.warnings.push(...converted.warnings, `原件：${fullPath}`);
       return view;
     }
     const format = ({ md: 'markdown', markdown: 'markdown', mdown: 'markdown', txt: 'markdown', html: 'html', htm: 'html', docx: 'docx', pptx: 'pptx', xlsx: 'xlsx', pdf: 'pdf' } as Record<string, Format>)[extension];
     if (!format) throw new ViewerError('CAPABILITY_UNSUPPORTED', `暂不支持 .${extension}。`);
-    const bytes = new Uint8Array(await readFile(fullPath));
+    const bytes = await readFile(fullPath);
     if (bytes.byteLength > 100 * 1024 * 1024) throw new ViewerError('FILE_TOO_LARGE', '首版单文件上限为 100 MB。');
-    return this.openBytes(basename(fullPath), bytes, format, fullPath, windowId, activate);
+    return this.openBytes(basename(fullPath), bytes, format, fullPath, windowId, activate, forDisplay);
   }
-  async openBytes(title: string, bytes: Uint8Array, format: Format, path?: string, windowId = 'main', activate = true) {
-    const id = randomUUID(), modelStarted = performance.now(), adapter = this.registry.resolve(format), model = await adapter.open(bytes, format);
-    if (['docx','xlsx','pptx'].includes(format)) this.emit('diagnostic', { code: 'OFFICE_AUX_MODEL_OPEN', documentId: id, format, sourceBytes: bytes.byteLength, elapsedMs: Math.round((performance.now() - modelStarted) * 100) / 100 });
-    this.documents.set(id, { bytes: bytes.slice(), sourceHash: path ? await hashDocumentBytes(bytes) : undefined, info: { id, title, path, format, revision: 0, diskRevision: path ? 0 : -1, dirty: !path, capabilities: adapter.capabilities(format), model, warnings: [] } });
-    return this.addView(id, windowId, activate);
+  async openBytes(title: string, bytes: Uint8Array, format: Format, path?: string, windowId = 'main', activate = true, forDisplay = false) {
+    const id = randomUUID(), viewId = randomUUID(), adapter = this.registry.resolve(format);
+    const frozen = new Uint8Array(bytes), office = format === 'docx' || format === 'xlsx' || format === 'pptx';
+    const started = performance.now();
+    const projection = adapter.open(frozen, format).then(model => {
+      if (office) this.emit('diagnostic', { code: 'OFFICE_AUX_MODEL_OPEN', documentId: id, format, sourceBytes: frozen.length, elapsedMs: performance.now() - started });
+      return model;
+    });
+    const driver = this.wrappedNativeOfficeDriver;
+    const native = forDisplay && office && driver?.openForDisplay
+      ? driver.openForDisplay({ documentId: id, viewId, windowId, format, bytes: frozen, revision: 0 }) : undefined;
+    // Publish only after either reader accepts the frozen input. A slow projection
+    // cannot hold up a real native surface, and an unavailable Kit still permits preview.
+    const first = native ? Promise.any([projection, native.then(() => undefined)]).catch(() => projection) : projection;
+    const [model, sourceHash] = await Promise.all([first, path ? hashDocumentBytes(frozen) : undefined]);
+    const document: InternalDocument = {
+      bytes: frozen, sourceHash,
+      info: { id, title, path, format, revision: 0, diskRevision: path ? 0 : -1, dirty: !path,
+        capabilities: adapter.capabilities(format), model: model ?? { format }, warnings: [] },
+    };
+    this.documents.set(id, document);
+    const view = this.addView(id, windowId, activate, viewId);
+    if (native) void this.openNativeOfficeInside(view.id, { deferInitialMirror: true, prepared: native }, 'binding').catch(error => this.emit('diagnostic', error));
+    if (!model) void projection.then(ready => {
+      if (this.documents.get(id) !== document || document.bytes !== frozen || document.info.revision !== 0 || (this.nativeOfficeBindings.get(id)?.state.engineRevision ?? 0) > 0) return;
+      document.info.model = ready;
+      this.event('office.preview-ready', { documentId: id });
+    }).catch(error => this.emit('diagnostic',error));
+    return view;
   }
   async importArtifact(path: string, bytes: Uint8Array, format: Format) {
     const fullPath = resolve(path), adapter = this.registry.resolve(format), id = randomUUID();
@@ -773,9 +814,9 @@ export class ViewerCore extends EventEmitter {
     this.event('document.imported', { documentId: id, path: fullPath });
     await this.persist(); return clone(info);
   }
-  addView(documentId: string, windowId = 'main', activate = true) {
+  addView(documentId: string, windowId = 'main', activate = true, viewId = randomUUID()) {
     this.getDocument(documentId);
-    const view: ViewInfo = { id: randomUUID(), documentId, windowId, mode: 'read', pinned: false };
+    const view: ViewInfo = { id: viewId, documentId, windowId, mode: 'read', pinned: false };
     this.views.set(view.id, view); if (activate) this.activeViewId = view.id; this.event('view.opened', view); return clone(view);
   }
   async openWeb(url: string, windowId = 'main', activate = true, options: { preload?: boolean } = {}) {

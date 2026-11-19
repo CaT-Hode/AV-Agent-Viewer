@@ -3,11 +3,11 @@
 :root[data-theme=dark] .settings-shell { --accent: #6db9fb; --text: #e7edf2; --muted: #93a0ac; --line: #c6d5e610; background: #11171e; }
 :root[data-theme] .settings-shell .settings-titlebar { height: 44px; min-height: 44px; background: transparent; border: 0; box-shadow: none; }
 .settings-shell .settings-body { display: grid; grid-template-columns: 216px minmax(0,1fr); gap: 24px; min-height: 0; flex: 1; padding: 8px 16px 16px; }
-:root[data-theme] .settings-shell .settings-nav { border: 1px solid var(--line); border-radius: 24px; padding: 24px 12px 18px; background: #edf1f680; box-shadow: 0 3px 18px #1d334808; overflow: auto; }
+:root[data-theme] .settings-shell .settings-nav { border: 1px solid var(--line); border-radius: 18px; padding: 24px 12px 18px; background: #e7eef490; box-shadow: 0 3px 18px #1d334808; overflow: auto; }
 :root[data-theme=dark] .settings-shell .settings-nav { background: #19212bd0; box-shadow: none; }
 .settings-shell .settings-nav-heading { padding: 0 12px 17px; font-size: 21px; font-weight: 650; letter-spacing: -.6px; }
 .settings-shell .settings-nav section { margin: 0 0 19px; }
-.settings-shell .settings-nav section > p { margin: 0 12px 8px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .07em; }
+.settings-shell .settings-nav section > p { margin: 0 12px 8px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .025em; }
 :root[data-theme] .settings-shell .settings-nav button { width: 100%; display: flex; align-items: center; gap: 11px; min-height: 39px; padding: 9px 12px; margin: 3px 0; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font-size: 12px; text-align: left; }
 :root[data-theme] .settings-shell .settings-nav button.selected { color: #137ac5; background: #1486df12; box-shadow: none; font-weight: 600; }
 :root[data-theme=dark] .settings-shell .settings-nav button.selected { color: #99cefa; background: #70bafa15; }

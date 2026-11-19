@@ -29,9 +29,11 @@ export class OfficeFramePresenter{
   private completed?:Frame;
   private scratch?:RasterCanvas;
   private signature='';
+  private showingComplete=false;
   private idleRelease?:unknown;
   constructor(private create:()=>RasterCanvas=()=>new OffscreenCanvas(1,1),private idle:OfficeFrameIdleScheduler=idleScheduler){}
   hasPresentedPart(scope:OfficeFrameScope){const previous=this.completed;return !!previous&&sameFrameSource(previous.scope,scope)&&previous.scope.partIndex===scope.partIndex;}
+  hasPresentedRevision(scope:OfficeFrameScope){return !!this.completed && sameOfficeFrame(this.completed.scope,scope);}
   private cancelIdleRelease(){if(this.idleRelease!==undefined)this.idle.clearTimer(this.idleRelease);this.idleRelease=undefined;}
   private releaseScratch(){const canvas=this.scratch;this.scratch=undefined;if(canvas){canvas.width=1;canvas.height=1;}}
   private releaseWhenIdle(){this.cancelIdleRelease();if(!this.scratch)return;this.idleRelease=this.idle.setTimer(()=>{this.idleRelease=undefined;this.releaseScratch();},750);}
@@ -39,11 +41,17 @@ export class OfficeFramePresenter{
   present(target:HTMLCanvasElement,paint:OfficeFramePaint){
     const {geometry,dpr,scope}=paint,width=Math.max(1,Math.ceil(geometry.viewport.width*dpr)),height=Math.max(1,Math.ceil(geometry.viewport.height*dpr));
     if(!Number.isSafeInteger(width*height*4)||width*height*4>128*1024*1024)throw new Error('Office viewport exceeds the bounded frame memory budget.');
-    // A page switch is one visual handoff. Keep the last complete page on
-    // screen while the new page's visible tiles arrive, rather than copying
-    // an empty/partial staging raster over it. Never carry a different source.
     const previous=this.completed;
-    if(!paint.complete&&previous&&sameFrameSource(previous.scope,scope)&&previous.scope.partIndex!==scope.partIndex)return {changed:false,reused:true,resized:false};
+    // Tile invalidation retires cached pixels, not the last complete display.
+    // A new edit revision can invalidate every tile before the first reply.
+    if(!paint.complete&&previous&&sameFrameSource(previous.scope,scope)&&!sameOfficeFrame(previous.scope,scope))return {changed:false,reused:true,resized:false};
+    if (!paint.complete && this.showingComplete && previous && sameOfficeFrame(previous.scope,scope)) {
+      const old=previous.geometry;
+      if (old.zoom===geometry.zoom && old.scrollX===geometry.scrollX && old.scrollY===geometry.scrollY &&
+          old.offsetX===geometry.offsetX && old.offsetY===geometry.offsetY && target.width===width && target.height===height) {
+        return {changed:false,reused:true,resized:false};
+      }
+    }
     const identity:OfficeFrameScope={documentId:scope.documentId,viewId:scope.viewId,sessionId:scope.sessionId,engineEpoch:scope.engineEpoch,partIndex:scope.partIndex,engineRevision:scope.engineRevision};
     const signature=JSON.stringify([identity,geometry.zoom,geometry.offsetX,geometry.offsetY,geometry.scrollX,geometry.scrollY,width,height,dpr,paint.pixelRevision,paint.complete,paint.rects]);
     if(signature===this.signature&&target.width===width&&target.height===height)return {changed:false,reused:false,resized:false};
@@ -68,7 +76,7 @@ export class OfficeFramePresenter{
     let resized=false;if(target.width!==width){target.width=width;resized=true;}if(target.height!==height){target.height=height;resized=true;}
     const visible=target.getContext('2d');if(!visible)throw new Error('Office Canvas is unavailable.');
     visible.setTransform(1,0,0,1,0,0);visible.globalCompositeOperation='copy';visible.drawImage(scratch,0,0);visible.globalCompositeOperation='source-over';
-    this.signature=signature;
+    this.signature=signature;this.showingComplete=paint.complete;
     if(paint.complete){this.scratch=previous?.canvas;this.completed={canvas:scratch,scope:identity,geometry:{...geometry,viewport:{...geometry.viewport}}};}
     // Keep the staging raster during active zoom/input bursts. After a quiet
     // interval its pixels are redundant: visible and completed already own

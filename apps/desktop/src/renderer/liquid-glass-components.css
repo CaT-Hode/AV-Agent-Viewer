@@ -110,3 +110,21 @@
 :root[data-motion="reduced"] .recent-card.material-host:hover { translate: none; }
 @media (prefers-reduced-motion: reduce) { .recent-card.material-host:hover { translate: none; } .glass-switch-thumb { transition-duration: 80ms; } }
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) { .material-host { background: var(--glass-panel) !important; } }
+
+/* Desktop chrome takes its color from one surface. The paper keeps its own palette. */
+:root[data-theme] .tab-strip {
+  background:linear-gradient(110deg,color-mix(in srgb,var(--paper) 88%,#87b6cb),color-mix(in srgb,var(--paper) 94%,#91abbc));
+  border-bottom:1px solid color-mix(in srgb,var(--ink) 10%,transparent);
+}
+:root[data-theme] .tab.active { box-shadow:0 1px 4px rgb(18 37 52 / .09); }
+:root[data-theme] :is(.activity-rail,.ai-rail,.floating-side-panel).material-host {
+  --liquid-glass-tint:color-mix(in srgb,var(--paper) 54%,transparent);
+  --frosted-cast-shadow:0 5px 18px -9px rgb(18 37 52 / .22);
+}
+:root[data-theme] .workbench:has(> .floating-side-panel[data-side="left"]) .activity-rail,
+:root[data-theme] .workbench:has(> .floating-side-panel[data-side="right"]) .ai-rail {
+  --frosted-cast-shadow:none;
+}
+:root[data-theme] :is(.tab-select,.file-row,.home-search-result,.settings-nav button):focus-visible {
+  outline:2px solid var(--accent); outline-offset:-3px;
+}

@@ -52,7 +52,7 @@ export async function dispatch(core: ViewerCore, method: string, args: Record<st
       // x:// as an unknown URL scheme, rather than interpreting it as a drive.
       const localDrivePath = /^[a-z]:(?!\/\/)/i.test(uri.trim()) && (process.platform === 'win32' || /^[a-z]:[\\/]/i.test(uri.trim()));
       if (!url && /^[a-z][\w+.-]*:/i.test(uri.trim()) && !localDrivePath) throw new ViewerError('INVALID_URL', '请输入有效的 HTTP(S) 网址或本地文件路径。');
-      const view = url ? await core.openWeb(url, args.windowId as string | undefined, activate, { preload: args.preload === true }) : await core.openFile(uri, args.windowId as string | undefined, activate);
+      const view = url ? await core.openWeb(url, args.windowId as string | undefined, activate, { preload: args.preload === true }) : await core.openFile(uri, args.windowId as string | undefined, activate, actor === 'human');
       // A new page is allocated before its network load finishes. A later
       // genuine human tab choice must survive this older open's completion.
       if (actor === 'human' && activate && (!url || core.humanActivationVersion === humanIntent && core.activeViewId === view.id)) core.activate(view.id, actor); return view;
