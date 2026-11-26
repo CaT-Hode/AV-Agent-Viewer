@@ -1,8 +1,11 @@
-import { EditorState, StateEffect, StateField, type EditorSelection, type Range, type Text } from '@codemirror/state';
+import { ChangeSet, Text, EditorState, StateEffect, StateField, type EditorSelection, type Range } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
-import { parseMarkdownTable, serializeMarkdownTable } from '../../../../../packages/markdown/src/commands';
+import { tableCellText } from './markdown-table-text';
+import { escapeMarkdownCell, parseMarkdownTable, serializeMarkdownTable } from '../../../../../packages/markdown/src/commands';
+import { isolateHistory } from '@codemirror/commands';
+import { wikiLinkParts } from '../../../../../packages/markdown/src/writing-syntax';
 import { markdownMathRange } from '../../../../../packages/markdown/src/syntax';
 import { renderMarkdownDiagram, renderMarkdownFormula } from './markdown-renderers';
 import { call } from './transport';
@@ -10,10 +13,20 @@ import DOMPurify from 'dompurify';
 import { loadMarkdownEmoji, markdownEmoji } from './markdown-emoji';
 import { mappedPreviewText } from './markdown-surfaces';
 
+const setWikiLinks = StateEffect.define<boolean>();
+const wikiLinksEnabled = StateField.define<boolean>({
+  create: () => true,
+  update: (value,tr) => tr.effects.find(effect => effect.is(setWikiLinks))?.value ?? value,
+});
 export const refreshMarkdownPreview = StateEffect.define<null>();
 export const revealMarkdownBlock = StateEffect.define<{ from: number; to: number } | null>();
 const previewViewport = StateEffect.define<{ from: number; to: number }>();
 const pointerGesture = StateEffect.define<boolean>();
+const editingFocus = StateEffect.define<boolean>();
+const sourceFocused = StateField.define<boolean>({
+  create: () => false,
+  update: (focused, tr) => tr.effects.find(effect => effect.is(editingFocus))?.value ?? focused,
+});
 // Freeze only the projection used by an active gesture. The actual source
 // selection keeps following the mouse, and reveals syntax on mouse release.
 const pointerSelection = StateField.define<EditorSelection | null>({
@@ -55,7 +68,7 @@ function affectedBlocks(state: EditorState, spans: Span[], viewport: Span) {
 }
 
 function selected(state: EditorState, from: number, to: number) {
-  if (state.facet(EditorState.readOnly)) return false;
+  if (state.readOnly || !state.field(sourceFocused)) return false;
   const selection = state.field(pointerSelection, false) ?? state.selection;
   return selection.ranges.some(range => range.empty ? range.head >= from && range.head <= to : range.from < to && range.to > from);
 }
@@ -215,22 +228,28 @@ class RenderWidget extends WidgetType {
 }
 
 class TableWidget extends WidgetType {
-  constructor(readonly source: string, readonly from: number) { super(); }
-  eq(other: TableWidget) { return this.source === other.source && this.from === other.from; }
+  constructor(readonly source: string, readonly from: number, readonly documentId: string) { super(); }
+  eq(other: TableWidget) { return this.source === other.source && this.from === other.from && this.documentId === other.documentId; }
   toDOM(view: EditorView) {
     const parsed = parseMarkdownTable(this.source); const host = document.createElement('div'); host.className = 'md-table-widget'; host.dataset.markdownWidget = 'true';
     if (!parsed) { host.textContent = this.source; return measuredBlock(host); }
     const tools = document.createElement('div'); tools.className = 'md-table-toolbar';
     const button = (label: string, text: string, action: () => void) => { const node = document.createElement('button'); node.type = 'button'; node.title = label; node.setAttribute('aria-label', label); node.textContent = text; node.addEventListener('mousedown', preventWidgetSelection); node.addEventListener('click', action); tools.append(node); };
     let activeRow = 0, activeColumn = 0;
-    const replace = (focusRow = activeRow, focusColumn = activeColumn) => {
+    const replace = (focusRow = activeRow, focusColumn = activeColumn, cellEdit?: {from:number;to:number;text:string}, refocus = true, appendRow = false) => {
       const from = view.posAtDOM(host); if (view.state.sliceDoc(from, from + this.source.length) !== this.source) return;
-      const insert = serializeMarkdownTable(parsed), next = parseMarkdownTable(insert), cell = next?.rowRanges.filter(row => row.kind !== 'delimiter')[focusRow]?.cells[focusColumn];
-      view.dispatch({ changes: { from, to: from + this.source.length, insert }, selection: cell ? { anchor: from + cell.from, head: from + cell.to } : undefined, userEvent: 'input.table' });
+      const edits: {from:number;to:number;insert:string}[] = [];
+      if (cellEdit) edits.push({from:cellEdit.from,to:cellEdit.to,insert:cellEdit.text});
+      if (appendRow) edits.push({from:this.source.length,to:this.source.length,insert:'\n'+parsed.prefix+'| '+parsed.header.map(()=>'').join(' | ')+' |'});
+      if (!edits.length) edits.push({from:0,to:this.source.length,insert:serializeMarkdownTable(parsed)});
+      const insert = ChangeSet.of(edits,this.source.length).apply(Text.of(this.source.split('\n'))).toString();
+      const next = parseMarkdownTable(insert), cell = next?.rowRanges.filter(row => row.kind !== 'delimiter')[focusRow]?.cells[focusColumn];
+      const changes = edits.map(edit=>({from:from+edit.from,to:from+edit.to,insert:edit.insert}));
+      view.dispatch({ changes, selection: cell ? { anchor: from + cell.from, head: from + cell.to } : undefined, annotations:isolateHistory.of('full'), userEvent: 'input.table' });
       view.requestMeasure();
-      requestAnimationFrame(() => { const replacement = [...view.dom.querySelectorAll<HTMLElement>('.md-table-widget')].find(node => view.posAtDOM(node) === from); const target = replacement?.querySelector<HTMLInputElement>(`tr:nth-child(${focusRow + 1}) :is(th,td):nth-child(${focusColumn + 1}) input`); target?.focus(); });
+      if (refocus) requestAnimationFrame(() => { const replacement = [...view.dom.querySelectorAll<HTMLElement>('.md-table-widget')].find(node => view.posAtDOM(node) === from); const target = replacement?.querySelector<HTMLInputElement>(`tr:nth-child(${focusRow + 1}) :is(th,td):nth-child(${focusColumn + 1}) input`); target?.focus(); });
     };
-    button('增加一行', '+ 行', () => { parsed.rows.push(parsed.header.map(() => '')); replace(); });
+    button('增加一行', '+ 行', () => replace(parsed.rows.length+1,activeColumn,undefined,true,true));
     button('增加一列', '+ 列', () => { parsed.header.push(''); parsed.align.push(null); parsed.rows.forEach(row => row.push('')); replace(); });
     button('删除当前行', '− 行', () => { if (activeRow === 0) { if (parsed.rows.length) parsed.header = parsed.rows.shift()!; else { const from = view.posAtDOM(host); view.dispatch({ changes: { from, to: from + this.source.length, insert: '' }, userEvent: 'input.table' }); return; } } else parsed.rows.splice(activeRow - 1, 1); replace(Math.min(activeRow, parsed.rows.length)); });
     button('删除当前列', '− 列', () => { if (parsed.header.length < 2) return; parsed.header.splice(activeColumn, 1); parsed.align.splice(activeColumn, 1); parsed.rows.forEach(row => row.splice(activeColumn, 1)); replace(activeRow, Math.min(activeColumn, parsed.header.length - 1)); });
@@ -247,29 +266,39 @@ class TableWidget extends WidgetType {
     rows.forEach((row, rowIndex) => {
       const tr = document.createElement('tr');
       row.forEach((cell, column) => {
-        const td = document.createElement(rowIndex === 0 ? 'th' : 'td'); const input = document.createElement('input'); input.value = cell.replace(/\\\|/g, '|').replace(/<br\s*\/?>/gi, '\n');
-        if (readOnly) { const range = parsed.rowRanges[rowIndex === 0 ? 0 : rowIndex + 1]?.cells[column]; if (range) mappedPreviewText(td, host, range.text, range.from, true); else td.textContent = cell; td.style.textAlign = parsed.align[column] ?? 'left'; tr.append(td); return; }
+        const td = document.createElement(rowIndex === 0 ? 'th' : 'td'); const input = document.createElement('input'); input.value = cell.replace(/\\\|/g, '|');
+        const range = parsed.rowRanges[rowIndex === 0 ? 0 : rowIndex + 1]?.cells[column];
+        const display = document.createElement('span'); display.className = 'md-cell-display';
+        if (range) tableCellText(display,host,range.text,range.from,syntaxTree(view.state).resolveInner(this.from+range.from,1),this.from+range.from); else display.textContent = cell;
+        td.style.textAlign = parsed.align[column] ?? 'left'; td.append(display);
+        if (readOnly) {tr.append(td); return;}
+        td.addEventListener('click',event => {
+          const link = (event.target as HTMLElement).closest<HTMLElement>('[data-markdown-link]');
+          if ((event.ctrlKey || event.metaKey) && link) window.dispatchEvent(new CustomEvent('agentviewer:markdown-link',{detail:{documentId:this.documentId,viewId:view.dom.closest<HTMLElement>('[data-markdown-view]')?.dataset.markdownView,href:link.dataset.markdownLink}}));
+          else if (event.target!==input) input.focus();
+        });
+        const cellChange = () => range && ({from:range.from,to:range.to,text:escapeMarkdownCell(input.value)});
         input.setAttribute('aria-label', `表格第 ${rowIndex + 1} 行第 ${column + 1} 列`); input.style.textAlign = parsed.align[column] ?? 'left';
         input.addEventListener('focus', () => { activeRow = rowIndex; activeColumn = column; const from = view.posAtDOM(host), range = parsed.rowRanges[rowIndex === 0 ? 0 : rowIndex + 1]?.cells[column]; if (range) view.dispatch({ selection: { anchor: from + range.from, head: from + range.to } }); });
         input.addEventListener('input', () => { row[column] = input.value.replaceAll('\n', '<br>'); input.dataset.markdownCellDirty = 'true'; });
         const commit = () => { if (input.dataset.markdownCellDirty !== 'true') return false; const value = input.value.replaceAll('\n', '<br>'); input.dataset.markdownCellDirty = 'false'; if (value !== cell) { row[column] = value; return true; } return false; };
-        input.addEventListener('change', () => { if (commit()) replace(); });
+        input.addEventListener('change', () => { if (commit()) replace(activeRow,activeColumn,cellChange(),false); });
         input.addEventListener('paste', event => { const text = event.clipboardData?.getData('text/plain'); if (!text?.includes('\t')) return; event.preventDefault(); const pasted = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(line => line.split('\t')); const width = Math.max(parsed.header.length, column + Math.max(...pasted.map(row => row.length))); while (parsed.header.length < width) { parsed.header.push(''); parsed.align.push(null); } while (parsed.rows.length < rowIndex + pasted.length - 1) parsed.rows.push(Array(width).fill('')); for (let index = 0; index < pasted.length; index++) { const target = rowIndex + index === 0 ? parsed.header : parsed.rows[rowIndex + index - 1]; pasted[index].forEach((value, offset) => target[column + offset] = value); } replace(); });
         input.addEventListener('keydown', event => {
-          if (event.key === 'Escape') { event.preventDefault(); if (commit()) replace(); view.focus(); }
+          if (event.isComposing || event.keyCode===229) return;
+          if (event.key === 'Escape') { event.preventDefault(); if (commit()) replace(activeRow,activeColumn,cellChange(),false); view.focus(); }
           if (event.key === 'Enter' || event.key === 'Tab') {
             event.preventDefault(); const changed = commit(), direction = event.shiftKey ? -1 : 1, targetIndex = event.key === 'Enter' ? (rowIndex + direction) * row.length + column : rowIndex * row.length + column + direction;
             if (targetIndex < 0) { view.focus(); return; }
             const targetRow = Math.floor(targetIndex / row.length), targetColumn = targetIndex % row.length;
-            if (targetRow >= rows.length) parsed.rows.push(parsed.header.map(() => ''));
-            if (changed || targetRow >= rows.length) replace(targetRow, targetColumn);
+            if (changed || targetRow >= rows.length) replace(targetRow, targetColumn, changed ? cellChange() : undefined,true,targetRow>=rows.length);
             else host.querySelector<HTMLInputElement>(`tr:nth-child(${targetRow + 1}) :is(th,td):nth-child(${targetColumn + 1}) input`)?.focus();
           }
           if ((event.ctrlKey || event.metaKey) && /^[zy]$/i.test(event.key)) { event.preventDefault(); window.dispatchEvent(new CustomEvent('agentviewer:markdown-command', { detail: { viewId: view.dom.closest<HTMLElement>('[data-markdown-view]')?.dataset.markdownView, command: event.key.toLowerCase() === 'z' && !event.shiftKey ? 'undo' : 'redo' } })); }
         });
         td.append(input); tr.append(td);
       }); table.append(tr);
-    }); host.append(table); return measuredBlock(host);
+    }); const scroll = document.createElement('div'); scroll.className = 'md-table-scroll'; scroll.append(table); host.append(scroll); return measuredBlock(host);
   }
   ignoreEvent() { return true; }
 }
@@ -312,6 +341,11 @@ export function markdownLivePreview(documentId: string) {
     };
     for (const span of spans) {
       const source = state.sliceDoc(span.from, span.to);
+      const first = state.doc.lineAt(span.from).number, last = state.doc.lineAt(span.to).number;
+      for (let number = first; number <= last; number++) {
+        const line = state.doc.line(number);
+        if (line.length === 0 && number > 1 && number < state.doc.lines && !excluded(line.from)) addLine(line.from, 'md-paragraph-gap');
+      }
       if (span.from === 0) { const metadata = /^\uFEFF?---\n[\s\S]*?\n(?:---|\.\.\.)(?=\n|$)/.exec(source); if (metadata && !(reveal && reveal.from === 0 && reveal.to >= metadata[0].length) && !selected(state, 1, metadata[0].length)) hide(0, metadata[0].length, new RenderWidget('metadata', metadata[0], 0, true, documentId), true); }
       for (const match of source.matchAll(/^\[\^([^\]]+)\]:[^\n]*(?:\n(?: {4}|\t)[^\n]*)*/gm)) { const from = span.from + match.index!, to = from + match[0].length; if (!excluded(from) && !(reveal && reveal.from <= from && reveal.to >= to) && !selected(state, from, to)) hide(from, to, new RenderWidget('footnote', match[0], from, true, documentId), true); }
     }
@@ -332,10 +366,14 @@ export function markdownLivePreview(documentId: string) {
       }
       if (name === 'Blockquote') for (let p = state.doc.lineAt(Math.max(span.from, node.from)).number; p <= state.doc.lineAt(Math.min(span.to, node.to)).number; p++) addLine(state.doc.line(p).from, 'md-quote');
       if (name === 'QuoteMark') { const end = Math.min(node.to + 1, state.doc.lineAt(node.to).to); if (!selected(state, node.from, end)) hide(node.from, end); }
-      if (name === 'ListMark' && !selected(state, node.from, node.to)) hide(node.from, node.to, new PrefixWidget(/^\d/.test(text()) ? text() : '•'));
+      if (name === 'ListMark' && !selected(state, node.from, node.to)) {
+        const task = node.parent?.getChild('Task')?.getChild('TaskMarker');
+        if (task) hide(node.from, task.from);
+        else hide(node.from,node.to,new PrefixWidget(/^\d/.test(text())?text():'•'));
+      }
       if (name === 'TaskMarker') hide(node.from, node.to, new PrefixWidget('', /[xX]/.test(text()), node.from));
       if (name === 'HorizontalRule' && !active) { hide(node.from, node.to, new RenderWidget('rule', '', node.from, true, documentId), true); return false; }
-      if (name === 'Table' && node.to - node.from <= 24000 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { hide(node.from, node.to, new TableWidget(text(), node.from), true); return false; }
+      if (name === 'Table' && node.to - node.from <= 24000 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { hide(node.from, node.to, new TableWidget(text(), node.from, documentId), true); return false; }
       if (name === 'Table' && node.to - node.from > 24000 && node.from >= span.from) decorations.push(Decoration.widget({ widget: new TableSourceNoticeWidget(), block: true, side: -1 }).range(node.from));
       if (name === 'Image' && !active && node.to - node.from <= 24000) { hide(node.from, node.to, new RenderWidget('image', text(), node.from, false, documentId)); return false; }
       if (name === 'HTMLTag' && node.to - node.from <= 24000 && /^<img\b/i.test(text()) && !active) { hide(node.from, node.to, new RenderWidget('image', text(), node.from, false, documentId)); return false; }
@@ -351,6 +389,21 @@ export function markdownLivePreview(documentId: string) {
       if (name === 'Paragraph' && !active && node.to - node.from <= 65536 && !(reveal && reveal.from <= node.from && reveal.to >= node.to) && standaloneMedia(text())) { hide(node.from, node.to, new RenderWidget('html', text(), node.from, true, documentId), true); return false; }
       if (name === 'HTMLBlock' && !active && node.to - node.from <= 65536 && !(reveal && reveal.from <= node.from && reveal.to >= node.to)) { const source = text(); hide(node.from, node.to, new RenderWidget(standaloneImage(source) ? 'image' : 'html', source, node.from, true, documentId), true); return false; }
       if (name === 'InlineMath' || name === 'BlockMath') { const range = markdownMathRange(node); if (range && node.to - node.from <= 100000) math(node.from, node.to, range.bodyFrom, range.bodyTo, range.block, active, range.parts.map(part => state.sliceDoc(part.from, part.to)).join('\n'), range.parts[Math.min(1, range.parts.length - 1)].from); return false; }
+      if (name === 'WikiLink' && state.field(wikiLinksEnabled)) {
+        const link = wikiLinkParts(text());
+        if (link) {
+          decorations.push(Decoration.mark({class:'md-link', attributes:{'data-markdown-link':link.href,title:link.href}}).range(node.from,node.to));
+          if (!active) { hide(node.from,node.from+link.start); hide(node.from+link.end,node.to); }
+        }
+        return false;
+      }
+      if (name === 'Citation') {
+        decorations.push(Decoration.mark({class:'md-citation',attributes:{title:'参考文献引文'}}).range(node.from,node.to));
+        return false;
+      }
+      if (name === 'DefinitionTerm') addLine(node.from,'md-definition-term');
+      if (name === 'DefinitionBody') addLine(node.from,'md-definition-body');
+      if (name === 'DefinitionMark' && !active) hide(node.from,node.to);
       if (name === 'Link' && node.to - node.from <= 24000) {
         const url = node.getChild('URL'); const marks: SyntaxNode[] = []; for (let child = node.firstChild; child; child = child.nextSibling) if (child.name === 'LinkMark') marks.push(child);
         if (url) decorations.push(Decoration.mark({ class: 'md-link', attributes: { 'data-markdown-link': state.sliceDoc(url.from, url.to) } }).range(node.from, node.to));
@@ -388,7 +441,10 @@ export function markdownLivePreview(documentId: string) {
     for (const match of source.matchAll(/\[\^([^\]\n]+)\](?!:)/g)) { const from = span.from + match.index!, to = from + match[0].length; if (inside(from)) continue; decorations.push(Decoration.mark({ class: 'md-footnote-reference', attributes: { 'data-markdown-footnote': match[1] } }).range(from, to)); if (!selected(state, from, to)) { hide(from, from + 2); hide(to - 1, to); } }
     for (const match of source.matchAll(/:([a-z0-9_+\-]+):/g)) { const from = span.from + match.index!, to = from + match[0].length, emoji = markdownEmoji(match[1]); if (emoji && !inside(from) && !selected(state, from, to)) hide(from, to, new PrefixWidget(emoji)); }
     }
-    for (const [position, names] of lineStyles) decorations.push(Decoration.line({ class: names.join(' ') }).range(position));
+    for (const [position, names] of lineStyles) {
+      const level = /\bmd-heading-([1-6])\b/.exec(names.join(' '))?.[1];
+      decorations.push(Decoration.line({ class: names.join(' '), attributes: level ? { role: 'heading', 'aria-level': level } : {} }).range(position));
+    }
     const result = decorations.sort((a, b) => a.from - b.from || a.value.startSide - b.value.startSide);
     if (import.meta.env.DEV) performance.measure('agentviewer:markdown-preview', { start: started, end: performance.now(), detail: { characters: spans.reduce((sum, span) => sum + span.to - span.from, 0), ranges: spans.length, decorations: result.length } });
     return result;
@@ -401,11 +457,11 @@ export function markdownLivePreview(documentId: string) {
       let decorations = transaction.docChanged ? value.decorations.map(changes) : value.decorations;
       const viewportEffect = transaction.effects.find(effect => effect.is(previewViewport));
       if (viewportEffect) viewport = viewportEffect.value as Span;
-      const all = !!viewportEffect || transaction.effects.some(effect => effect.is(refreshMarkdownPreview)) || !transaction.docChanged && syntaxTree(transaction.startState) !== syntaxTree(state);
+      const all = !!viewportEffect || transaction.effects.some(effect => effect.is(refreshMarkdownPreview) || effect.is(setWikiLinks)) || !transaction.docChanged && syntaxTree(transaction.startState) !== syntaxTree(state);
       const spans: Span[] = all ? [viewport] : [];
       if (!all && transaction.docChanged) changes.iterChangedRanges((_fromA, _toA, fromB, toB) => spans.push({ from: Math.max(0, fromB - 1), to: Math.min(state.doc.length, toB + 1) }));
       if (!all && transaction.docChanged) decorations.between(viewport.from, viewport.to, (from, to, decoration) => { if (decoration.spec.widget instanceof RenderWidget && decoration.spec.widget.kind === 'toc') spans.push({ from, to }); });
-      if (!all && (transaction.selection || transaction.docChanged || transaction.effects.some(effect => effect.is(pointerGesture)))) {
+      if (!all && (transaction.selection || transaction.docChanged || transaction.effects.some(effect => effect.is(pointerGesture) || effect.is(editingFocus)))) {
         for (const range of transaction.startState.selection.ranges) spans.push({ from: changes.mapPos(range.from), to: changes.mapPos(range.to) });
         for (const range of transaction.startState.field(pointerSelection)?.ranges ?? []) spans.push({ from: changes.mapPos(range.from), to: changes.mapPos(range.to) });
         spans.push(...state.selection.ranges.map(({ from, to }) => ({ from, to })));
@@ -425,7 +481,17 @@ export function markdownLivePreview(documentId: string) {
       if (!this.view.state.field(pointerSelection, false)) return;
       queueMicrotask(() => { if (!this.destroyed && this.view.state.field(pointerSelection, false)) this.view.dispatch({ effects: pointerGesture.of(false), scrollIntoView: this.view.hasFocus }); });
     };
+    private readonly appearance: MutationObserver;
     constructor(readonly view: EditorView) {
+      const reader = view.dom.closest<HTMLElement>('.reader-panel');
+      const syncDialect = () => {
+        if (this.destroyed) return;
+        const enabled = reader?.dataset.markdownWiki !== 'off';
+        if (enabled !== view.state.field(wikiLinksEnabled)) view.dispatch({effects:setWikiLinks.of(enabled)});
+      };
+      this.appearance = new MutationObserver(syncDialect);
+      if (reader) this.appearance.observe(reader,{attributes:true,attributeFilter:['data-markdown-wiki']});
+      queueMicrotask(syncDialect);
       for (const event of ['mouseup', 'dragend', 'blur']) view.dom.ownerDocument.defaultView!.addEventListener(event, this.finishPointer, true);
       this.schedule();
     }
@@ -442,7 +508,7 @@ export function markdownLivePreview(documentId: string) {
         this.view.dispatch({ effects: previewViewport.of({ from: Math.max(0, actual.from - buffer), to: Math.min(this.view.state.doc.length, actual.to + buffer) }) });
       });
     }
-    destroy() { this.destroyed = true; for (const event of ['mouseup', 'dragend', 'blur']) this.view.dom.ownerDocument.defaultView!.removeEventListener(event, this.finishPointer, true); }
+    destroy() { this.destroyed = true; this.appearance.disconnect(); for (const event of ['mouseup', 'dragend', 'blur']) this.view.dom.ownerDocument.defaultView!.removeEventListener(event, this.finishPointer, true); }
   }, { eventHandlers: { mousedown(event, view) { if (event.button === 0 && !view.state.facet(EditorState.readOnly)) view.dispatch({ effects: pointerGesture.of(true) }); return false; } } });
-  return [pointerSelection, revealed, field, viewport];
+  return [wikiLinksEnabled, sourceFocused, EditorView.focusChangeEffect.of((_state, focus) => editingFocus.of(focus)), pointerSelection, revealed, field, viewport];
 }

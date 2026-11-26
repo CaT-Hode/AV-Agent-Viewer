@@ -1,0 +1,24 @@
+:root {
+  --markdown-paper-width: 860px;
+  --markdown-paper-padding: 30px;
+  --markdown-body-font: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --markdown-code-font: "Cascadia Code", Consolas, monospace;
+  --markdown-body-size: 16px;
+  --markdown-leading: 1.6;
+  --markdown-paragraph-gap: .8em;
+  --markdown-h1: 2.25em;
+  --markdown-h2: 1.75em;
+  --markdown-h3: 1.5em;
+}
+@media (min-width: 1400px) { :root { --markdown-paper-width: 1024px; } }
+@media (min-width: 1800px) { :root { --markdown-paper-width: 1200px; } }
+[data-markdown-paper="cjk"] {
+  --markdown-paper-width: 904px;
+  --markdown-paper-padding: 48px;
+  --markdown-body-size: 17px;
+  --markdown-leading: 1.65;
+  --markdown-paragraph-gap: 13px;
+  --markdown-h1: 2em;
+  --markdown-h2: 1.5em;
+  --markdown-h3: 1.25em;
+}

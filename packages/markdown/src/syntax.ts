@@ -1,4 +1,5 @@
 import type { SyntaxNode } from '@lezer/common';
+import { writingSyntax } from './writing-syntax';
 import type { MarkdownConfig } from '@lezer/markdown';
 
 export type MarkdownMathRange = { from: number; to: number; bodyFrom: number; bodyTo: number; block: boolean; parts: { from: number; to: number }[] };
@@ -22,8 +23,8 @@ const inlineMathScans = new WeakMap<object, { end: number; dollar?: number; pare
 /** Block extensions participate in Lezer's incremental tree, so headings and
  * syntax within TeX/YAML are not misclassified as ordinary Markdown. */
 export const typoraMarkdownSyntax: MarkdownConfig = {
-  defineNodes: [{ name: 'BlockMath', block: true }, { name: 'InlineMath' }, { name: 'MathMark' }, { name: 'MathText' }, { name: 'Frontmatter', block: true }],
-  parseBlock: [
+  defineNodes: [...writingSyntax.defineNodes!, { name: 'BlockMath', block: true }, { name: 'InlineMath' }, { name: 'MathMark' }, { name: 'MathText' }, { name: 'Frontmatter', block: true }],
+  parseBlock: [...writingSyntax.parseBlock!,
     { name: 'BlockMath', before: 'FencedCode',
       parse(context, line) {
         const text = line.text.slice(line.pos), opening = blockStart(text);
@@ -54,7 +55,7 @@ export const typoraMarkdownSyntax: MarkdownConfig = {
       },
     },
   ],
-  parseInline: [{ name: 'InlineMath', before: 'Escape', parse(context, next, position) {
+  parseInline: [...writingSyntax.parseInline!, { name: 'InlineMath', before: 'Escape', parse(context, next, position) {
     const dollar = next === 36, slash = next === 92 && context.char(position + 1) === 40;
     if (!dollar && !slash || dollar && (context.char(position - 1) === 36 || context.char(position + 1) === 36 || /\s/.test(context.slice(position + 1, position + 2)))) return -1;
     let scan = inlineMathScans.get(context);

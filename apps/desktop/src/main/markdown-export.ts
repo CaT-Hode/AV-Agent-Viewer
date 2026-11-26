@@ -12,6 +12,9 @@ import { readMarkdownPreferences } from '../../../../packages/markdown/src/prefe
 import { markdownLinks, replaceMarkdownLinks } from '../../../../packages/markdown/src/links';
 import { imageDataUrl, markdownResource, markdownResourcePath } from '../../../../packages/markdown/src/resources';
 import { pandocExecutable } from '../../../../packages/engines/src/index';
+import { typoraMarkdownSyntax } from '../../../../packages/markdown/src/syntax';
+import { writingReferences } from '../../../../packages/markdown/src/writing-syntax';
+import { bibliographyArgs, checkCitations, formattedCitations } from './markdown-citations';
 import { parseFragment } from 'parse5';
 import { AtomicExportSet } from './atomic-export';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -78,7 +81,7 @@ ipcMain.handle('agentviewer:export-resource', async (event, path: unknown, kind?
   job.imageBytes+=expected;
   return markdownResource(job.core, job.documentId, path);
 });
-async function renderInBackground(core: ViewerCore, documentId: string, revision: number, source: string, media:(path:string)=>Promise<{url:string}>, owner?: BrowserWindow) {
+async function renderInBackground(core: ViewerCore, documentId: string, revision: number, source: string, media:(path:string)=>Promise<{url:string}>, wikiLinks:boolean, owner?: BrowserWindow) {
   if(exportsInProgress.size>=2)throw new ViewerError('EXPORT_BUSY','已有两份文档正在生成，请等待后重试。');
   const worker = new BrowserWindow({show:false,webPreferences:{session:isolatedExportSession(),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,preload:join(__dirname,'markdown-export-preload.cjs')}});
   exportsInProgress.set(worker.webContents.id,{core,documentId,revision,media,imageBytes:0});
@@ -92,7 +95,7 @@ async function renderInBackground(core: ViewerCore, documentId: string, revision
     const url = new URL(renderer); url.hash = '/export-worker';
     await worker.loadURL(url.toString());
     await worker.webContents.executeJavaScript(`new Promise((resolve,reject)=>{let n=0;const poll=()=>{if(window.__markdownExport)resolve(true);else if(++n>600)reject(new Error('导出模块加载超时。'));else setTimeout(poll,50)};poll()})`);
-    return await worker.webContents.executeJavaScript(`window.__markdownExport(${JSON.stringify(source)},${JSON.stringify(documentId)})`) as string;
+    return await worker.webContents.executeJavaScript(`window.__markdownExport(${JSON.stringify(source)},${JSON.stringify(documentId)},${JSON.stringify(wikiLinks)})`) as string;
   } finally { clearTimeout(timeout); owner?.removeListener('closed',close); exportsInProgress.delete(id); close(); }
 }
 
@@ -132,16 +135,29 @@ export async function exportMarkdownTo(core: ViewerCore, input: { documentId: st
   try {
   const { preferences } = await readMarkdownPreferences(core, document.id);
   if (input.format === 'markdown') { await writeFile(singleTemporary!, source, 'utf8'); return { paths: await outputs.commit(validate), revision: frozenRevision }; }
+  const { citations, links } = writingReferences(source, typoraMarkdownSyntax);
+  const edits = conversion && preferences.wikiLinks ? links : [];
+  const citeArgs = citations.length ? await bibliographyArgs(preferences.export,document.path) : [];
+  if (!conversion && citeArgs.length) {
+    const engine = pandocExecutable(appRoot);
+    if (!engine) throw new ViewerError('ENGINE_UNAVAILABLE','排版参考文献需要 Pandoc。');
+    const formatted = await formattedCitations(engine.path,citeArgs,citations);
+    citations.forEach((cite,index)=>edits.push({from:cite.from,to:cite.to,text:formatted.inline[index]}));
+    if (formatted.references) edits.push({from:source.length,to:source.length,text:'\n\n'+formatted.references});
+  }
+  let portable = source;
+  for (const edit of edits.sort((a,b)=>b.from-a.from)) portable=portable.slice(0,edit.from)+edit.text+portable.slice(edit.to);
   if (conversion) {
     const directory = await mkdtemp(join(tmpdir(), 'agentviewer-pandoc-'));
     const assetsName=basename(path,extname(path))+'.assets-'+randomUUID().slice(0,8),assetsTarget=join(dirname(path),assetsName);
     let assetsCreated=false;
     try {
-      const from = join(directory, 'source.md'); await writeFile(from, await pandocSource(core,document.id,source), 'utf8');
-      const args = [from, '--from=markdown+tex_math_dollars+pipe_tables+task_lists+strikeout+yaml_metadata_block+footnotes', '--standalone', '--resource-path=' + (document.path ? dirname(document.path) : directory), '--to=' + input.format, '--output=' + singleTemporary!];
+      const from = join(directory, 'source.md'); await writeFile(from, await pandocSource(core,document.id,portable), 'utf8');
+      const args = [from, '--from=markdown+tex_math_dollars+pipe_tables+task_lists+strikeout+yaml_metadata_block+footnotes+definition_lists'+(citeArgs.length?'+citations':'-citations'), ...citeArgs, '--standalone', '--resource-path=' + (document.path ? dirname(document.path) : directory), '--to=' + input.format, '--output=' + singleTemporary!];
       if(input.format==='latex')args.push('--extract-media='+assetsName);
       if (preferences.export.templatePath) args.push('--template=' + preferences.export.templatePath);
-      await execute(pandocExecutable(appRoot)!.path, args, { cwd:directory, windowsHide: true, timeout: 120000, maxBuffer: 1024 * 1024 });
+      const result = await execute(pandocExecutable(appRoot)!.path, args, { cwd:directory, windowsHide: true, timeout: 120000, maxBuffer: 1024 * 1024 });
+      if (citeArgs.length) checkCitations(result.stderr);
       if(input.format==='latex') {
         const extracted=join(directory,assetsName);
         let resources: string[]=[];
@@ -174,14 +190,14 @@ export async function exportMarkdownTo(core: ViewerCore, input: { documentId: st
     const after=await stat(origin);if(info.size!==after.size||info.mtimeMs!==after.mtimeMs)throw new ViewerError('FILE_CONFLICT','导出期间媒体源文件已变化。');
     const url=[mediaAssetsName,name].map(encodeURIComponent).join('/');mediaReferences.set(source,url);return {url};
   };
-  const prepared = await renderInBackground(core,document.id,frozenRevision,source,prepareMedia);
+  const prepared = await renderInBackground(core,document.id,frozenRevision,portable,prepareMedia,preferences.wikiLinks);
   if (core.getDocument(input.documentId).info.revision !== frozenRevision) throw new ViewerError('VERSION_CONFLICT','生成导出页面期间文档已变化，请重新导出。');
   if (prepared.length > 64 * 1024 * 1024) throw new ViewerError('INVALID_ARGUMENT', '导出页面超过64MiB，请拆分文档。');
   // No preload or local-service credential enters this isolated export page.
   // Only HTML jobs which copied validated resources need file-backed media.
   // The final DOM contains those owned relative paths; scripts remain denied.
   const portableMediaSources = input.format === 'html' && mediaReferences.size ? " 'self' file:" : '';
-  const html = prepared.replace(/<head>/i, `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'; font-src data:; media-src data: https: http:${portableMediaSources}"><style>${preferences.themeCss.replace(/<\/style/gi, '<\\/style')}</style>`);
+  const html = prepared.replace('<body>', '<body data-markdown-paper="'+preferences.typography+'">').replace(/<head>/i, `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'; font-src data:; media-src data: https: http:${portableMediaSources}"><style>${preferences.themeCss.replace(/<\/style/gi, '<\\/style')}</style>`);
   if (input.format === 'html') { await writeFile(singleTemporary!, html, 'utf8'); return { paths: await outputs.commit(validate), revision: frozenRevision }; }
   const window = new BrowserWindow({ show: false, width: 1100, height: 1200, useContentSize: true, webPreferences: { session:isolatedExportSession(),sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

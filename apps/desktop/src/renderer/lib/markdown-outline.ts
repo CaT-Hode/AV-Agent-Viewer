@@ -1,6 +1,24 @@
 import { StateField, type EditorState } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 
+import { headingSlug } from '../../../../../packages/markdown/src/writing-syntax';
+
+export function markdownAnchorPosition(state:EditorState, hash:string) {
+  let wanted:string;
+  try { wanted=decodeURIComponent(hash.replace(/^#/, '')).toLowerCase(); } catch { return; }
+  const used=new Set<string>();
+  let position:number|undefined;
+  syntaxTree(state).iterate({enter(node) {
+    if (position!==undefined) return false;
+    if (!/^(?:ATX|Setext)Heading\d$/.test(node.name)) return;
+    const title=state.sliceDoc(node.from,node.to).replace(/^ {0,3}#{1,6}\s+/,'').replace(/[ \t]+#+[ \t]*$/,'').replace(/\n(?:=+|-+)\s*$/,'');
+    const base=headingSlug(title);let id=base, i=0;
+    while (used.has(id)) id=base+'-'+(++i);
+    used.add(id); if(id===wanted)position=node.from; return false;
+  }});
+  return position;
+}
+
 export type MarkdownOutlineItem = { index: number; title: string; level: number; from: number; to: number };
 type Span = { from: number; to: number };
 type Index = { items: MarkdownOutlineItem[]; parsedTo: number; pending: Span[] };

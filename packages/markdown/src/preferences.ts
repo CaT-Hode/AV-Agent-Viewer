@@ -5,11 +5,17 @@ import type { ViewerCore } from '../../document-core/src/index';
 import { ViewerError } from '../../contracts/src/index';
 
 export const markdownPreferencesSchema = z.object({
+  writing: z.object({
+    focus: z.boolean().default(false), typewriter: z.boolean().default(false),
+    spellcheck: z.boolean().default(true), autoPair: z.boolean().default(true),
+  }).default({}),
+  typography: z.enum(['classic', 'cjk']).default('classic'),
+  wikiLinks: z.boolean().default(true),
   themeCss: z.string().max(100000).default(''),
   keybindings: z.record(z.string().max(80)).default({}),
   imageRoot: z.string().max(4000).default(''),
   upload: z.object({ command: z.string().max(4000), args: z.array(z.string().max(4000)).max(100) }).nullable().default(null),
-  export: z.object({ header: z.string().max(20000).default(''), footer: z.string().max(20000).default(''), templatePath: z.string().max(4000).default('') }).default({}),
+  export: z.object({ header: z.string().max(20000).default(''), footer: z.string().max(20000).default(''), templatePath: z.string().max(4000).default(''), bibliography: z.string().max(4000).default(''), csl: z.string().max(4000).default('') }).default({}),
 }).strict();
 export type MarkdownPreferences = z.infer<typeof markdownPreferencesSchema>;
 type Store = { values: Map<string, MarkdownPreferences>; load: Promise<void>; pending: Promise<void>; path?: string };

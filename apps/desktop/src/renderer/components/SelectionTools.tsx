@@ -6,7 +6,7 @@ import { clippedReaderViewport, placeSelectionToolbar, placeSelectionToolbarWith
 import { FLOATING_HITBOX_EVENT } from '../lib/floating-hitboxes';
 import { useSelectionToolbarMotion } from '../lib/use-selection-toolbar-motion';
 import type { NavigationBackdropSample, NavigationBounds } from '../lib/navigation-optics';
-import { AlignCenter, AlignLeft, Bold, Code, Copy, FilePlus2, Heading2, Highlighter, Italic, Languages, MessageSquare, MoveHorizontal, Pencil, Quote, Send, Sparkles, Strikethrough, Underline, X } from 'lucide-react';
+import { MoreHorizontal, AlignCenter, AlignLeft, Bold, Code, Copy, FilePlus2, Heading2, Highlighter, Italic, Languages, MessageSquare, MoveHorizontal, Pencil, Quote, Send, Sparkles, Strikethrough, Underline, X } from 'lucide-react';
 import { call } from '../lib/transport';
 import { applyAppearance } from '../lib/appearance';
 import type { ReadingSnapshot, ReadingContext, SelectionContext, Rect } from '../../../../../packages/contracts/src/index';
@@ -34,6 +34,7 @@ function SelectionPanelGlass({ native, backdrop }: { native: boolean; backdrop: 
 export function SelectionTools({native=false}:{native?:boolean}) {
   const [state,setState]=useState<State>(),[rect,setRect]=useState<Rect>(),[input,setInput]=useState<Tool>(),[value,setValue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[selecting,setSelecting]=useState(false);
   const [viewport,setViewport]=useState<Rect>(),[backdrop,setBackdrop]=useState<{image?:string;sample?:NavigationBackdropSample}>({}),[glassBounds,setGlassBounds]=useState<NavigationBounds>(),[surface,setSurface]=useState<'light'|'dark'>();
+  const [expandedSelection, setExpandedSelection] = useState<string>();
   const navigationBounds=useRef<Rect|undefined>(undefined);
   const [,refreshNavigationPlacement]=useState(0),navigationPlacement=useRef(true),canPlaceAroundNavigation=useRef<(bounds:Rect|undefined)=>boolean>(()=>true);
   const [panelBounds,setPanelBounds]=useState<Rect[]>([]);
@@ -182,7 +183,13 @@ export function SelectionTools({native=false}:{native?:boolean}) {
       if(sequence.current===generation)clear();
     }catch(e){const detail={action:tool.id,requestId,snapshot:state.snapshot,error:String(e)};if(native)void call('toolbar-action',{action:'failed',detail}).catch(()=>{});else window.dispatchEvent(new CustomEvent('agentviewer:selection-failed',{detail}));if(sequence.current===generation)setError(String(e));}finally{setBusy(false);}
   };
-  const width=Math.min(600,((state?.actions.length??0)+1)*32+16),readingViewport=viewport??{x:0,y:64,width:innerWidth,height:innerHeight-64};
+  const compact = !native && state?.snapshot.document.format === 'markdown';
+  const primary = ['bold','italic','code','copy','translate','ask'];
+  const allActions = state?.actions ?? [];
+  const frequent = compact ? primary.flatMap(id => allActions.filter(tool => tool.id === id)) : allActions;
+  const hasMore = frequent.length < allActions.length, expanded = !!state && expandedSelection === state.snapshot.id;
+  const visibleActions = expanded && hasMore ? [...frequent,...allActions.filter(tool => !primary.includes(tool.id))] : frequent;
+  const width=Math.min(600,(visibleActions.length+1+(hasMore?1:0))*32+16),readingViewport=viewport??{x:0,y:64,width:innerWidth,height:innerHeight-64};
   const safeLeft=Math.max(0,readingViewport.x),safeTop=Math.max(0,readingViewport.y),safeViewport={x:safeLeft,y:safeTop,width:Math.max(0,Math.min(innerWidth,readingViewport.x+readingViewport.width)-safeLeft),height:Math.max(0,Math.min(innerHeight,readingViewport.y+readingViewport.height)-safeTop)};
   const position=rect&&placeSelectionToolbar(rect,safeViewport,{width,height:46},10,[...(navigationBounds.current?[navigationBounds.current]:[]),...panelBounds]);
   useLayoutEffect(()=>{
@@ -209,7 +216,7 @@ export function SelectionTools({native=false}:{native?:boolean}) {
   // Retain the last painted pose for exit. MotionPresence makes it inert as
   // soon as placement fails, so the fading toolbar cannot intercept input.
   return <MotionPresence show={show} surface="selection" duration={SELECTION_POPOVER_MOTION_BASE_MS} identity={presentation.current} keyboardImmediate={false}>{state&&rect&&<div ref={toolbar} className="selection-tools" data-selection-snapshot={state.snapshot.id} data-selection-material-ready={opticsReady&&backdropReady} data-paper={!native&&['pdf','docx','pptx','html'].includes(state.snapshot.document.format)||undefined} role="toolbar" aria-label="选区工具" style={{left,top,width:nativePanelWidth,maxWidth:nativePanelWidth?'none':native?'calc(100vw - 16px)':position?.width ?? width}}>
-    <div ref={glass} data-navigation-surface={surface} className="selection-tool-icons material-host floating-capsule navigation-capsule" onMouseDown={event=>event.preventDefault()} style={{width,maxWidth:'100%'} as CSSProperties}><NavigationGlass softness="selection" onReady={setOpticsReady} backdropImage={backdrop.image} backdropSample={backdrop.sample} capsuleBounds={glassBounds} onSurface={setSurface} /><div className="selection-tool-row">{state.actions.map(tool=>{const Icon=icons[tool.id]??Pencil;return <button key={tool.id} className={'icon-button '+(input?.id===tool.id?'selected':'')} aria-label={tool.label} aria-expanded={tool.input?input?.id===tool.id:undefined} aria-controls={tool.input?'selection-editor':undefined} title={tool.label} disabled={busy} onMouseDown={e=>e.preventDefault()} onClick={()=>void run(tool)}><Icon size={16}/></button>;})}<button className="icon-button" title="关闭选区工具" aria-label="关闭选区工具" onMouseDown={e=>e.preventDefault()} onClick={()=>clear()}><X size={14}/></button></div></div>
+    <div ref={glass} data-navigation-surface={surface} className="selection-tool-icons material-host floating-capsule navigation-capsule" onMouseDown={event=>event.preventDefault()} style={{width,maxWidth:'100%'} as CSSProperties}><NavigationGlass softness="selection" onReady={setOpticsReady} backdropImage={backdrop.image} backdropSample={backdrop.sample} capsuleBounds={glassBounds} onSurface={setSurface} /><div className="selection-tool-row">{visibleActions.map(tool=>{const Icon=icons[tool.id]??Pencil;return <button key={tool.id} className={'icon-button '+(input?.id===tool.id?'selected':'')} aria-label={tool.label} aria-expanded={tool.input?input?.id===tool.id:undefined} aria-controls={tool.input?'selection-editor':undefined} title={tool.label} disabled={busy} onMouseDown={e=>e.preventDefault()} onClick={()=>void run(tool)}><Icon size={16}/></button>;})}{hasMore && <button type="button" className="icon-button" aria-label={expanded?'收起选区命令':'更多选区命令'} aria-expanded={expanded} title={expanded?'收起选区命令':'更多选区命令'} onMouseDown={e=>e.preventDefault()} onClick={()=>setExpandedSelection(expanded?undefined:state.snapshot.id)}><MoreHorizontal size={16}/></button>}<button className="icon-button" title="关闭选区工具" aria-label="关闭选区工具" onMouseDown={e=>e.preventDefault()} onClick={()=>clear()}><X size={14}/></button></div></div>
     <MotionPresence show={!!input||!!error} duration={110}>{input?<form id="selection-editor" className="selection-input material-host" onSubmit={e=>{e.preventDefault();void run(input,true);}}><SelectionPanelGlass native={native} backdrop={backdrop}/><label>{input.label}<textarea autoFocus aria-label={input.label} value={value} onChange={e=>setValue(e.target.value)}/></label><button className="button primary" disabled={busy||!value.trim()}><Send size={14}/>{busy?'处理中…':'应用'}</button>{error&&<p role="alert" className="selection-inline-error">{error}</p>}</form>:error?<p className="selection-error material-host" role="alert"><SelectionPanelGlass native={native} backdrop={backdrop}/>{error}</p>:null}</MotionPresence>
   </div>}</MotionPresence>;
 }

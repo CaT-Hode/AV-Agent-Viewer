@@ -4,7 +4,7 @@
 export const MARKDOWN_COMMANDS = [
   'bold', 'italic', 'strike', 'underline', 'code', 'highlight', 'sub', 'super', 'clear', 'link', 'referenceLink', 'emoji', 'image',
   'heading0', 'heading1', 'heading2', 'heading3', 'heading4', 'heading5', 'heading6',
-  'quote', 'bullet', 'ordered', 'task', 'codeBlock', 'codeLanguage', 'mathBlock', 'mathInline', 'mermaid', 'sequence', 'flow', 'callout', 'table', 'rule', 'toc', 'frontmatter', 'footnote',
+  'quote', 'bullet', 'ordered', 'task', 'codeBlock', 'codeLanguage', 'mathBlock', 'mathInline', 'mermaid', 'sequence', 'flow', 'callout', 'wikiLink', 'definition', 'citation', 'table', 'rule', 'toc', 'frontmatter', 'footnote',
   'tableAddRow', 'tableDeleteRow', 'tableAddColumn', 'tableDeleteColumn',
   'tableMoveRowUp', 'tableMoveRowDown', 'tableMoveColumnLeft', 'tableMoveColumnRight',
   'tableAlign', 'tableAlignLeft', 'tableAlignCenter', 'tableAlignRight', 'tableAlignNone',
@@ -109,7 +109,7 @@ export function parseMarkdownTable(source: string, position?: number): MarkdownT
   }
   return undefined;
 }
-function escapeCell(value: string) {
+export function escapeMarkdownCell(value: string) {
   const text = value.replace(/\r?\n/g, '<br>'); let result = '', backslashes = 0;
   for (const char of text) {
     result += char === '|' && backslashes % 2 === 0 ? '\\|' : char;
@@ -123,7 +123,7 @@ export function serializeMarkdownTable(table: Pick<MarkdownTable, 'header' | 'ro
   const width = table.rows.reduce((largest, row) => Math.max(largest, row.length), Math.max(table.header.length, table.align.length));
   if (!width) return '';
   const prefix = table.prefix ?? '', eol = table.eol ?? '\n';
-  const row = (cells: string[]) => prefix + '| ' + Array.from({ length: width }, (_, i) => escapeCell(cells[i] ?? '')).join(' | ') + ' |';
+  const row = (cells: string[]) => prefix + '| ' + Array.from({ length: width }, (_, i) => escapeMarkdownCell(cells[i] ?? '')).join(' | ') + ' |';
   const delimiter = Array.from({ length: width }, (_, i) => table.align[i] === 'left' ? ':---' : table.align[i] === 'center' ? ':---:' : table.align[i] === 'right' ? '---:' : '---');
   return [row(table.header), row(delimiter), ...table.rows.map(row)].join(eol);
 }
@@ -232,6 +232,9 @@ export function markdownTransform(source: string, from: number, to: number, comm
   if (command === 'emoji') return replace(from, to, typeof value === 'string' ? value : '🙂');
   if (command === 'mathInline') return inline(source, from, to, '$', '$', 'a^2 + b^2 = c^2');
   if (command === 'mermaid' || command === 'sequence' || command === 'flow') return block(source, from, to, '```' + command + eol + (text || (command === 'sequence' ? 'Alice->Bob: Hello' + eol + 'Note right of Bob: A note' + eol + 'Bob-->Alice: Reply' : command === 'flow' ? 'st=>start: 开始' + eol + 'op=>operation: 操作' + eol + 'e=>end: 结束' + eol + 'st->op->e' : 'flowchart LR' + eol + '  A[开始] --> B[完成]')) + eol + '```');
+  if (command === 'wikiLink') return inline(source, from, to, '[[', ']]', '文档名');
+  if (command === 'citation') return inline(source, from, to, '[@', ']', 'key');
+  if (command === 'definition') { const term = text || '术语'; return block(source, from, to, term + eol + ': 释义', term.length + eol.length + 2); }
   if (command === 'callout') { const kind = typeof value === 'string' && /^(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)$/i.test(value) ? value.toUpperCase() : 'NOTE'; return block(source, from, to, '> [!' + kind + ']' + eol + '> ' + (text || '提示内容').replace(/\r?\n/g, eol + '> ')); }
   if (command === 'codeLanguage') { const existing = fencedBlock(source, from, to, false); if (!existing) throw new Error('请把光标放入代码块，再选择代码语言。'); const language = typeof value === 'string' ? value : ''; if (language && !/^[\w.+#-]+$/.test(language)) throw new Error('代码语言只能使用单行语言标识。'); const indent = /^ */.exec(existing.opening.text)![0]; const opening = indent + existing.token + language; return { from: existing.opening.from, to: existing.opening.to, insert: opening, selection: { anchor: from + opening.length - existing.opening.text.length, head: to + opening.length - existing.opening.text.length } }; }
   if (command === 'code') {

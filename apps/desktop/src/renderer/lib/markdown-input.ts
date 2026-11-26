@@ -118,6 +118,25 @@ export const markdownBlockEnter: StateCommand = ({ state, dispatch }) => {
   return true;
 };
 
+/** Paragraphs use an empty source line. The Markdown grammar continues lists
+ * and quotes itself, and literal blocks keep their own indentation rules. */
+export function proseEnter(view: EditorView, soft: boolean): boolean {
+  const { state } = view, range = state.selection.main;
+  if (state.readOnly || state.selection.ranges.length !== 1 || view.compositionStarted) return false;
+  const line = state.doc.lineAt(range.from), tree = ensureSyntaxTree(state, range.from, 20);
+  if (!tree) return false;
+  let container = false;
+  for (let node = tree.resolveInner(range.from, range.from === line.from ? 1 : -1); node; node = node.parent!) {
+    if (['Frontmatter','FencedCode','CodeBlock','BlockMath','HTMLBlock','Table','FootnoteDefinition'].includes(node.name)) return false;
+    if (node.name === 'Blockquote' || node.name === 'ListItem') container = true;
+  }
+  if (container && !soft) return false;
+  const prefix = container ? /^(?:[ \t]*(?:>|[-+*](?=\s)|\d+[.)](?=\s))[ \t]*)+/.exec(line.text)?.[0] ?? '' : '';
+  const insert = soft ? '\n' + (blockContinuation(prefix) ?? '') : line.length ? '\n\n' : '\n';
+  view.dispatch(state.replaceSelection(insert), { userEvent: 'input.enter', annotations: isolateHistory.of('full'), scrollIntoView: true });
+  return true;
+}
+
 /** Chromium's normal DOM-diff input path compares an entire changed line.
  * For an ordinary, cancellable insertion in a huge line we already have the
  * exact replacement from beforeinput. Keep CodeMirror's input handlers

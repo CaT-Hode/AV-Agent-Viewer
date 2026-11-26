@@ -4,7 +4,7 @@ package.json 声明直接依赖，package-lock.json 固定 npm 树，engines.loc
 
 ## 编辑与转换
 
-CodeMirror/Lezer 负责源码、虚拟预览和增量语法；React Markdown、rehype-raw、remark-math 用于完整导出。MathJax/Mermaid 按需加载数学和图表。
+CodeMirror/Lezer 负责源码、虚拟预览和增量语法；React Markdown、rehype-raw、remark-math 用于完整导出。MathJax/Mermaid 按需加载数学和图表。实时粘贴使用 MIT 许可的 Turndown 与 GFM 插件；复制富文本使用 micromark。
 
 | 组件 | 许可 |
 | --- | --- |

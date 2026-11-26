@@ -2,10 +2,10 @@ import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import {
   AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Asterisk, Bold, Code, Code2, Columns3,
-  FileCode2, Focus, Heading1, Heading2, Heading3, Heading4, Heading5, Heading6, Highlighter,
+  FileCode2, Heading1, Heading2, Heading3, Heading4, Heading5, Heading6, Highlighter,
   Image, Italic, Link, List, ListOrdered, ListTodo, ListTree, Minus, Pilcrow, Plus, Quote,
   Redo2, RemoveFormatting, Replace, Rows3, Search, Sigma, Strikethrough, Subscript,
-  Superscript, Table2, TextCursorInput, Underline, Undo2,
+  Superscript, Table2, Underline, Undo2,
 } from 'lucide-react';
 import type { MarkdownCommandEventDetail, MarkdownToolCommandName } from '../../../../../packages/markdown/src/commands';
 import { loadMarkdownEmoji } from '../lib/markdown-emoji';
@@ -53,6 +53,9 @@ const groups: ToolGroup[] = [
     { command: 'table', label: '表格', description: '插入三列、三行的 Markdown 表格', icon: Table2, value: { rows: 3, columns: 3 }, shortcut: 'Ctrl+T' },
     { command: 'rule', label: '分隔线', description: '插入段落分隔线', icon: Minus },
     { command: 'toc', label: '目录', description: '插入文档目录标记', icon: ListTree },
+    { command: 'wikiLink', label: '文档链接', description: '链接同目录的 Markdown 文档或标题', icon: Link },
+    { command: 'definition', label: '术语释义', description: '插入术语与释义', icon: List },
+    { command: 'citation', label: '参考文献引用', description: '插入文献键，可在导出页选择文献库与样式', icon: Quote },
     { command: 'frontmatter', label: '文档信息', description: '插入或定位 YAML 文档信息', icon: FileCode2 },
     { command: 'footnote', label: '脚注', description: '插入脚注引用与定义', icon: Asterisk },
   ] },
@@ -75,22 +78,18 @@ const groups: ToolGroup[] = [
     { command: 'replace', label: '替换', description: '查找并替换文档中的文字', icon: Replace, shortcut: 'Ctrl+H' },
     { command: 'undo', label: '撤销', description: '撤销最近的编辑', icon: Undo2, shortcut: 'Ctrl+Z' },
     { command: 'redo', label: '重做', description: '重做已撤销的编辑', icon: Redo2, shortcut: 'Ctrl+Shift+Z' },
-    { command: 'focus', label: '专注模式', description: '切换当前段落的专注阅读模式', icon: Focus, shortcut: 'F8' },
-    { command: 'typewriter', label: '打字机模式', description: '切换保持当前编辑行居中的打字机模式', icon: TextCursorInput, shortcut: 'F9' },
-    { command: 'spellcheck', label: '拼写检查', description: '切换系统浏览器提供的拼写检查', icon: Underline },
-    { command: 'autoPair', label: '自动配对', description: '切换括号与引号自动配对', icon: Code },
   ] },
 ];
 
 /** Source editing stays in the active view. Tool clicks retain its selection;
  * the command event also supports the same explicit target from other UIs. */
 export function MarkdownTools({ viewId }: { viewId: string }) {
-  const [state, setState] = useState<Record<string, boolean>>({ spellcheck: true, autoPair: true }), [error, setError] = useState('');
+  const [state, setState] = useState<Record<string, boolean>>({}), [error, setError] = useState('');
   const [more,setMore]=useState(false),[keys,setKeys]=useState<Record<string,string>>({});
   const [emojiQuery, setEmojiQuery] = useState(''), [emojiCatalog, setEmojiCatalog] = useState<Gemoji[]>([]);
   useEffect(() => { if (!emojiQuery || emojiCatalog.length) return; let active = true; void loadMarkdownEmoji().then(module => { if (active) setEmojiCatalog(module.gemoji); }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); }); return () => { active = false; }; }, [emojiQuery, emojiCatalog.length]);
   useEffect(() => {
-    setState({ spellcheck: true, autoPair: true }); setError('');
+    setState({}); setError('');
     const history = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string } & Record<string, boolean | string>>).detail; if(detail?.viewId===viewId && typeof detail.keybindings==='object')setKeys(detail.keybindings as Record<string,string>); if (detail?.viewId === viewId) setState(previous => ({ ...previous, ...Object.fromEntries(Object.entries(detail).filter(([, value]) => typeof value === 'boolean')) as Record<string, boolean> })); };
     const failure = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; message: string }>).detail; if (detail?.viewId === viewId) setError(detail.message); };
     window.addEventListener('agentviewer:markdown-editor-history', history); window.addEventListener('agentviewer:markdown-error', failure);
@@ -106,10 +105,10 @@ export function MarkdownTools({ viewId }: { viewId: string }) {
     {groups.filter(group=>group.label!=='表格编辑'||state.inTable).map(group => <section className="markdown-tool-group" key={group.label}>
       <h3>{group.label}</h3>
       <div className="markdown-tool-grid" role="group" aria-label={group.label}>
-        {group.tools.filter(tool=>more||['bold','italic','strike','code','heading0','heading1','heading2','heading3','quote','ordered','bullet','task','link','image','table','codeBlock','undo','redo','find','replace'].includes(tool.command)||group.label==='表格编辑').map(tool => {
+        {group.tools.filter(tool=>more||['bold','italic','code','heading2','bullet','task','link','table','undo','redo'].includes(tool.command)||group.label==='表格编辑').map(tool => {
           const shortcut=Object.hasOwn(keys,tool.command)?keys[tool.command].replace(/^Mod-/,'Ctrl+'):tool.shortcut;
           const Icon = tool.icon, tooltip = tool.label + (shortcut ? ' · ' + shortcut : '') + '\n' + tool.description;
-          return <button key={tool.command} type="button" className="markdown-tool-button icon-button" aria-label={tool.label} title={tooltip} data-markdown-command={tool.command} aria-pressed={['focus', 'typewriter', 'spellcheck', 'autoPair'].includes(tool.command) ? !!state[tool.command] : undefined} disabled={tool.command === 'undo' ? !state.canUndo : tool.command === 'redo' ? !state.canRedo : false} onMouseDown={event => event.preventDefault()} onClick={() => execute(tool)}>
+          return <button key={tool.command} type="button" className="markdown-tool-button icon-button" aria-label={tool.label} title={tooltip} data-markdown-command={tool.command} disabled={tool.command === 'undo' ? !state.canUndo : tool.command === 'redo' ? !state.canRedo : false} onMouseDown={event => event.preventDefault()} onClick={() => execute(tool)}>
             <span className="markdown-tool-glyph"><Icon size={17} aria-hidden="true" />{tool.badge && (tool.badge === 'add' ? <Plus className="markdown-tool-badge" size={10} aria-hidden="true" /> : <Minus className="markdown-tool-badge" size={10} aria-hidden="true" />)}</span>
           </button>;
         })}

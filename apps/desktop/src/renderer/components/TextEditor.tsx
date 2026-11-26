@@ -1,3 +1,4 @@
+import type { MarkdownPreferences } from '../../../../../packages/markdown/src/preferences';
 import { editingKeys, inheritedKeys } from '../lib/markdown-shortcuts';
 import type {Locator} from '../../../../../packages/contracts/src/index';
 import { registerTextFind } from '../lib/markdown-find';
@@ -16,13 +17,16 @@ import { MARKDOWN_COMMANDS, markdownTransformRange, type MarkdownCommandEventDet
 import { textReplacement, type TextEditorBarrier, type TextEditorChange } from '../lib/text-drafts';
 import { call } from '../lib/transport';
 import { markdownStatistics, type MarkdownStatistics } from '../lib/markdown-statistics';
-import { markdownOutline } from '../lib/markdown-outline';
+import { markdownOutline, markdownAnchorPosition } from '../lib/markdown-outline';
 import { typoraMarkdownSyntax } from '../lib/markdown-syntax';
 import { boundedMarkdownLanguage } from '../lib/markdown-language';
 import { MARKDOWN_EXTERNAL_EDIT_EVENT, type MarkdownExternalEdit } from '../lib/markdown-external-edit';
 import { activateMarkdownSurface, markdownSurface } from '../lib/markdown-surfaces';
 import { MARKDOWN_PROJECTION_EVENT, MARKDOWN_PROJECTION_REQUEST, type MarkdownProjection } from '../lib/markdown-projection';
-import { boundedMarkdownInput, markdownBlockEnter, markdownMathBracketInput, markdownHtmlCompletion } from '../lib/markdown-input';
+import { boundedMarkdownInput, markdownBlockEnter, proseEnter, markdownMathBracketInput, markdownHtmlCompletion } from '../lib/markdown-input';
+import { pasteMarkdown, copyMarkdown } from '../lib/markdown-clipboard';
+import { completionStatus, acceptCompletion } from '@codemirror/autocomplete';
+import { blockMenuExtension, blockMenuKey } from '../lib/markdown-block-menu';
 import { markdownEditorSetup } from '../lib/markdown-editor-setup';
 import '../markdown-editor.css';
 
@@ -45,11 +49,13 @@ export function TextEditor(props: Props) {
     let externalEdit: { requestId: string; baseRevision: number; document: EditorState['doc']; revision?: number } | undefined, externalHuman = false;
     const pendingHistory: ('undo' | 'redo')[] = [];
     const externalConflict = () => window.dispatchEvent(new CustomEvent('agentviewer:markdown-error', { detail: { viewId: latest.current.viewId, message: '选区操作同步期间内容已变化；本地草稿已保留，该操作未混入当前撤销记录。' } }));
+    let plainPaste = false, markdownCopy = false;
     let publishedOutline: unknown;
     const identity = { documentId: latest.current.documentId, viewId: latest.current.viewId, revision: latest.current.revision ?? 0 }, imports = new Map<string, { from: number; to: number }>(), importTasks = new Set<Promise<void>>();
     const spelling = new Compartment(), pairs = new Compartment(), bindings = new Compartment(); let spellcheck = true, autoPair = true;
     const htmlCompletions = markdownHtmlCompletion(() => autoPair);
-    let preferences: { imageRoot?: string; upload?: unknown; keybindings?: Record<string, string> } = {};
+    let preferences: Partial<MarkdownPreferences> = {};
+    const pairSettings = () => Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets: autoPair ? ['(', '[', '{', '"', "'", '`'] : [] } }]));
     const serialize = (state: EditorState) => {
       if (serializedDocument !== state.doc) { serializedDocument = state.doc; serializedText = state.doc.sliceString(0, state.doc.length, eol.current); }
       return serializedText;
@@ -96,7 +102,7 @@ export function TextEditor(props: Props) {
       while (node.parent) { if (['Table', 'FencedCode'].includes(node.name)) { enclosing = { from: node.from, to: node.to }; break; } node = node.parent; }
       const result = markdownTransformRange(view.state.doc, range.from, range.to, command, value, enclosing);
       if (!result) return false;
-      view.dispatch({ changes: { from: result.from, to: result.to, insert: result.insert }, selection: result.selection ? EditorSelection.range(result.selection.anchor, result.selection.head) : undefined, scrollIntoView: true, userEvent: 'input.format' });
+      view.dispatch({ changes: { from: result.from, to: result.to, insert: result.insert }, selection: result.selection ? EditorSelection.range(result.selection.anchor, result.selection.head) : undefined, scrollIntoView: true, annotations: isolateHistory.of('full'), userEvent: 'input.format' });
       view.focus(); return true;
     };
     const execute = (command: string, value?: unknown): boolean => {
@@ -110,7 +116,7 @@ export function TextEditor(props: Props) {
         return runHistory(command);
       }
       if (command === 'spellcheck') { spellcheck = !spellcheck; view.dispatch({ effects: spelling.reconfigure(EditorView.contentAttributes.of({ spellcheck: String(spellcheck) })) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, spellcheck } })); return true; }
-      if (command === 'autoPair') { autoPair = !autoPair; view.dispatch({ effects: pairs.reconfigure(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets: autoPair ? ['(', '[', '{', '"', "'", '`'] : [] } }]))) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, autoPair } })); return true; }
+      if (command === 'autoPair') { autoPair = !autoPair; view.dispatch({ effects: pairs.reconfigure(pairSettings()) }); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: identity.viewId, autoPair } })); return true; }
       if (command === 'find' || command === 'replace') { window.dispatchEvent(new CustomEvent('reader-find-open',{detail:{viewId:identity.viewId,replace:command==='replace',query:view.state.selection.main.empty?undefined:view.state.sliceDoc(view.state.selection.main.from,Math.min(view.state.selection.main.to,view.state.selection.main.from+513))}})); return true; }
       if (command === 'focus' || command === 'typewriter') { const active = host.current?.classList.toggle('markdown-' + command); window.dispatchEvent(new CustomEvent('agentviewer:markdown-editor-history', { detail: { viewId: latest.current.viewId, canUndo: undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, focus: host.current?.classList.contains('markdown-focus'), typewriter: host.current?.classList.contains('markdown-typewriter') } })); if (active && command === 'typewriter') view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: 'center' }) }); view.requestMeasure(); return true; }
       return format(view, command as MarkdownCommandName, value);
@@ -132,7 +138,16 @@ export function TextEditor(props: Props) {
       // bindings. Consume the replaced default keys after explicit overrides.
       ...Object.keys(overrides).flatMap(command => (inheritedKeys[command] ?? []).map(key => ({ key, run: () => true, preventDefault: true, scope: 'editor search-panel' }))),
       ...(['undo', 'redo'] as const).filter(command => !Object.hasOwn(overrides, command)).flatMap(command => inheritedKeys[command].map(key => ({ key, run: () => execute(command), preventDefault: true }))),
-      { key: 'Enter', run: (view: EditorView) => latest.current.format === 'markdown' && autoPair && !composing.current && !view.composing && markdownBlockEnter(view) },
+      { key: 'Enter', run: target => {
+        if (composing.current || target.compositionStarted || latest.current.format !== 'markdown') return false;
+        if (completionStatus(target.state) === 'active') return acceptCompletion(target);
+        return (autoPair && markdownBlockEnter(target)) || (!!latest.current.live && proseEnter(target, false));
+      } },
+      { key: 'Shift-Enter', run: target => latest.current.format === 'markdown' && !!latest.current.live && !composing.current && proseEnter(target, true) },
+      { key: 'Mod-Shift-c', run: target => {
+        if (latest.current.format !== 'markdown' || target.state.selection.main.empty) return false;
+        markdownCopy = true; try { return document.execCommand('copy'); } finally { markdownCopy = false; }
+      } },
       ...(latest.current.format === 'markdown' ? editingKeys.filter(([, command]) => !Object.hasOwn(overrides, command)).map(([key, command]) => ({ key, run: (view: EditorView) => format(view, command) })) : []),
       ...(!Object.hasOwn(overrides,'find') ? [{key:'Mod-f',run:()=>execute('find')}] : []),
       ...(!Object.hasOwn(overrides, 'replace') ? [{ key: 'Mod-h', run: () => execute('replace') }] : []),
@@ -140,6 +155,7 @@ export function TextEditor(props: Props) {
     ]));
     const view: EditorView = new EditorView({ parent: host.current!, state: EditorState.create({ doc: normalize(latest.current.value), extensions: [
       Prec.highest(EditorView.domEventHandlers({ beforeinput: event => event.inputType === 'historyUndo' ? execute('undo') : event.inputType === 'historyRedo' ? execute('redo') : false })),
+      ...(latest.current.format === 'markdown' ? [blockMenuKey, blockMenuExtension(() => !!latest.current.live)] : []),
       markdownEditorSetup, boundedMarkdownInput, markdownMathBracketInput(() => latest.current.format === 'markdown' && autoPair && !composing.current), latest.current.format === 'html' ? html() : [boundedMarkdownLanguage(markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [typoraMarkdownSyntax], completeHTMLTags: false, htmlTagLanguage: new LanguageSupport(html({ matchClosingTags: false, autoCloseTags: false }).language) })), EditorState.languageData.of(() => [{ autocomplete: htmlCompletions }])], EditorView.lineWrapping, search({ top: true }), markdownStatistics, markdownOutline,
       spelling.of(EditorView.contentAttributes.of({ spellcheck: 'true' })), pairs.of([]),
       bindings.of(keybindings()),
@@ -160,7 +176,21 @@ export function TextEditor(props: Props) {
         compositionstart: () => { composing.current = true; stateChanged(); return false; },
         compositionend: () => { requestAnimationFrame(() => { if (editor.current !== view || view.composing) return; composing.current = false; flush(view); stateChanged(); emit(view); }); return false; },
         blur: (_event, view) => { if (!composing.current) { flushWidget(view); flush(view); } return false; },
-        paste: (event, view) => importImages(event.clipboardData?.files, view, event),
+        keydown: event => { plainPaste = (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'v'; return false; },
+        keyup: () => { plainPaste = false; return false; },
+        copy: (event, target) => latest.current.format === 'markdown' && copyMarkdown(event, target, markdownCopy || !latest.current.live, eol.current),
+        cut: (event, target) => {
+          if (latest.current.format !== 'markdown' || target.state.readOnly || composing.current || target.compositionStarted) return false;
+          if (!copyMarkdown(event,target,!latest.current.live,eol.current)) return false;
+          target.dispatch(target.state.replaceSelection(''),{userEvent:'delete.cut',annotations:isolateHistory.of('full'),scrollIntoView:true});
+          return true;
+        },
+        paste: (event, target) => {
+          const plain = plainPaste; plainPaste = false;
+          if (latest.current.format !== 'markdown' || composing.current || target.compositionStarted) return false;
+          if (!plain && importImages(event.clipboardData?.files, target, event)) return true;
+          return !!latest.current.live && pasteMarkdown(event, target, plain);
+        },
         drop: (event, view) => importImages(event.dataTransfer?.files, view, event),
         mousedown: event => {
           activateMarkdownSurface(identity.viewId, 'source');
@@ -173,6 +203,12 @@ export function TextEditor(props: Props) {
         },
       }),
     ] }) });
+    // Candidate confirmation belongs to the IME. Let the browser perform its
+    // default action without passing that key to lower-priority editor maps.
+    const composingKey = (event: KeyboardEvent) => {
+      if (event.isComposing || event.keyCode===229) event.stopPropagation();
+    };
+    view.dom.addEventListener('keydown',composingKey,true);
     const unregisterFind=identity.viewId && registerTextFind(identity.viewId,view,()=>composing.current);
     let restoreFrame=0;
     const stopRestore=()=>cancelAnimationFrame(restoreFrame);
@@ -215,10 +251,7 @@ export function TextEditor(props: Props) {
       synchronizeRef.current(); emit(view);
     };
     function navigateAnchor(href: string) {
-      let wanted: string; try { wanted = decodeURIComponent(href.slice(1)); } catch { return; }
-      const slug = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}_\-\s]/gu, '').trim().replace(/\s+/g, '-');
-      let position: number | undefined;
-      syntaxTree(view.state).iterate({ enter: node => { if (position === undefined && /^(?:ATX|Setext)Heading/.test(node.name)) { const title = view.state.sliceDoc(node.from, node.to).replace(/^#{1,6}\s+/, '').replace(/\n(?:=+|-+)\s*$/, ''); if (slug(title) === wanted.toLowerCase()) position = node.from; } } });
+      const position = markdownAnchorPosition(view.state,href);
       if (position !== undefined) { view.dispatch({ selection: { anchor: position }, effects: EditorView.scrollIntoView(position, { y: 'start', yMargin: 48 }) }); view.focus(); }
     }
     function importImages(files: FileList | undefined | null, target: EditorView, event: ClipboardEvent | DragEvent) {
@@ -263,7 +296,22 @@ export function TextEditor(props: Props) {
     };
     const anchor = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; anchor: string }>).detail; if (detail?.viewId === identity.viewId) navigateAnchor(detail.anchor.startsWith('#') ? detail.anchor : '#' + detail.anchor); };
     const revealLine = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; line: number; column?:number; length?:number }>).detail; if (detail?.viewId !== identity.viewId || !Number.isInteger(detail.line)) return; const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, detail.line))); const from=Math.min(line.to,line.from+Math.max(0,(detail.column??1)-1)); view.dispatch({ selection: { anchor: from, head: detail.column?Math.min(line.to,from+(detail.length??0)):line.to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) }); view.focus(); };
-    const preferenceChange = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string; preferences: typeof preferences }>).detail; if (detail?.viewId !== identity.viewId || !detail.preferences) return; preferences = detail.preferences; try { view.dispatch({ effects: bindings.reconfigure(keybindings(preferences.keybindings)) }); } catch (error) { window.dispatchEvent(new CustomEvent('agentviewer:markdown-error', { detail: { viewId: identity.viewId, message: '快捷键配置无效：' + (error instanceof Error ? error.message : String(error)) } })); } };
+    const preferenceChange = (event: Event) => {
+      const detail = (event as CustomEvent<{viewId:string;preferences:MarkdownPreferences}>).detail;
+      if (detail?.viewId !== identity.viewId || !detail.preferences) return;
+      const previous=preferences.writing;
+      preferences=detail.preferences;
+      const next=detail.preferences.writing;
+      try {
+        const effects=[bindings.reconfigure(keybindings(preferences.keybindings))];
+        if (next.spellcheck!==previous?.spellcheck) {spellcheck=next.spellcheck; effects.push(spelling.reconfigure(EditorView.contentAttributes.of({spellcheck:String(spellcheck)})));}
+        if (next.autoPair!==previous?.autoPair) {autoPair=next.autoPair; effects.push(pairs.reconfigure(pairSettings()));}
+        for (const mode of ['focus','typewriter'] as const) if(next[mode]!==previous?.[mode])host.current?.classList.toggle('markdown-'+mode,next[mode]);
+        view.dispatch({effects}); view.requestMeasure(); emit(view);
+      } catch (error) {
+        window.dispatchEvent(new CustomEvent('agentviewer:markdown-error',{detail:{viewId:identity.viewId,message:'写作偏好无效：'+(error instanceof Error?error.message:String(error))}}));
+      }
+    };
     const outlineRequest = (event: Event) => { const detail = (event as CustomEvent<{ viewId: string }>).detail; if (detail?.viewId === identity.viewId) publishOutline(view.state, true); };
     const observer = new MutationObserver(() => { if (editor.current === view && latest.current.live) view.dispatch({ effects: refreshMarkdownPreview.of(null) }); });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-document-paper'] });
@@ -275,7 +323,7 @@ export function TextEditor(props: Props) {
     window.addEventListener('agentviewer:markdown-editor-state-request', editorStateRequest);
     window.dispatchEvent(new CustomEvent('agentviewer:markdown-preferences-request', { detail: { viewId: identity.viewId } }));
     emit(view);
-    return () => { stopRestore();for(const type of ['pointerdown','wheel','keydown','beforeinput'])view.dom.closest('.document-content')?.removeEventListener(type,stopRestore,true);if(unregisterFind)unregisterFind(); if (changeTimer) clearTimeout(changeTimer); if (contextFrame) cancelAnimationFrame(contextFrame); if (!composing.current) { flushWidget(view); flush(view); } imports.clear(); observer.disconnect(); window.removeEventListener('agentviewer:markdown-command', command); window.removeEventListener('agentviewer:text-editor-barrier', barrier); window.removeEventListener('agentviewer:markdown-navigate', navigate); window.removeEventListener('agentviewer:markdown-anchor', anchor); window.removeEventListener('agentviewer:markdown-reveal-line', revealLine); window.removeEventListener('agentviewer:markdown-outline-request', outlineRequest); window.removeEventListener('agentviewer:markdown-preferences', preferenceChange); window.removeEventListener('agentviewer:markdown-preview-selection', previewSelection); window.removeEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent); window.removeEventListener(MARKDOWN_PROJECTION_REQUEST, projectionRequest); window.removeEventListener('agentviewer:markdown-editor-state-request', editorStateRequest); if (!composing.current) stateChanged(); view.destroy(); editor.current = null; };
+    return () => { view.dom.removeEventListener('keydown',composingKey,true); stopRestore();for(const type of ['pointerdown','wheel','keydown','beforeinput'])view.dom.closest('.document-content')?.removeEventListener(type,stopRestore,true);if(unregisterFind)unregisterFind(); if (changeTimer) clearTimeout(changeTimer); if (contextFrame) cancelAnimationFrame(contextFrame); if (!composing.current) { flushWidget(view); flush(view); } imports.clear(); observer.disconnect(); window.removeEventListener('agentviewer:markdown-command', command); window.removeEventListener('agentviewer:text-editor-barrier', barrier); window.removeEventListener('agentviewer:markdown-navigate', navigate); window.removeEventListener('agentviewer:markdown-anchor', anchor); window.removeEventListener('agentviewer:markdown-reveal-line', revealLine); window.removeEventListener('agentviewer:markdown-outline-request', outlineRequest); window.removeEventListener('agentviewer:markdown-preferences', preferenceChange); window.removeEventListener('agentviewer:markdown-preview-selection', previewSelection); window.removeEventListener(MARKDOWN_EXTERNAL_EDIT_EVENT, externalEditEvent); window.removeEventListener(MARKDOWN_PROJECTION_REQUEST, projectionRequest); window.removeEventListener('agentviewer:markdown-editor-state-request', editorStateRequest); if (!composing.current) stateChanged(); view.destroy(); editor.current = null; };
   }, [props.format, props.documentId, props.viewId]);
   useEffect(() => { const view = editor.current; if (view) view.dispatch({ effects: liveMode.current.reconfigure(props.live && props.format === 'markdown' ? markdownLivePreview(props.documentId ?? '') : []) }); }, [props.live, props.format, props.documentId]);
   useEffect(() => { synchronizeRef.current(); }, [props.value, props.revision]);

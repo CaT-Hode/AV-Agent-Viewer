@@ -50,6 +50,6 @@ if (location.hash === '#/export-worker') {
   // A separate renderer owns exhaustive AST/DOM work. It has only a scoped
   // resource bridge, and never mounts the editor or receives service secrets.
   void import('./lib/markdown-export').then(({renderMarkdownForExport}) => {
-    Object.defineProperty(window, '__markdownExport', {value: (source:string,documentId:string) => renderMarkdownForExport(source,documentId,(window as unknown as {markdownExportResource(path:string,kind?:'image'|'media'):Promise<{url:string}>}).markdownExportResource)});
+    Object.defineProperty(window, '__markdownExport', {value: (source:string,documentId:string,wikiLinks=true) => renderMarkdownForExport(source,documentId,(window as unknown as {markdownExportResource(path:string,kind?:'image'|'media'):Promise<{url:string}>}).markdownExportResource,wikiLinks)});
   });
 } else createRoot(document.getElementById('root')!).render(<Suspense fallback={null}>{location.hash.startsWith('#/reader-panel?') ? <ReaderPanelWindow /> : location.hash.startsWith('#/settings') ? <SettingsApp /> : location.hash.startsWith('#/web-toolbar') ? <WebToolbar /> : location.hash.startsWith('#/agent-toolbar') ? <AgentOperationToolbar /> : location.hash.startsWith('#/ai-result-toolbar') ? <AIResultToolbar /> : location.hash.startsWith('#/selection-toolbar') ? <SelectionTools native /> : <><App /><SelectionTools /></>}<TooltipHost /><GlassInteractionHost /></Suspense>);

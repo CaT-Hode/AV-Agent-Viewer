@@ -41,7 +41,7 @@ function DocumentModule({ state }: ModuleProps) {
 }
 function ModeModule({ state, dispatch }: ModuleProps) {
   return <div className="view-modes navigation-module" data-navigation-module="modes">
-    {(['read', 'source', 'split'] as const).map((mode, index) => <button key={mode} className={state.mode === mode ? 'selected' : ''} aria-pressed={state.mode === mode} onClick={() => dispatch({ type: 'mode', mode })}>{['阅读', '源码', '分栏'][index]}</button>)}
+    {(['read', 'source', 'split'] as const).map((mode, index) => <button key={mode} className={state.mode === mode ? 'selected' : ''} aria-pressed={state.mode === mode} onClick={() => dispatch({ type: 'mode', mode })}>{[state.format === 'markdown' ? '实时' : '阅读', '源码', '分栏'][index]}</button>)}
   </div>;
 }
 function EditModule({ state, dispatch, undo = true, save = true }: ModuleProps & { undo?: boolean; save?: boolean }) {

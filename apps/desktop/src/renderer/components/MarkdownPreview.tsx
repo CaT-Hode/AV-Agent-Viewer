@@ -3,12 +3,13 @@ import { Annotation, EditorState, Transaction } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
-import { defaultHighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { markdownLivePreview, refreshMarkdownPreview } from '../lib/markdown-live-preview';
 import { typoraMarkdownSyntax } from '../lib/markdown-syntax';
 import { boundedMarkdownLanguage } from '../lib/markdown-language';
 import { activateMarkdownSurface, markdownSurface, previewSourcePosition, previewDOMPosition } from '../lib/markdown-surfaces';
 import { MARKDOWN_PROJECTION_EVENT, MARKDOWN_PROJECTION_REQUEST, type MarkdownProjection } from '../lib/markdown-projection';
+import { markdownAnchorPosition } from '../lib/markdown-outline';
 import { textReplacement } from '../lib/text-drafts';
 import type { TextEditorContext } from './TextEditor';
 
@@ -48,7 +49,7 @@ export function MarkdownPreview(props: Props) {
         if (target.dataset.markdownReference) { const definition = /^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>]+)>|(\S+))/.exec(line); if (definition?.[1].trim().toLowerCase() === target.dataset.markdownReference.trim().toLowerCase()) { href = definition[2] ?? definition[3]; break; } }
         if (!target.dataset.markdownFootnote && !target.dataset.markdownReference) break; offset += line.length + 1;
       }
-      if (href.startsWith('#')) { let wanted: string; try { wanted = decodeURIComponent(href.slice(1)); } catch { return true; } let destination: number | undefined; syntaxTree(view.state).iterate({ enter: node => { if (destination === undefined && /^(ATX|Setext)Heading/.test(node.name) && view.state.sliceDoc(node.from, node.to).replace(/^#{1,6}\s+/, '').replace(/\n(?:=+|-+)\s*$/, '').toLowerCase().replace(/[^\p{L}\p{N}_\-\s]/gu, '').trim().replace(/\s+/g, '-') === wanted.toLowerCase()) destination = node.from; } }); if (destination !== undefined) view.dispatch({ effects: EditorView.scrollIntoView(destination, { y: 'start', yMargin: 48 }) }); }
+      if (href.startsWith('#')) { const destination = markdownAnchorPosition(view.state,href); if (destination !== undefined) view.dispatch({ effects: EditorView.scrollIntoView(destination, { y: 'start', yMargin: 48 }) }); }
       else if (href) window.dispatchEvent(new CustomEvent('agentviewer:markdown-link', { detail: { documentId: props.documentId, viewId: props.viewId, href } })); return true;
     };
     const view = new EditorView({ parent: host.current!, dispatchTransactions: (transactions, target) => { if (transactions.some(transaction => transaction.docChanged && !transaction.annotation(synchronizePreview))) return; target.update(transactions); }, state: EditorState.create({ doc: previous.replace(/\r\n?/g, '\n'), extensions: [

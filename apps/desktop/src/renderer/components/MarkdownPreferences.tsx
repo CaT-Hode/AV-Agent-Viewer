@@ -4,20 +4,15 @@ import { MARKDOWN_COMMANDS } from '../../../../../packages/markdown/src/commands
 import { call } from '../lib/transport';
 import '../markdown-configuration.css';
 
-export type MarkdownPreferencesValue = {
-  themeCss: string;
-  keybindings: Record<string, string>;
-  imageRoot: string;
-  upload: { command: string; args: string[] } | null;
-  export: { header: string; footer: string; templatePath: string };
-};
+import type { MarkdownPreferences as MarkdownPreferencesValue } from '../../../../../packages/markdown/src/preferences';
+export type { MarkdownPreferencesValue };
 type Page = 'preferences' | 'resources' | 'export';
 const draftCache = new Map<string,Partial<Draft>>();
 type Props = { page:Page; documentId: string; viewId: string; onError(error: unknown): void };
-type Draft = { themeCss: string; keybindings: string; imageRoot: string; uploadEnabled: boolean; uploadCommand: string; uploadArgs: string; header: string; footer: string; templatePath: string };
-const empty: MarkdownPreferencesValue = { themeCss: '', keybindings: {}, imageRoot: '', upload: null, export: { header: '', footer: '', templatePath: '' } };
+type Draft = { writing: MarkdownPreferencesValue['writing']; typography: 'classic' | 'cjk'; wikiLinks: boolean; bibliography: string; csl: string; themeCss: string; keybindings: string; imageRoot: string; uploadEnabled: boolean; uploadCommand: string; uploadArgs: string; header: string; footer: string; templatePath: string };
+const empty: MarkdownPreferencesValue = { writing: {focus:false,typewriter:false,spellcheck:true,autoPair:true}, typography: 'classic', wikiLinks: true, themeCss: '', keybindings: {}, imageRoot: '', upload: null, export: { header: '', footer: '', templatePath: '', bibliography: '', csl: '' } };
 const knownCommands = new Set<string>([...MARKDOWN_COMMANDS, 'find', 'replace', 'undo', 'redo', 'focus', 'typewriter', 'spellcheck', 'autoPair']);
-const draftFor = (value: MarkdownPreferencesValue): Draft => ({ themeCss: value.themeCss, keybindings: JSON.stringify(value.keybindings, null, 2), imageRoot: value.imageRoot, uploadEnabled: !!value.upload, uploadCommand: value.upload?.command ?? '', uploadArgs: JSON.stringify(value.upload?.args ?? [], null, 2), header: value.export.header, footer: value.export.footer, templatePath: value.export.templatePath });
+const draftFor = (value: MarkdownPreferencesValue): Draft => ({ writing: value.writing, typography: value.typography, wikiLinks: value.wikiLinks, bibliography: value.export.bibliography, csl: value.export.csl, themeCss: value.themeCss, keybindings: JSON.stringify(value.keybindings, null, 2), imageRoot: value.imageRoot, uploadEnabled: !!value.upload, uploadCommand: value.upload?.command ?? '', uploadArgs: JSON.stringify(value.upload?.args ?? [], null, 2), header: value.export.header, footer: value.export.footer, templatePath: value.export.templatePath });
 function json(value: string, label: string): unknown { try { return JSON.parse(value); } catch (error) { throw new Error(`${label}不是有效的 JSON：${error instanceof Error ? error.message : String(error)}`); } }
 function preferencesFor(draft: Draft): MarkdownPreferencesValue {
   const parsed = json(draft.keybindings.trim() || '{}', '快捷键配置');
@@ -36,7 +31,7 @@ function preferencesFor(draft: Draft): MarkdownPreferencesValue {
   if (!Array.isArray(args) || args.some(value => typeof value !== 'string')) throw new Error('上传参数应为字符串数组，例如 ["--file","{file}"]。');
   if (draft.uploadEnabled && !draft.uploadCommand.trim()) throw new Error('启用上传时，需要填写可执行文件或命令路径。');
   if (draft.uploadCommand.includes('\0') || args.some(value => value.includes('\0'))) throw new Error('上传命令和参数不能包含空字符。');
-  return { themeCss: draft.themeCss, keybindings, imageRoot: draft.imageRoot.trim(), upload: draft.uploadEnabled ? { command: draft.uploadCommand.trim(), args } : null, export: { header: draft.header, footer: draft.footer, templatePath: draft.templatePath.trim() } };
+  return { writing: draft.writing, typography: draft.typography, wikiLinks: draft.wikiLinks, themeCss: draft.themeCss, keybindings, imageRoot: draft.imageRoot.trim(), upload: draft.uploadEnabled ? { command: draft.uploadCommand.trim(), args } : null, export: { header: draft.header, footer: draft.footer, templatePath: draft.templatePath.trim(), bibliography: draft.bibliography.trim(), csl: draft.csl.trim() } };
 }
 
 /** Saving config is independent of document source edits. Upload commands are
@@ -86,6 +81,9 @@ export function MarkdownPreferences(props: Props) {
     <div className="markdown-configuration-heading"><h3>{{preferences:'写作偏好',resources:'图片配置',export:'导出配置'}[page]}</h3><button className="icon-button" type="button" aria-label="重新读取 Markdown 配置" title={loaded && dirty ? '先保存或还原草稿，再重新读取配置' : '重新读取配置'} disabled={loading || saving || loaded && dirty} onClick={() => setRetry(value => value + 1)}><RefreshCw size={14} /></button></div>
     {loading ? <p className="markdown-configuration-note" role="status">正在读取配置…</p> : !loaded ? <p className="markdown-configuration-note">读取配置后即可编辑。请使用右上角按钮重试。</p> : <fieldset disabled={saving}>
       {page==='preferences'&&<details open><summary>编辑外观与快捷键</summary>
+        <label>正文排版<select value={draft.typography} onChange={event => change('typography', event.target.value as Draft['typography'])}><option value="classic">经典 · 16 px</option><option value="cjk">中文长文 · 17 px 窄行</option></select></label>
+        <label className="markdown-configuration-toggle"><input type="checkbox" checked={draft.wikiLinks} onChange={event => change('wikiLinks', event.target.checked)} />识别双方括号文档链接</label>
+        {([['focus','默认专注模式 · F8'],['typewriter','默认打字机模式 · F9'],['spellcheck','拼写检查'],['autoPair','自动配对']] as const).map(([key,label])=><label key={key} className="markdown-configuration-toggle"><input type="checkbox" checked={draft.writing[key]} onChange={event=>change('writing',{...draft.writing,[key]:event.target.checked})}/>{label}</label>)}
         <label>主题 CSS<textarea aria-label="Markdown 主题 CSS" className="markdown-configuration-code" rows={5} value={draft.themeCss} onChange={event => change('themeCss', event.target.value)} placeholder={'.markdown-live { font-size: 17px; }'} spellCheck={false} /></label>
         <p className="markdown-configuration-note">保存后应用于 Markdown 编辑区域。</p>
         <label>快捷键覆盖<textarea aria-label="Markdown 快捷键配置" className="markdown-configuration-code" rows={4} value={draft.keybindings} onChange={event => change('keybindings', event.target.value)} spellCheck={false} /></label>
@@ -100,6 +98,8 @@ export function MarkdownPreferences(props: Props) {
       }{page==='export'&&<details open><summary>导出页眉页脚与模板</summary>
         <label>页眉模板<textarea aria-label="Markdown 导出页眉模板" rows={3} value={draft.header} onChange={event => change('header', event.target.value)} /></label>
         <label>页脚模板<textarea aria-label="Markdown 导出页脚模板" rows={3} value={draft.footer} onChange={event => change('footer', event.target.value)} /></label>
+        <label>本地参考文献库<input value={draft.bibliography} onChange={event => change('bibliography', event.target.value)} placeholder="如 references.bib 或 references.json" spellCheck={false} /></label>
+        <label>引文样式 CSL<input value={draft.csl} onChange={event => change('csl', event.target.value)} placeholder="留空使用 Pandoc 默认样式" spellCheck={false} /></label>
         <label>导出模板路径<input aria-label="Markdown 导出模板路径" value={draft.templatePath} onChange={event => change('templatePath', event.target.value)} placeholder="留空使用默认模板" spellCheck={false} /></label>
         <p className="markdown-configuration-note">模板适用格式和变量以导出选项为准。</p>
       </details>

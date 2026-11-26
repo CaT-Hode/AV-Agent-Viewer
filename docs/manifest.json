@@ -22,6 +22,10 @@
       ]
     },
     {
+      "name": "Markdown 写作",
+      "files": ["docs/editing/writing.md"]
+    },
+    {
       "name": "Office 引擎",
       "files": [
         "docs/office/README.md",

@@ -1,12 +1,4 @@
-/* Shared paper geometry keeps reading, source and split modes aligned. */
-:root {
-  --markdown-paper-width:960px;
-  --markdown-paper-padding:clamp(32px,4.5vw,64px);
-  --markdown-body-font:system-ui,'Segoe UI','Microsoft YaHei',sans-serif;
-  --markdown-code-font:'Cascadia Code',Consolas,monospace;
-}
-@media(min-width:1440px) { :root { --markdown-paper-width:1024px; } }
-@media(min-width:1800px) { :root { --markdown-paper-width:1120px; } }
+@import './markdown-paper.css';
 .markdown-document-workspace { width:100%; min-width:0; min-height:100%; }
 /* Both columns scroll in the document viewport. A fixed-height ancestor makes
    CodeMirror clip the target before reaching that real scroll container. */
@@ -61,26 +53,30 @@
 .markdown-live .cm-editor { min-height:inherit; height:auto; }
 .markdown-live .cm-scroller { overflow:visible; }
 .markdown-live .cm-content {
-  font:16px/1.75 var(--markdown-body-font);
+  font:var(--markdown-body-size)/var(--markdown-leading) var(--markdown-body-font);
   letter-spacing:0;
 }
 .markdown-live .cm-gutters { display:none; }
 :root[data-theme] .markdown-editor.markdown-live .cm-activeLine { background:none; }
-.markdown-live .cm-line { padding:2px 0; }
+.markdown-live .cm-line { padding:0; }
+.markdown-live .cm-line.md-paragraph-gap { line-height:var(--markdown-paragraph-gap); min-height:var(--markdown-paragraph-gap); }
 .markdown-live .md-heading {
   color:var(--document-paper-ink);
   font-weight:650;
-  line-height:1.35;
-  padding-block:20px 10px;
+  line-height:1.25;
+  padding-block:6px 4px;
   letter-spacing:-.018em;
 }
-.markdown-live .md-heading-1 { font-size:2.1em; padding-block:14px 18px; border-bottom:1px solid var(--document-paper-rule); }
-.markdown-live .md-heading-2 { font-size:1.65em; padding-block:24px 12px; border-bottom:1px solid var(--document-paper-rule); }
-.markdown-live .md-heading-3 { font-size:1.35em; }
+.markdown-live .md-heading-1 { font-size:var(--markdown-h1); line-height:1.2; padding-block:4px 8px; border-bottom:1px solid var(--document-paper-rule); }
+.markdown-live .md-heading-2 { font-size:var(--markdown-h2); padding-block:10px 6px; border-bottom:1px solid var(--document-paper-rule); }
+.markdown-live .md-heading-3 { font-size:var(--markdown-h3); }
 .markdown-live .md-heading-4 { font-size:1.15em; }
 .markdown-live .md-heading-5 { font-size:1em; }
 .markdown-live .md-heading-6 { font-size:1em; color:var(--document-paper-muted); }
 .markdown-live .md-heading>span:not(.md-link):not(.md-underline):not(.md-html-u):not(.md-strike):not(.md-html-s):not(.md-html-del) { text-decoration:none; }
+.md-definition-term { font-weight:650; }
+.markdown-live .md-definition-body { padding-inline-start:1.5em; }
+.md-citation { color:var(--document-paper-muted); }
 .md-strong,.md-html-strong,.md-html-b { font-weight:700; }
 .md-emphasis,.md-html-em,.md-html-i { font-style:italic; }
 .md-strike,.md-html-s,.md-html-del { text-decoration:line-through; }
@@ -170,17 +166,33 @@ div.md-render-math { display:block; margin:16px 0; text-align:center; overflow-x
 .md-render-html details { padding:10px 14px; border:1px solid var(--document-paper-rule); border-radius:8px; }
 .md-render-html summary { cursor:pointer; font-weight:600; }
 
-/* A single toolbar rule replaces the old absolute/sticky overrides. */
-.md-table-widget { position:relative; margin:20px 0; max-width:100%; overflow-x:auto; }
+/* Keep operations outside the measured table. Only its grid scrolls horizontally. */
+.md-table-widget { position:relative; margin:8px 0 12px; max-width:100%; }
+.md-table-scroll { overflow-x:auto; }
 .md-table-widget table { width:100%; border-collapse:collapse; font:15px/1.65 var(--markdown-body-font); }
-.md-table-widget :is(th,td) { min-width:90px; padding:8px 12px; border:1px solid var(--document-paper-rule); }
+.md-table-widget :is(th,td) { min-width:90px; padding:6px 12px; border:1px solid var(--document-paper-rule); }
 .md-table-widget th { font-weight:650; background:var(--document-paper-soft); }
 .md-table-widget tbody tr:nth-child(even) { background:color-mix(in srgb,var(--document-paper-soft) 45%,transparent); }
 .md-table-widget input { width:100%; min-width:60px; padding:0; background:transparent; color:var(--document-paper-ink); font:inherit; border:0; outline:none; }
+.md-table-widget :is(th,td) { position:relative; }
+.md-table-widget input:not(:focus) { position:absolute; width:1px; min-width:0; height:1px; opacity:0; }
+.md-cell-display { white-space:pre-wrap; overflow-wrap:anywhere; }
+.md-table-widget :is(th,td):focus-within .md-cell-display { display:none; }
 .md-table-widget :is(th,td):focus-within { box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent,#3478b2) 65%,transparent); }
-.md-table-toolbar { position:sticky; top:0; display:flex; justify-content:flex-end; flex-wrap:wrap; gap:5px; min-width:320px; padding-bottom:6px; background:var(--document-paper); opacity:.65; transition:opacity 120ms; }
-.md-table-widget:is(:hover,:focus-within) .md-table-toolbar { opacity:1; }
+.md-table-toolbar { position:absolute; z-index:3; inset-inline-end:0; bottom:100%; display:flex; flex-wrap:wrap; gap:3px; max-width:100%; padding:4px; background:var(--document-paper); border:1px solid var(--document-paper-rule); border-radius:7px; box-shadow:0 3px 12px #0002; visibility:hidden; }
+.md-table-widget:is(:hover,:focus-within) .md-table-toolbar { visibility:visible; }
 .md-table-toolbar button { padding:3px 7px; border:1px solid var(--document-paper-rule); border-radius:5px; color:var(--document-paper-muted); background:var(--document-paper-soft); font:11px/1.6 var(--markdown-body-font); }
+.md-block-handle { position:absolute; z-index:2; width:24px; height:24px; padding:0; border-radius:4px; color:var(--document-paper-muted); font:18px/1 var(--markdown-body-font); cursor:pointer; }
+.md-block-handle[draggable="true"] { cursor:grab; }
+.md-block-handle:is(:hover,:focus-visible) { background:var(--document-paper-soft); color:var(--document-paper-ink); }
+.md-block-drop { position:absolute; inset-inline:var(--markdown-paper-padding); height:2px; background:var(--accent); pointer-events:none; z-index:2; }
+.md-block-menu { position:fixed; z-index:110; width:218px; max-height:min(360px,55vh); display:flex; flex-direction:column; padding:5px; border-radius:10px; background:var(--document-paper); color:var(--document-paper-ink); border:1px solid var(--document-paper-rule); box-shadow:0 7px 24px #0002; font:14px/1.45 var(--markdown-body-font); }
+.md-block-menu[hidden],.md-block-handle[hidden],.md-block-drop[hidden] { display:none; }
+.md-block-menu [role=listbox] { overflow:auto; overscroll-behavior:contain; }
+.md-block-menu input { margin:3px 4px 6px; padding:5px; border-bottom:1px solid var(--document-paper-rule); color:inherit; background:transparent; }
+.md-block-menu button { display:block; width:100%; padding:6px 10px; border-radius:5px; text-align:start; font:inherit; color:inherit; }
+.md-block-menu button[aria-selected=true] { background:var(--document-paper-soft); box-shadow:inset 2px 0 var(--accent); }
+.md-no-command { padding:8px; color:var(--document-paper-muted); }
 .md-table-toolbar button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .md-table-source-notice { margin:12px 0; padding:8px 12px; border-inline-start:2px solid var(--document-paper-rule); color:var(--document-paper-muted); font:12px/1.7 var(--markdown-body-font); }
 

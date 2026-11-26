@@ -49,4 +49,4 @@ HTML/PDF/PNG 在隔离 renderer 构造完整导出内容；Pandoc 提供 DOCX/OD
 
 按块、范围、表格、资源和原生对象提供语义操作。高级操作只有在真实执行与目标读回可用时才宣称支持。
 
-[Typora 与能力矩阵](refactor.md) · [Office](../office/README.md) · [MCP](../automation/mcp.md)
+[Markdown 写作](writing.md) · [Typora 与能力矩阵](refactor.md) · [Office](../office/README.md) · [MCP](../automation/mcp.md)
