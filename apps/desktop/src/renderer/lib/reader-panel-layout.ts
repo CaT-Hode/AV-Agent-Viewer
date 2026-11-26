@@ -2,7 +2,7 @@ export type ReaderPanelSide = 'left' | 'right';
 export type ReaderPanelLayout = { schemaVersion: 1; leftWidth: number; rightWidth: number };
 export type PanelWidthLimits = { min: number; max: number };
 export const READER_PANEL_LAYOUT_KEY = 'agentviewer.reader-panels.v1';
-export const DEFAULT_READER_PANEL_LAYOUT: ReaderPanelLayout = { schemaVersion: 1, leftWidth: 248, rightWidth: 380 };
+export const DEFAULT_READER_PANEL_LAYOUT: ReaderPanelLayout = { schemaVersion: 1, leftWidth: 223, rightWidth: 342 };
 const bounds: Record<ReaderPanelSide, PanelWidthLimits> = { left: { min: 180, max: 620 }, right: { min: 280, max: 720 } };
 
 /** Both panels overlay the unchanged canvas; leave room between their inner edges. */

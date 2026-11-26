@@ -17,7 +17,7 @@ function colorChannels(color: string) {
 }
 
 /** Share the source-only contrast probe between navigation, selection and translation. */
-export function useGlassSurface(root: RefObject<HTMLElement | null>, { backdropImage, capsuleBounds, onSurface }: { backdropImage?: string; capsuleBounds?: NavigationBounds; onSurface?(surface: 'light' | 'dark'): void }) {
+export function useGlassSurface(root: RefObject<HTMLElement | null>, { backdropImage, capsuleBounds, onSurface }: { backdropImage?: string; capsuleBounds?: Partial<NavigationBounds>; onSurface?(surface: 'light' | 'dark'): void }) {
   const resample = useRef<(() => void) | undefined>(undefined);
   const inferred = useRef<'light' | 'dark'>('light');
 

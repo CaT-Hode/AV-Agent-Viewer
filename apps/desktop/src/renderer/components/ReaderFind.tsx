@@ -29,9 +29,22 @@ export function ReaderFind({file,viewId,intent,initialQuery,onQuery,onClose}:{fi
   // The web sidebar is a portal in a separate document. Listen in its window as well.
   useEffect(()=>{const handler=(e:KeyboardEvent)=>{if(e.isComposing||e.defaultPrevented||(e.target as Element|null)?.closest?.('[role=dialog],dialog'))return;if(e.key==='F3'){e.preventDefault();e.stopPropagation();step(e.shiftKey);}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='f'&&!e.shiftKey&&e.currentTarget!==window){e.preventDefault();input.current?.select();}};const forwarded=(event:Event)=>{const d=(event as CustomEvent).detail;if(d.viewId===viewId)step(!!d.back);};window.addEventListener('reader-find-step',forwarded);const owners=new Set([window,input.current?.ownerDocument.defaultView]);for(const owner of owners)owner?.addEventListener('keydown',handler,true);return()=>{window.removeEventListener('reader-find-step',forwarded);for(const owner of owners)owner?.removeEventListener('keydown',handler,true);};});
   const replace=(which:number|'all')=>{try{batch?.replace?.(which,replacement);refresh(g=>g+1);}catch(e){setError(String(e));}};
-  return <section className="reader-find" aria-label="查找当前文档"><div className="find-input-row"><input ref={input} type="search" aria-label="查找当前文档" placeholder="查找当前文档" value={text} onChange={e=>{setText(e.target.value);onQuery(e.target.value);}} onKeyDown={e=>{if(e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();e.stopPropagation();step(e.shiftKey);}}}/><button aria-label="上一处" onClick={()=>step(true)} disabled={!batch?.hits.length}><ChevronUp size={15}/></button><button aria-label="下一处" onClick={()=>step(false)} disabled={!batch?.hits.length}><ChevronDown size={15}/></button><button aria-label="关闭查找" onClick={close}><X size={15}/></button></div>
-  <div className="find-options"><button aria-pressed={caseSensitive} onClick={()=>setCase(!caseSensitive)}>区分大小写</button>{markdown&&<><button aria-pressed={wholeWord} onClick={()=>setWord(!wholeWord)}>整词</button><button aria-pressed={regexp} onClick={()=>setRegex(!regexp)}>正则</button><button aria-pressed={showReplace} onClick={()=>setShowReplace(!showReplace)}>替换</button></>}</div>
-  {showReplace&&markdown&&<div className="find-replace"><input aria-label="替换为" placeholder="替换为" value={replacement} onChange={e=>setReplacement(e.target.value)}/><button disabled={!batch?.replace||!batch.hits.length} onClick={()=>replace(Math.max(0,active))}>替换当前</button><button disabled={!batch?.replace||!batch.hits.length} onClick={()=>replace('all')}>全部替换</button></div>}
-  <p role="status">{error|| (busy?'正在查找…':batch?.note || (text&&batch?(active>=0?(active+1)+' / ':'共 ')+batch.hits.length+(batch.limited?' 处以上，已达显示上限':' 处'):''))}</p>
+  const count = text && batch ? (active >= 0 ? (active + 1) + ' / ' : '共 ') + batch.hits.length + (batch.limited ? ' 处以上' : ' 处') : '';
+  return <section className="reader-find" aria-label="查找当前文档">
+    <input ref={input} type="search" aria-label="查找当前文档" placeholder="查找当前文档" value={text}
+      onChange={e=>{setText(e.target.value);onQuery(e.target.value);}} onKeyDown={e=>{if(e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();e.stopPropagation();step(e.shiftKey);}}}/>
+    <div className="find-navigation">
+      <span role="status">{busy ? '正在查找…' : count}</span>
+      <button aria-label="上一处" onClick={()=>step(true)} disabled={!batch?.hits.length}><ChevronUp size={15}/></button>
+      <button aria-label="下一处" onClick={()=>step(false)} disabled={!batch?.hits.length}><ChevronDown size={15}/></button>
+      <button aria-label="关闭查找" onClick={close}><X size={15}/></button>
+    </div>
+    <div className="find-options"><button aria-pressed={caseSensitive} onClick={()=>setCase(!caseSensitive)}>区分大小写</button>{markdown&&<><button aria-pressed={wholeWord} onClick={()=>setWord(!wholeWord)}>整词</button><button aria-pressed={regexp} onClick={()=>setRegex(!regexp)}>正则</button><button aria-pressed={showReplace} onClick={()=>setShowReplace(!showReplace)}>替换</button></>}</div>
+    {showReplace&&markdown&&<div className="find-replace">
+      <input type="text" aria-label="替换为" placeholder="替换为" value={replacement} onChange={e=>setReplacement(e.target.value)}/>
+      <button disabled={!batch?.replace||!batch.hits.length} onClick={()=>replace(Math.max(0,active))}>替换当前</button>
+      <button disabled={!batch?.replace||!batch.hits.length} onClick={()=>replace('all')}>全部替换</button>
+    </div>}
+    {(error || batch?.note || batch?.limited) && <p role="status">{error || batch?.note || '已达显示上限'}</p>}
   <ol>{batch?.hits.map((h,i)=><li key={i}><button aria-current={active===i?'true':undefined} onClick={()=>reveal(i)}><small>{h.label}</small><span>{h.before}<mark>{h.match||'▏'}</mark>{h.after}</span></button></li>)}</ol></section>;
 }

@@ -10,7 +10,7 @@
 :root[data-theme="dark"] .settings-brand-mark{background:#eaf7ff;border-radius:4px;padding:1px}
 .tabs{align-items:center;height:100%;overflow-x:auto}.tab{height:36px;min-width:150px;max-width:220px;border:0;background:transparent;border-radius:9px;margin-right:3px;align-items:center}.tab.active{background:#fff;box-shadow:0 2px 8px #2431540b;color:#343b78}.tab-select{font-size:12px;padding:0 10px}.tab-close{opacity:.55}.tab:hover .tab-close{opacity:1}.new-tab{margin:0 8px}.top-utility{display:flex;align-items:center;-webkit-app-region:no-drag;padding:0 5px}.window-controls{height:100%;align-items:stretch}.window-controls button{width:42px}
 .status-bar{height:27px;background:#f4f3f0;font-size:11px;padding:0 14px;color:#747b89}.status-bar span:first-child{max-width:72%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.home-layout{display:grid;grid-template-columns:248px minmax(0,1fr);flex:1;min-height:0}
+.home-layout{display:grid;grid-template-columns:223px minmax(0,1fr);flex:1;min-height:0}
 .activity-rail,.ai-rail{background:#f0f0ef;border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:11px 0;gap:5px;min-height:0}
 .activity-rail button,.ai-rail button{width:37px;height:37px;display:grid;place-items:center;border-radius:10px;color:#747d8e;position:relative}
 .activity-rail button:hover,.ai-rail button:hover{background:#e5e6ee;color:#434dad}

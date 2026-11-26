@@ -19,8 +19,18 @@
 .translation-copy-status { position: absolute; bottom: 7px; left: 50%; translate: -50% 0; color: var(--muted); font-size: 10px; }
 .translation-controls { position: absolute; top: 0; bottom: 0; width: 28px; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
 .translation-controls-left { left: 12px; }.translation-controls-right { right: 12px; }
-.translation-card-capsule .translation-controls .icon-button { width: 28px; height: 28px; border-radius: 8px; color: var(--ink); }
-.translation-controls .icon-button:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); }
+.translation-card-capsule .translation-controls .icon-button { width: 28px; height: 28px; border-radius: 8px; }
+:root[data-theme] .selection-translation-bubble :is(.translation-controls .icon-button,.translation-shortcut-prompt) {
+  color: var(--navigation-ink);
+  background: transparent;
+  transition: background-color 120ms ease-out;
+}
+:root[data-theme] .selection-translation-bubble :is(.translation-controls .icon-button,.translation-shortcut-prompt):is(:hover,:focus-visible):not(:disabled) {
+  background: color-mix(in srgb, var(--navigation-ink) 9%, transparent);
+}
+:root[data-theme] .selection-translation-bubble :is(.translation-controls .icon-button,.translation-shortcut-prompt):is(:active,[aria-pressed="true"]):not(:disabled) {
+  background: color-mix(in srgb, var(--navigation-ink) 15%, transparent);
+}
 .translation-drag-handle { position: absolute !important; z-index: 4 !important; top: 1px; left: calc(50% - 24px); width: 48px; height: 17px; display: grid; place-items: center; cursor: grab; touch-action: none; user-select: none; }
 .translation-drag-handle:active { cursor: grabbing; }
 .translation-drag-handle span { display: block; width: 26px; height: 3px; border-radius: 3px; background: color-mix(in srgb, var(--ink) 24%, transparent); }

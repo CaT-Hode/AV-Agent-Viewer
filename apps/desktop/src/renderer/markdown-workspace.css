@@ -1,3 +1,5 @@
+.home-workspace { width: min(100%, 760px); margin: 0 auto; }
+.home-workspace .home-section-title { margin-bottom: 18px; }
 .markdown-workspace{display:flex;flex-direction:column;gap:9px;min-width:0;color:var(--text-primary,currentColor);font-size:12px}
 .markdown-workspace-heading{display:flex;align-items:center;gap:3px;min-width:0}
 .markdown-workspace-heading>span{display:flex;align-items:center;gap:7px;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}

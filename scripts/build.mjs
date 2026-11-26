@@ -3,7 +3,7 @@ import { buildOfficeKitAdapter } from './build-office-kit-adapter.mjs';
 import { copyFile } from 'node:fs/promises';
 import { writeMcpPackageManifest } from './mcp-package-manifest.mjs';
 await buildOfficeKitAdapter();
-await build({ entryPoints: ['apps/desktop/src/main/index.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', outfile: 'dist/main/index.cjs', external: ['electron', 'tesseract.js'], sourcemap: true });
+await build({ entryPoints: { index: 'apps/desktop/src/main/startup.ts', workbench: 'apps/desktop/src/main/index.ts' }, bundle: true, platform: 'node', format: 'cjs', target: 'node22', outdir: 'dist/main', outExtension: { '.js': '.cjs' }, external: ['electron', 'tesseract.js'], sourcemap: true });
 await build({ entryPoints: ['packages/format-adapters/src/office-model-worker.ts'], bundle: true, platform: 'node', format: 'cjs', target: 'node22', outfile: 'dist/main/office-model-worker.cjs' });
 await build({entryPoints:['apps/desktop/src/main/pdf-service-renderer.ts'],bundle:true,platform:'browser',format:'esm',target:'chrome142',outfile:'dist/main/pdf-service-renderer.mjs'});
 await copyFile('node_modules/pdfjs-dist/build/pdf.worker.min.mjs','dist/main/pdf-service-worker.mjs');

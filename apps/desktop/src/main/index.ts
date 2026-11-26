@@ -1,5 +1,5 @@
 import { installReaderFind } from '../../../../packages/browser-runtime/src/reader-find';
-import './safe-stdio-init';
+import { newReaderWindow, revealWindow, supportedDocument } from './reader-window';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage } from 'electron';
 import { isAbsolute, join, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
@@ -43,10 +43,9 @@ const agentHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? e
 const aiResultHost = new WebToolbarHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), '/ai-result-toolbar', 'agentviewer:toolbar', viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId));
 const readerPanelHost = new ReaderPanelHost(() => process.env.AGENTVIEWER_VITE_URL ?? endpoint, join(__dirname, 'preload.cjs'), viewId => (core?.browser as ElectronBrowserRuntime | undefined)?.surface(viewId), (owner, viewId) => { const view = core?.views.get(viewId); return !!view && windows.get(view.windowId) === owner && core.getDocument(view.documentId).info.format === 'web'; }, owner => { toolbarHost.raise(owner); agentHost.raise(owner); selectionHost.raise(owner); aiResultHost.raise(owner); }, () => settings.get('appearance.glass') !== 'off' && settings.get('appearance.reduceTransparency') !== true && settings.get('appearance.highContrast') !== true);
 const root = resolve(__dirname, '../..');
-app.setName('AgentViewer');
-const directory = dataDir(); app.setPath('userData', directory);
-if (!app.requestSingleInstanceLock()) app.exit();
+const directory = dataDir();
 const windows = new Map<string, BrowserWindow>();
+const readyReaders = new Set<number>();
 let core: ViewerCore, endpoint: string;
 let translations: DocumentTranslationService;
 let selectionTranslations: SelectionTranslationService;
@@ -65,18 +64,17 @@ let pdfContent: PdfContentService | undefined;
 let webSemantic: WebSemanticService | undefined;
 let startupComplete = false, activationPending = false;
 let activationFlight: Promise<void> | undefined;
-const supportedDocument = /\.(?:md|markdown|mdown|txt|doc|docx|ppt|pptx|xls|xlsx|pdf|html?)$/i;
-const pendingStartupFiles = new Set(process.argv.filter(argument => isAbsolute(argument) && supportedDocument.test(argument)));
+let pendingStartupFiles: Set<string>;
 async function openStartupFiles() {
   if (!startupComplete || !pendingStartupFiles.size) return;
-  const owner = windows.get('main'); if (!owner || owner.isDestroyed()) return;
+  const owner = windows.get('main'); if (!owner || owner.isDestroyed() || !readyReaders.has(owner.webContents.id)) return;
   const paths = [...pendingStartupFiles]; pendingStartupFiles.clear();
   try { await flushReaderWindow(owner); const result = await openDroppedPaths(owner, paths); owner.webContents.send('agentviewer:toolbar', { action: 'files-opened', ...result }); }
   catch (error) { for (const path of paths) pendingStartupFiles.add(path); owner.webContents.send('agentviewer:toolbar', { action: 'close-error', message: String(error) }); }
 }
 const pendingDraftFlush = new Map<number, { id: string; scope: string; finish(error?: string): void; promise: Promise<void> }>();
 function flushReaderWindow(win: BrowserWindow, documentId?: string, checkOnly = false, confirmClose = false): Promise<void> {
-  if (win.isDestroyed() || win.webContents.isDestroyed() || !win.webContents.getURL()) return Promise.resolve();
+  if (win.isDestroyed() || win.webContents.isDestroyed() || !readyReaders.has(win.webContents.id)) return Promise.resolve();
   const contentsId = win.webContents.id, existing = pendingDraftFlush.get(contentsId);
   const scope = `${confirmClose ? 'close' : checkOnly ? 'check' : 'flush'}:${documentId ?? '*'}`;
   if (existing) return existing.scope === scope ? existing.promise : existing.promise.catch(() => {}).then(() => flushReaderWindow(win, documentId, checkOnly, confirmClose));
@@ -90,29 +88,25 @@ function flushReaderWindow(win: BrowserWindow, documentId?: string, checkOnly = 
   win.webContents.send('agentviewer:before-close', { id, documentId, checkOnly, confirmClose });
   return promise;
 }
+ipcMain.on('agentviewer:reader-ready', event => {
+  if (event.senderFrame !== event.sender.mainFrame || ![...windows.values()].some(win => win.webContents === event.sender)) return;
+  readyReaders.add(event.sender.id);
+  void openStartupFiles();
+});
 ipcMain.handle('agentviewer:close-flushed', (event, result: { id: string; error?: string }) => {
   if (event.senderFrame !== event.sender.mainFrame || ![...windows.values()].some(win => win.webContents.id === event.sender.id)) throw new Error('AUTH_SCOPE_DENIED');
   const pending = pendingDraftFlush.get(event.sender.id);
   if (pending?.id === result.id) pending.finish(result.error);
 });
 
-function revealWindow(win: BrowserWindow) {
-  if (win.isDestroyed()) return;
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.focus();
-}
-
 function activateReaderWindow() {
   activationPending = true;
-  if (!startupComplete) return;
   const existing = windows.get('main') ?? [...windows.values()].find(win => !win.isDestroyed());
   if (existing && !existing.isDestroyed()) { activationPending = false; revealWindow(existing); return; }
   if (activationFlight) return;
   activationPending = false;
   activationFlight = (async () => {
-    const win = await createWindow();
-    revealWindow(win);
+    await createWindow();
     for (const view of core.views.values()) {
       const document = core.getDocument(view.documentId).info;
       if (view.windowId === 'main' && document.format === 'web' && document.model.url) {
@@ -125,9 +119,12 @@ function activateReaderWindow() {
   });
 }
 
-// Register before asynchronous initialization, retaining early shortcut clicks.
-app.on('second-instance', (_event, argv) => { for (const path of argv) if (isAbsolute(path) && supportedDocument.test(path)) pendingStartupFiles.add(path); activateReaderWindow(); void openStartupFiles(); });
-app.on('activate', activateReaderWindow);
+export function activateWorkbench() {
+  if (!startupComplete) return false;
+  activateReaderWindow();
+  void openStartupFiles();
+  return true;
+}
 async function openDroppedPaths(owner: BrowserWindow, paths: unknown) {
   const ownerId = [...windows].find(([, win]) => win === owner)?.[0];
   if (!ownerId || !Array.isArray(paths) || !paths.length || paths.length > 32 || paths.some(path => typeof path !== 'string' || !isAbsolute(path))) throw new Error('请从文件管理器拖入最多 32 个本机文件。');
@@ -142,14 +139,15 @@ async function openDroppedPaths(owner: BrowserWindow, paths: unknown) {
   }
   return { views, errors };
 }
-async function createWindow(id = 'main') {
-  const win = new BrowserWindow({ width: 1440, height: 900, minWidth: 900, minHeight: 600, frame: false, show: false, icon: join(root, 'assets', 'agentviewer.ico'), backgroundColor: '#f5f6f9', title: 'AgentViewer', webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: ['--agentviewer-window=' + id] } });
+async function createWindow(id = 'main', initial?: BrowserWindow) {
+  const win = initial ?? newReaderWindow(id);
   windows.set(id, win);
   const readerContentsId = win.webContents.id;
+  win.webContents.on('did-navigate', () => readyReaders.delete(readerContentsId));
   let closeReady = false;
   let closePending = false;
   win.on('close', event => {
-    if (closeReady || shutdown === 'ready') return;
+    if (closeReady || shutdown === 'ready' || !startupComplete) return;
     event.preventDefault();
     if(closePending)return;closePending=true;
     void flushReaderWindow(win, undefined, false, true).then(()=>office?.closeOwner(win)).then(() => { if (!win.isDestroyed()) { closeReady = true; win.close(); } }).catch(error => {
@@ -157,6 +155,7 @@ async function createWindow(id = 'main') {
     }).finally(()=>{closePending=false;});
   });
   win.on('closed', () => {
+    readyReaders.delete(readerContentsId);
     selectionTranslations?.cancelOwner(String(readerContentsId));
     pendingDraftFlush.get(readerContentsId)?.finish('窗口已关闭。');
     windows.delete(id);
@@ -170,7 +169,8 @@ async function createWindow(id = 'main') {
   win.webContents.setZoomMode('disabled');
   const rendererUrl = process.env.AGENTVIEWER_VITE_URL ?? endpoint;
   win.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== new URL(rendererUrl).origin) event.preventDefault(); });
-  await win.loadURL(rendererUrl); revealWindow(win);
+  await win.loadURL(rendererUrl);
+  if (!initial) revealWindow(win);
   return win;
 }
 async function openSettings(category?: string) {
@@ -191,7 +191,8 @@ async function openSettings(category?: string) {
   win.on('closed', () => { if (settingsWindow === win) settingsWindow = undefined; });
 }
 
-void app.whenReady().then(async () => {
+export async function startWorkbench(initial: BrowserWindow, files: Set<string>) {
+  pendingStartupFiles = files;
   await mkdir(directory, { recursive: true });
   await settings.load();
   await connections.load();
@@ -524,7 +525,8 @@ void app.whenReady().then(async () => {
     }
     return dispatch(core, method, args, 'human');
   });
-  await createWindow();
+  if (initial.isDestroyed()) return;
+  await createWindow('main', initial);
   const warmup = setTimeout(() => {
     if (!app.isReady() || process.env.AGENTVIEWER_OFFICE_PREWARM === '0') return;
     void (async()=>{
@@ -540,7 +542,6 @@ void app.whenReady().then(async () => {
   }, 1500);
   warmup.unref();
   startupComplete = true;
-  if (activationPending) activateReaderWindow();
   if (core.views.size === 0) {
     const welcome = await core.openFile(runtime.sampleFiles[0].path);
     core.activate(welcome.id);
@@ -549,10 +550,10 @@ void app.whenReady().then(async () => {
   }
   void openStartupFiles();
   browserPoll = setInterval(() => { const browser = core.browser as ElectronBrowserRuntime; for (const [viewId, entry] of browser.entries) if (entry.visible && !entry.view.webContents.isLoading()) { void browser.context(viewId).then(context => core.updateContext(viewId, context, context.actor)).catch(() => {}); if (lastWebNavigation.get(viewId) !== entry.navigationId) { lastWebNavigation.set(viewId, entry.navigationId); lastWebTranslation.delete(viewId); webTranslationSuspended.delete(viewId); } if (settings.get('translation.webAuto') && !webTranslationSuspended.has(viewId) && translationReady('web')) { const now = Date.now(), last = lastWebTranslation.get(viewId) ?? 0; if (!webTranslationBusy.has(viewId) && (settings.get('translation.webDynamic') ? now - last > 4000 : last === 0)) { webTranslationBusy.add(viewId); lastWebTranslation.set(viewId, now); void applyWebTranslation(viewId, 'page', String(settings.get('translation.targetLanguage'))).catch(error => core.event('browser.translation-error', { viewId, error: String(error) })).finally(() => webTranslationBusy.delete(viewId)); } } } }, 650); browserPoll.unref();
-}).catch(error => { dialog.showErrorBox('AgentViewer 启动失败', String(error)); app.exit(1); });
+}
 let shutdown: 'idle' | 'saving' | 'ready' = 'idle';
 app.on('before-quit', event => {
-  if (shutdown === 'ready' || !core) return;
+  if (shutdown === 'ready' || !startupComplete) return;
   event.preventDefault();
   if (shutdown === 'saving') return;
   shutdown = 'saving';
@@ -566,4 +567,3 @@ app.on('before-quit', event => {
     for (const win of windows.values()) if (!win.isDestroyed()) win.webContents.send('agentviewer:toolbar', { action: 'close-error', message });
   });
 });
-app.on('window-all-closed', () => app.quit());

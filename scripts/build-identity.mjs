@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(root, 'dist/build-info.json');
-const outputs = ['dist/main/index.cjs', 'dist/main/preload.cjs', 'dist/main/browser-preload.cjs', 'dist/main/markdown-export-preload.cjs', 'dist/main/office-model-worker.cjs', 'dist/main/pdf-service-renderer.mjs', 'dist/main/pdf-service-worker.mjs', 'dist/renderer/index.html', 'dist/mcp/index.mjs', ...(process.platform === 'win32' ? ['dist/main/office-kit-windows.dll'] : [])];
+const outputs = ['dist/main/index.cjs', 'dist/main/workbench.cjs', 'dist/main/preload.cjs', 'dist/main/browser-preload.cjs', 'dist/main/markdown-export-preload.cjs', 'dist/main/office-model-worker.cjs', 'dist/main/pdf-service-renderer.mjs', 'dist/main/pdf-service-worker.mjs', 'dist/renderer/index.html', 'dist/mcp/index.mjs', ...(process.platform === 'win32' ? ['dist/main/office-kit-windows.dll'] : [])];
 
 async function outputInventory() {
   return Promise.all(outputs.map(async path => {

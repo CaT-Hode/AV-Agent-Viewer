@@ -38,10 +38,22 @@
 }
 :root[data-theme="dark"] :is(.modal,.selection-input).material-host { --liquid-glass-tint: rgb(0 0 0 / .6); }
 :root[data-theme] :is(.selection-tool-icons,.agent-capsule,.toast,.selection-error).material-host { background: transparent; border-color: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
-/* The same frosted material throughout enter/idle/exit. Native transparent
-   surfaces receive a translucent tint too; no solid-black fallback swap. */
-:root[data-theme] .app-tooltip.material-host { background: transparent; --liquid-glass-tint: rgb(247 250 253 / .76); --liquid-glass-solid: #eef3f7; --liquid-glass-frosted-blur: 12px; --liquid-glass-frosted-saturation: 1.12; color: #273746; border-color: rgb(255 255 255 / .58); }
-:root[data-theme="dark"] .app-tooltip.material-host { --liquid-glass-tint: rgb(35 46 58 / .72); --liquid-glass-solid: #26333f; color: #eef5fb; border-color: rgb(191 218 238 / .17); }
+/* Use the paper under the bubble. Transparent native windows use the theme
+   pair until their surface can be sampled. Keep ink and tint in lockstep. */
+:root[data-theme] :is(.toast,.app-tooltip).material-host {
+  color: #233342;
+  --liquid-glass-tint: rgb(247 250 253 / .82);
+  --liquid-glass-solid: #f4f7fa;
+  --tooltip-frame-color: rgb(255 255 255 / .58);
+}
+:root[data-theme="dark"] :is(.toast,.app-tooltip).material-host:not([data-feedback-surface="light"]),
+:root[data-theme] :is(.toast,.app-tooltip).material-host[data-feedback-surface="dark"] {
+  color: #f2f6fa;
+  --liquid-glass-tint: rgb(32 42 54 / .84);
+  --liquid-glass-solid: #202a36;
+  --tooltip-frame-color: rgb(191 218 238 / .17);
+}
+:root[data-theme] .app-tooltip.material-host { background: transparent; --liquid-glass-frosted-blur: 12px; --liquid-glass-frosted-saturation: 1.12; }
 .material-host:is(button,.recent-card):not(.glass-elastic):active:not(:disabled) { scale: .985; }
 .recent-card.material-host { transition: box-shadow 220ms var(--ease-out); }
 .recent-card.material-host:hover { box-shadow: 0 15px 30px -17px rgb(20 38 50 / .22); }

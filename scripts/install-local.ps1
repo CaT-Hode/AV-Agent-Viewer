@@ -52,7 +52,7 @@ if ($destination -ne $expected -or $source -eq $destination -or $source.StartsWi
 if ((Test-Path -LiteralPath $destination) -and ((Get-Item -LiteralPath $destination -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw '安装目录是链接，未执行替换。' }
 if (-not (Test-Path -LiteralPath (Join-Path $source 'AgentViewer.exe') -PathType Leaf)) { throw '找不到已打包的 AgentViewer.exe。' }
 if (-not (Test-Path -LiteralPath (Join-Path $source 'resources\engines\libreoffice\program\soffice.exe') -PathType Leaf)) { throw '打包目录缺少内置 LibreOffice。' }
-$critical = @('AgentViewer.exe', 'resources\app\dist\main\index.cjs', 'resources\app\dist\main\office-kit-windows.dll', 'resources\app\dist\main\office-model-worker.cjs', 'resources\app\dist\main\markdown-export-preload.cjs', 'resources\app\dist\renderer\index.html', 'resources\engines\pandoc\pandoc.exe', 'resources\engines\libreoffice\program\soffice.exe')
+$critical = @('AgentViewer.exe', 'resources\app\dist\main\index.cjs', 'resources\app\dist\main\workbench.cjs', 'resources\app\dist\main\office-kit-windows.dll', 'resources\app\dist\main\office-model-worker.cjs', 'resources\app\dist\main\markdown-export-preload.cjs', 'resources\app\dist\renderer\index.html', 'resources\engines\pandoc\pandoc.exe', 'resources\engines\libreoffice\program\soffice.exe')
 foreach ($file in $critical) { if (-not (Test-Path -LiteralPath (Join-Path $source $file) -PathType Leaf)) { throw ('打包目录缺少文件: ' + $file) } }
 
 $running = Get-CimInstance Win32_Process -Filter "name = 'AgentViewer.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($destination + '\', [System.StringComparison]::OrdinalIgnoreCase) }

@@ -9,8 +9,8 @@
 :root[data-theme] .app-shell > .workbench.overlay-reading > .ai-rail { right:var(--reader-rail-offset); }
 :root[data-theme] .app-shell > .workbench.overlay-reading > .floating-side-panel { position:absolute; top:11px; bottom:11px; margin:0; grid-column:auto; z-index:12; overflow:visible; }
 :root[data-theme] .app-shell > .workbench.overlay-reading > .reader-panel-anchor { translate:none !important; scale:1 !important; }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .format-sidebar.floating-side-panel { left:var(--reader-left-inset,73px); width:var(--reader-left-width,248px); min-width:180px; max-width:min(620px,calc(100% - var(--reader-left-inset,73px) - 73px - 148px)); }
-:root[data-theme] .app-shell > .workbench.overlay-reading > .ai-drawer.floating-side-panel { right:73px; width:var(--reader-right-width,380px); min-width:280px; max-width:min(720px,calc(100% - var(--reader-left-inset,73px) - 73px - 148px)); }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .format-sidebar.floating-side-panel { left:var(--reader-left-inset,73px); width:var(--reader-left-width,223px); min-width:180px; max-width:min(620px,calc(100% - var(--reader-left-inset,73px) - 73px - 148px)); }
+:root[data-theme] .app-shell > .workbench.overlay-reading > .ai-drawer.floating-side-panel { right:73px; width:var(--reader-right-width,342px); min-width:280px; max-width:min(720px,calc(100% - var(--reader-left-inset,73px) - 73px - 148px)); }
 :root[data-theme] .app-shell > .workbench.overlay-reading:has(> .floating-side-panel[data-side="left"]):has(> .floating-side-panel[data-side="right"]) > .format-sidebar.floating-side-panel { max-width:min(620px,calc((100% - var(--reader-left-inset,73px) - 73px - 148px) / 2)); }
 :root[data-theme] .app-shell > .workbench.overlay-reading:has(> .floating-side-panel[data-side="left"]):has(> .floating-side-panel[data-side="right"]) > .ai-drawer.floating-side-panel { max-width:min(720px,calc((100% - var(--reader-left-inset,73px) - 73px - 148px) / 2)); }
 .floating-side-panel > :is(.format-heading,.drawer-heading,.prompt-box) { flex-shrink:0; }

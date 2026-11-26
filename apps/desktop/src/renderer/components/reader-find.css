@@ -1,5 +1,33 @@
-.reader-find{display:grid;gap:9px;min-width:0}.reader-find input{width:100%;min-width:0}.find-input-row,.find-options,.find-replace{display:flex;align-items:center;gap:4px}.find-options,.find-replace{flex-wrap:wrap}.reader-find button{color:inherit;background:transparent;border:0;border-radius:6px;padding:4px 6px;font:inherit;cursor:pointer}.reader-find button:hover,.reader-find button[aria-current=true],.reader-find button[aria-pressed=true]{background:color-mix(in srgb,var(--accent,#7762ca) 16%,transparent)}.reader-find button:disabled{opacity:.45;cursor:default}.reader-find p,.reader-find small,.find-options,.find-replace{font-size:12px}.reader-find p:empty{display:none}.reader-find ol{margin:0;padding:0;list-style:none}.reader-find li button{width:100%;text-align:start;padding:6px 8px}.reader-find li span,.reader-find small{display:block;overflow-wrap:anywhere}.reader-find mark{background:#ffcd67;color:#352809;border-radius:2px}.reader-find small{opacity:.72}
-
-::highlight(av-pdf-find){background:#ffca51;color:#332600}
-
-::highlight(av-office-find) { background:#ffca51; color:#332600; }
+.reader-find {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+}
+.reader-find input:is([type="search"], [type="text"]) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+}
+.find-navigation, .find-options, .find-replace { display: flex; align-items: center; gap: 3px; }
+.find-navigation > [role="status"] { flex: 1; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.find-navigation button { display: grid; place-items: center; flex: none; width: 25px; height: 25px; }
+.find-options, .find-replace { flex-wrap: wrap; }
+.find-replace input { flex-basis: 100%; }
+.reader-find button { color: inherit; background: transparent; border: 0; border-radius: 6px; padding: 4px 5px; font: inherit; cursor: pointer; }
+.reader-find button:hover, .reader-find button[aria-current=true], .reader-find button[aria-pressed=true] { background: color-mix(in srgb,var(--accent,#7762ca) 16%,transparent); }
+.reader-find button:disabled { opacity: .45; cursor: default; }
+.reader-find p, .reader-find small, .find-navigation, .find-options, .find-replace { font-size: 12px; }
+.reader-find p { margin: 0; overflow-wrap: anywhere; }
+.reader-find ol { margin: 0; padding: 0; list-style: none; }
+.reader-find li button { width: 100%; text-align: start; padding: 6px 8px; }
+.reader-find li span, .reader-find small { display: block; overflow-wrap: anywhere; }
+.reader-find mark { background: #ffcd67; color: #352809; border-radius: 2px; }
+.reader-find small { opacity: .72; }
+::highlight(av-pdf-find), ::highlight(av-office-find) { background: #ffca51; color: #332600; }

@@ -6,7 +6,7 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 export const catalogDigest = snapshot => sha(JSON.stringify(canonical({ entry: snapshot.entry.hash, shared: snapshot.shared.hash, formats: Object.fromEntries(Object.entries(snapshot.formats).map(([type, value]) => [type, value.hash])) })));
-const appFiles = ['dist/main/index.cjs', 'dist/mcp/index.mjs'];
+const appFiles = ['dist/main/index.cjs', 'dist/main/workbench.cjs', 'dist/mcp/index.mjs'];
 const pluginFiles = ['skills/reading/SKILL.md', 'skills/editing/SKILL.md'];
 async function fingerprints(root, files) { return Object.fromEntries(await Promise.all(files.map(async file => [file, sha(await readFile(join(root, file)))]))); }
 

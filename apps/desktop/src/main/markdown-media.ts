@@ -9,7 +9,6 @@ import type { ViewerCore } from '../../../../packages/document-core/src/index';
 import { ViewerError } from '../../../../packages/contracts/src/index';
 import { markdownResourcePath } from '../../../../packages/markdown/src/resources';
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'agentviewer-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
 const types: Record<string, string> = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.ogv': 'video/ogg', '.flac': 'audio/flac' };
 
 /** Capabilities contain no filesystem paths. Recheck confinement on every read,

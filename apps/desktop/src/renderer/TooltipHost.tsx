@@ -1,5 +1,5 @@
 import { MotionPresence } from './components/MotionPresence';
-import { LiquidGlassSurface } from './components/LiquidGlassSurface';
+import { FeedbackBubble } from './components/FeedbackBubble';
 import { motionDuration, motionSnapshot } from './lib/motion';
 import { isNativeTooltipRelocation, placeTooltip, type NativeTooltipPointer, type TooltipPlacement } from './lib/tooltip-placement';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
@@ -68,5 +68,5 @@ export function TooltipHost() {
     nativeOpen.current=true;
     void call<NativeLayout>('toolbar-tooltip',{open:true,anchor:rect,size:measured}).then(async layout=>{if(sequence.current!==current||!tip.target.isConnected||!layout.placement)return;await commitNativeLayout(layout);if(sequence.current===current)setTip(previous=>previous?.sequence===current?{...previous,...layout.placement!,ready:true}:previous);}).catch(()=>{if(sequence.current===current)setTip(undefined);});
   },[tip?.sequence,tip?.ready]);
-  return <MotionPresence show={!!tip} surface="tooltip" duration={160}>{tip && <div ref={bubble} id="app-tooltip" role="tooltip" className={'app-tooltip material-host ' + (tip.above ? 'above' : '')} data-floating-owner={floatingOwnerGroup(tip.target)} data-tooltip-ready={tip.ready} style={{ left: tip.x, top: tip.y, maxWidth:Math.max(24,Math.min(280,innerWidth-12)),visibility:tip.ready?'visible':'hidden' } as CSSProperties}><LiquidGlassSurface variant="tooltip" effect="frosted" /><span className="app-tooltip-content">{tip.text}{tip.detail && <small className="tab-format-detail">{tip.detail}</small>}</span></div>}</MotionPresence>;
+  return <MotionPresence show={!!tip} surface="tooltip" duration={160}>{tip && <FeedbackBubble variant="tooltip" bubbleRef={bubble} position={tip} id="app-tooltip" role="tooltip" className={'app-tooltip material-host ' + (tip.above ? 'above' : '')} data-floating-owner={floatingOwnerGroup(tip.target)} data-tooltip-ready={tip.ready} style={{ left: tip.x, top: tip.y, maxWidth:Math.max(24,Math.min(280,innerWidth-12)),visibility:tip.ready?'visible':'hidden' } as CSSProperties}><span className="app-tooltip-content">{tip.text}{tip.detail && <small className="tab-format-detail">{tip.detail}</small>}</span></FeedbackBubble>}</MotionPresence>;
 }

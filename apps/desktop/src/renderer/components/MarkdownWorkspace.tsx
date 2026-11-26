@@ -85,7 +85,7 @@ export function MarkdownWorkspace(props: Props) {
         if (valid(owner) && searchGeneration.current === sequence) setSearching(false);
       });
     }, mode === 'filename' ? 150 : 250);
-    return () => { clearTimeout(timer);void call('markdown-workspace-stop',{owner:resultId,token}).catch(()=>{}); if (searchGeneration.current === sequence) searchGeneration.current++; };
+    return () => { clearTimeout(timer);void call('markdown-workspace-stop',{documentId,owner:resultId,token}).catch(()=>{}); if (searchGeneration.current === sequence) searchGeneration.current++; };
   }, [documentId, mode, query, caseSensitive, rootPath, listings['']]);
   const rows = useMemo(() => {
     const visible: { entry: Entry; depth: number }[] = [];

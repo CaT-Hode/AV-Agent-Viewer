@@ -1,6 +1,5 @@
 /* Tooltip only: material, text, frame and shadow share one opacity curve. */
-:root[data-theme] .app-tooltip.material-host { padding: 0; border: 0; box-shadow: none; transform: none; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; border-radius: 12px; --tooltip-frame-color: rgb(255 255 255 / .58); }
-:root[data-theme="dark"] .app-tooltip.material-host { --tooltip-frame-color: rgb(191 218 238 / .17); }
+:root[data-theme] .app-tooltip.material-host { padding: 0; border: 0; box-shadow: none; transform: none; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; border-radius: 12px; }
 :root .app-tooltip.material-host .app-tooltip-content { display: block; border: 1px solid var(--tooltip-frame-color); padding: 7px 10px; border-radius: inherit; box-shadow: 0 5px 18px #0002,0 1px 3px #0001; }
 :root .app-tooltip.material-host[data-motion-surface="tooltip"][data-motion-phase] > .app-tooltip-content,
 :root .app-tooltip.material-host[data-motion-surface="tooltip"][data-motion-phase] .liquid-glass-surface :is(.liquid-glass-center,.liquid-glass-edge,.liquid-glass-tint) { opacity: var(--liquid-glass-opacity,1); transition: opacity var(--motion-duration,160ms) var(--ease-out); }
@@ -10,4 +9,4 @@ html.native-toolbar-root #root > .workbench.native-toolbar,
 html.native-agent-root #root > .native-agent-slot { position: relative; top: var(--native-tooltip-offset-y,0px); }
 html.native-toolbar-root #root > .selection-tools { margin-top: var(--native-tooltip-offset-y,0px); }
 
-.app-tooltip .tab-format-detail { display:block; margin-top:3px; color:var(--muted); font-size:11px; font-weight:400; }
+.app-tooltip .tab-format-detail { display:block; margin-top:3px; color:inherit; font-size:11px; font-weight:400; }
